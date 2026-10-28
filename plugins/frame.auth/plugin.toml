@@ -290,4 +290,4 @@ anti_pattern = "no CSRF protection on POST endpoints — a third-party site can 
 example = "patterns/csrf-protection.cln"
 
 [build]
-built_with_compiler = "0.33.155"
+built_with_compiler = "0.33.156"
