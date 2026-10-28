@@ -59,7 +59,7 @@ jobs:
 
             ## What's New
 
-            See [CHANGELOG.md](https://github.com/Ivan-Pasco/cleen-framework/blob/main/CHANGELOG.md) for details.
+            See [CHANGELOG.md](https://github.com/Ivan-Pasco/cleen-framework-old/blob/main/CHANGELOG.md) for details.
 
   package-plugins:
     name: Package Plugins
@@ -106,7 +106,7 @@ jobs:
           - frame.storage - Server-side filesystem bridge for binary artifacts
           - frame.ui - UI components and rendering
 
-          Documentation: https://github.com/Ivan-Pasco/cleen-framework
+          Documentation: https://github.com/Ivan-Pasco/cleen-framework-old
           EOF
 
       - name: Create archive
@@ -154,7 +154,7 @@ jobs:
               "frame.storage": "included",
               "frame.ui": "included"
             },
-            "download": "https://github.com/Ivan-Pasco/cleen-framework/releases/download/v${{ needs.create-release.outputs.version }}/frame-plugins-${{ needs.create-release.outputs.version }}.tar.gz"
+            "download": "https://github.com/Ivan-Pasco/cleen-framework-old/releases/download/v${{ needs.create-release.outputs.version }}/frame-plugins-${{ needs.create-release.outputs.version }}.tar.gz"
           }
           EOF
 

@@ -20,7 +20,7 @@ members = []
 #   - plugins/frame.ui/         - UI components and SSR rendering
 #   - plugins/frame.canvas/     - Canvas graphics and games
 #
-# See https://github.com/Ivan-Pasco/clean-server for the server runtime.
+# See https://github.com/Ivan-Pasco/clean-server-old for the server runtime.
 
 [workspace.package]
 version = "2.12.197"

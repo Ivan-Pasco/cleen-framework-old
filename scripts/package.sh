@@ -154,9 +154,9 @@ Full-stack WebAssembly framework for Clean Language
 
 ## Links
 
-- Repository: https://github.com/Ivan-Pasco/cleen-framework
-- Clean Language: https://github.com/Ivan-Pasco/clean-language-compiler
-- Issues: https://github.com/Ivan-Pasco/cleen-framework/issues
+- Repository: https://github.com/Ivan-Pasco/cleen-framework-old
+- Clean Language: https://github.com/Ivan-Pasco/clean-language-compiler-old
+- Issues: https://github.com/Ivan-Pasco/cleen-framework-old/issues
 
 ## License
 

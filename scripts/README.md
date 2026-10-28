@@ -339,6 +339,6 @@ When adding new build scripts:
 ## Support
 
 For build issues:
-- Check [GitHub Issues](https://github.com/Ivan-Pasco/cleen-framework/issues)
+- Check [GitHub Issues](https://github.com/Ivan-Pasco/cleen-framework-old/issues)
 - Review [INSTALL.md](../INSTALL.md) for installation help
 - Consult [CONTRIBUTING.md](../documents/CONTRIBUTING.md) for development guidelines

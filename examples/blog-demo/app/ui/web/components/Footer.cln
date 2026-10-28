@@ -6,6 +6,6 @@ component: tag="blog-footer"
 		<footer class="site-footer">
 			<div class="footer-content">
 				<p>Built with Clean Framework</p>
-				<p><a href="https://github.com/Ivan-Pasco/cleen-framework">View on GitHub</a></p>
+				<p><a href="https://github.com/Ivan-Pasco/cleen-framework-old">View on GitHub</a></p>
 			</div>
 		</footer>

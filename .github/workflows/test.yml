@@ -68,7 +68,7 @@ jobs:
 
       - name: Install cleen (Clean Language version manager)
         run: |
-          curl -fsSL https://github.com/Ivan-Pasco/clean-language-manager/releases/latest/download/install.sh | bash
+          curl -fsSL https://github.com/Ivan-Pasco/clean-language-manager-old/releases/latest/download/install.sh | bash
           # cleen itself goes to ~/.local/bin; cln (the compiler) goes to ~/.cleen/bin after `cleen install`.
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.cleen/bin" >> "$GITHUB_PATH"
@@ -108,12 +108,12 @@ jobs:
           # cleen frame install requires cleen to know about the compiler via
           # its own state, which we bypassed above. Download the frame plugin
           # bundle directly and extract into ~/.cleen/plugins/.
-          frame_tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/cleen-framework/releases/latest | jq -r '.tag_name')"
+          frame_tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/cleen-framework-old/releases/latest | jq -r '.tag_name')"
           frame_ver="${frame_tag#v}"
           echo "Installing Frame plugins $frame_ver (from $frame_tag)"
           mkdir -p "$HOME/.cleen/plugins"
           curl -fsSL -o /tmp/frame-plugins.tar.gz \
-            "https://github.com/Ivan-Pasco/cleen-framework/releases/download/$frame_tag/frame-plugins-$frame_ver.tar.gz"
+            "https://github.com/Ivan-Pasco/cleen-framework-old/releases/download/$frame_tag/frame-plugins-$frame_ver.tar.gz"
           tar -xzf /tmp/frame-plugins.tar.gz -C "$HOME/.cleen/plugins"
           ls "$HOME/.cleen/plugins/"
 
