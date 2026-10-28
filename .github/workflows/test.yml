@@ -76,13 +76,14 @@ jobs:
       - name: Install latest Clean Language compiler
         run: |
           set -euo pipefail
-          # The Ivan-Pasco/clean-language-compiler GitHub repo was renamed
-          # (assets now live under -old) and `cleen install` doesn't follow
+          # The old compiler lives at Ivan-Pasco/clean-language-compiler-old (the
+          # original name now belongs to the new Clean Language project),
+          # and older `cleen install` releases do not follow
           # the 301 redirect on asset downloads. Bypass cleen entirely and
           # place the binary where `cleen use` expects it, so downstream
           # `cleen frame install` still works. Resolve the tag ourselves so
           # any resolution failure is loud.
-          tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler/releases/latest | jq -r '.tag_name')"
+          tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler-old/releases/latest | jq -r '.tag_name')"
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Failed to resolve latest compiler tag from GitHub API"
             exit 1
@@ -91,7 +92,7 @@ jobs:
           echo "Installing Clean Language compiler $ver (from $tag) directly from Releases"
           mkdir -p "$HOME/.cleen/versions/$ver" "$HOME/.cleen/bin"
           curl -fsSL -o "$HOME/.cleen/versions/$ver/cln" \
-            "https://github.com/Ivan-Pasco/clean-language-compiler/releases/download/$tag/cln-linux-x86_64"
+            "https://github.com/Ivan-Pasco/clean-language-compiler-old/releases/download/$tag/cln-linux-x86_64"
           chmod +x "$HOME/.cleen/versions/$ver/cln"
           ln -sf "$HOME/.cleen/versions/$ver/cln" "$HOME/.cleen/bin/cln"
           # Mark the active version so cleen commands (e.g. `cleen frame install`)
@@ -120,7 +121,7 @@ jobs:
         run: |
           mkdir -p "$HOME/.cleen/server"
           curl -fsSL -o /tmp/clean-server.tar.gz \
-            https://github.com/Ivan-Pasco/clean-server/releases/latest/download/clean-server-linux-x64.tar.gz
+            https://github.com/Ivan-Pasco/clean-server-old/releases/latest/download/clean-server-linux-x64.tar.gz
           tar -xzf /tmp/clean-server.tar.gz -C "$HOME/.cleen/server"
           chmod +x "$HOME/.cleen/server/clean-server"
           echo "CLEEN_SERVER=$HOME/.cleen/server/clean-server" >> "$GITHUB_ENV"

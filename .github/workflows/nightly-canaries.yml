@@ -41,7 +41,7 @@ jobs:
       - name: Checkout compiler (for canary corpus)
         uses: actions/checkout@v4
         with:
-          repository: Ivan-Pasco/clean-language-compiler
+          repository: Ivan-Pasco/clean-language-compiler-old
           ref: ${{ inputs.compiler_ref || 'main' }}
           path: _compiler
 
@@ -59,12 +59,13 @@ jobs:
       - name: Install latest Clean Language compiler
         run: |
           set -euo pipefail
-          # The Ivan-Pasco/clean-language-compiler GitHub repo was renamed
-          # (assets now live under -old) and `cleen install` doesn't follow
+          # The old compiler lives at Ivan-Pasco/clean-language-compiler-old (the
+          # original name now belongs to the new Clean Language project),
+          # and older `cleen install` releases do not follow
           # the 301 redirect on asset downloads. Bypass cleen entirely and
           # place the binary where `cleen use` expects it, so downstream
           # `cleen frame install` still works.
-          tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler/releases/latest | jq -r '.tag_name')"
+          tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler-old/releases/latest | jq -r '.tag_name')"
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Failed to resolve latest compiler tag from GitHub API"
             exit 1
@@ -73,7 +74,7 @@ jobs:
           echo "Installing Clean Language compiler $ver (from $tag) directly from Releases"
           mkdir -p "$HOME/.cleen/versions/$ver" "$HOME/.cleen/bin"
           curl -fsSL -o "$HOME/.cleen/versions/$ver/cln" \
-            "https://github.com/Ivan-Pasco/clean-language-compiler/releases/download/$tag/cln-linux-x86_64"
+            "https://github.com/Ivan-Pasco/clean-language-compiler-old/releases/download/$tag/cln-linux-x86_64"
           chmod +x "$HOME/.cleen/versions/$ver/cln"
           ln -sf "$HOME/.cleen/versions/$ver/cln" "$HOME/.cleen/bin/cln"
           echo "$ver" > "$HOME/.cleen/active-version"

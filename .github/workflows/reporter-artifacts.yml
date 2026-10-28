@@ -75,7 +75,7 @@ jobs:
           # tarball's fingerprint was captured against a specific cln
           # version; if the tarball needs a different cln it will pin one
           # via run.sh.
-          curl -fsSL "https://github.com/Ivan-Pasco/clean-language-compiler/releases/latest/download/cln-linux-x86_64.tar.gz" \
+          curl -fsSL "https://github.com/Ivan-Pasco/clean-language-compiler-old/releases/latest/download/cln-linux-x86_64.tar.gz" \
             | sudo tar xz -C /usr/local/bin/
           sudo chmod +x /usr/local/bin/cln
           cln --version
