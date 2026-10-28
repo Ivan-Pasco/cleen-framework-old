@@ -97,4 +97,4 @@ anti_pattern = "using a client-supplied filename as the storage path — client-
 example = "patterns/content-addressed-artifact.cln"
 
 [build]
-built_with_compiler = "0.33.157"
+built_with_compiler = "0.33.158"
