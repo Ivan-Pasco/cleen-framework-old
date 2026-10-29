@@ -1936,8 +1936,22 @@ functions:
 		string result = "html = html + \""
 		string remaining = text
 		while remaining.length() > 0
+			// `\{` and `\}` are literal braces (CSS, JSON examples); any other
+			// backslash is kept as a literal backslash.
+			integer esc_pos = remaining.indexOf("\\")
 			integer brace_start = remaining.indexOf("{")
-			if brace_start == -1
+			if esc_pos != -1 and (brace_start == -1 or esc_pos < brace_start)
+				result = result + escape_string(remaining.substring(0, esc_pos))
+				string escaped_char = ""
+				if esc_pos + 1 < remaining.length()
+					escaped_char = remaining.substring(esc_pos + 1, esc_pos + 2)
+				if escaped_char == "{" or escaped_char == "}"
+					result = result + escape_string(escaped_char)
+					remaining = remaining.substring(esc_pos + 2, remaining.length())
+				else
+					result = result + "\\\\"
+					remaining = remaining.substring(esc_pos + 1, remaining.length())
+			else if brace_start == -1
 				result = result + escape_string(remaining)
 				remaining = ""
 			else
@@ -2482,8 +2496,22 @@ functions:
 		string result = "\""
 		string remaining = text
 		while remaining.length() > 0
+			// `\{` and `\}` are literal braces (CSS, JSON examples); any other
+			// backslash is kept as a literal backslash.
+			integer esc_pos = remaining.indexOf("\\")
 			integer brace_start = remaining.indexOf("{")
-			if brace_start == -1
+			if esc_pos != -1 and (brace_start == -1 or esc_pos < brace_start)
+				result = result + escape_string(remaining.substring(0, esc_pos))
+				string escaped_char = ""
+				if esc_pos + 1 < remaining.length()
+					escaped_char = remaining.substring(esc_pos + 1, esc_pos + 2)
+				if escaped_char == "{" or escaped_char == "}"
+					result = result + escape_string(escaped_char)
+					remaining = remaining.substring(esc_pos + 2, remaining.length())
+				else
+					result = result + "\\\\"
+					remaining = remaining.substring(esc_pos + 1, remaining.length())
+			else if brace_start == -1
 				result = result + escape_string(remaining)
 				remaining = ""
 			else
@@ -2581,8 +2609,22 @@ functions:
 		string result = "__html = __html + \""
 		string remaining = text
 		while remaining.length() > 0
+			// `\{` and `\}` are literal braces (CSS, JSON examples); any other
+			// backslash is kept as a literal backslash.
+			integer esc_pos = remaining.indexOf("\\")
 			integer brace_start = remaining.indexOf("{")
-			if brace_start == -1
+			if esc_pos != -1 and (brace_start == -1 or esc_pos < brace_start)
+				result = result + escape_string(remaining.substring(0, esc_pos))
+				string escaped_char = ""
+				if esc_pos + 1 < remaining.length()
+					escaped_char = remaining.substring(esc_pos + 1, esc_pos + 2)
+				if escaped_char == "{" or escaped_char == "}"
+					result = result + escape_string(escaped_char)
+					remaining = remaining.substring(esc_pos + 2, remaining.length())
+				else
+					result = result + "\\\\"
+					remaining = remaining.substring(esc_pos + 1, remaining.length())
+			else if brace_start == -1
 				result = result + escape_string(remaining)
 				remaining = ""
 			else

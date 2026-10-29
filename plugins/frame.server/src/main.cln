@@ -645,9 +645,11 @@ functions:
 					// `return "hello"` and get a proper JSON response back.
 					// Skip when the handler already invokes a response helper
 					// (jsonResponse, redirect, notFound, http.respond, etc.).
-					string final_handler_code = handler_code
-					if handler_sets_response(handler_code) == false
-						final_handler_code = wrap_returns_with_json(handler_code)
+					// A handler ending in an `html:` block returns that page as
+					// text/html (frame-ui.ebnf html_block; SRV-R003 response).
+					string final_handler_code = trailing_html_block_to_response(handler_code)
+					if handler_sets_response(final_handler_code) == false
+						final_handler_code = wrap_returns_with_json(final_handler_code)
 
 					// Build preamble stmts: guard, cache, middleware
 					string preamble_handles = ""
@@ -1335,6 +1337,59 @@ functions:
 		if unit == "d"
 			return (num * 86400).toString()
 		return val
+
+	// Count leading tab characters of a line.
+	integer leading_tabs(string line)
+		integer n = 0
+		while n < line.length() and line.substring(n, n + 1) == "\t"
+			n = n + 1
+		return n
+
+	// When the handler's last statement is an `html:` block, rewrite it to
+	// `html var="__route_page":` (assign, no return) and append
+	// `return htmlResponse(__route_page)`, so the page is sent as text/html.
+	// Without this the block expands to a bare `return __html`, which no
+	// response helper wraps, and the route answers with an empty body.
+	string trailing_html_block_to_response(string code)
+		list<string> lines = code.split("\n")
+		integer base = -1
+		iterate i in 0 to lines.length() - 1
+			string ln = lines[i]
+			if ln.trim().length() > 0
+				integer t = leading_tabs(ln)
+				if base == -1 or t < base
+					base = t
+		if base == -1
+			return code
+		integer html_at = -1
+		iterate j in 0 to lines.length() - 1
+			string lj = lines[j]
+			if lj.trim() == "html:" and leading_tabs(lj) == base
+				html_at = j
+		if html_at == -1
+			return code
+		// Every later non-empty line must belong to the block (deeper indent).
+		boolean trailing = true
+		iterate k in html_at + 1 to lines.length() - 1
+			string lk = lines[k]
+			if lk.trim().length() > 0 and leading_tabs(lk) <= base
+				trailing = false
+		if trailing == false
+			return code
+		string indent = ""
+		integer m = 0
+		while m < base
+			indent = indent + "\t"
+			m = m + 1
+		string out = ""
+		iterate q in 0 to lines.length() - 1
+			string lq = lines[q]
+			if q == html_at
+				lq = indent + "html var=\"__route_page\":"
+			if q > 0
+				out = out + "\n"
+			out = out + lq
+		return out + "\n" + indent + "return htmlResponse(__route_page)"
 
 	// handler_sets_response: true when the handler code already calls a response helper.
 	// Preserved from v1 — used to decide whether auto-wrap is needed before
