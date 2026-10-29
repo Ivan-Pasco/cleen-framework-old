@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")"
 
-CLN=cln
+CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
 if ! command -v "$CLN" &>/dev/null; then
     echo "ERROR: cln compiler not found in PATH"
     exit 1

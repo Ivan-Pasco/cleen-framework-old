@@ -3,7 +3,7 @@ set -e
 cd "$(dirname "$0")"
 
 # Requires compiler 0.30.103+ (local variable index fix + complex-function returns fix)
-CLN=cln
+CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
 if ! command -v "$CLN" &>/dev/null; then
 	echo "ERROR: cln compiler not found in PATH"
 	echo "Install it with: cleen install latest"

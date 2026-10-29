@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")"
 
-CLN="${CLN_COMPILER:-cln}"
+CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
 
 "$CLN" compile src/main.cln -o plugin.wasm --target=plugin
 echo "Built frame.storage plugin -> plugin.wasm"

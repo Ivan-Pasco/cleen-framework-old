@@ -1,5 +1,5 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
-cln compile src/main.cln -o plugin.wasm --target=plugin
+"${CLN_COMPILER:-$HOME/.cleen/bin/cln}" compile src/main.cln -o plugin.wasm --target=plugin
 echo "Built frame.canvas plugin -> plugin.wasm"
