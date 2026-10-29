@@ -232,7 +232,11 @@ functions:
 		_ctx_set_error_context(ctx, "PLUGIN_UI_CLIENT_INIT", "emit_ui_client_init")
 		string source = emit_ui_client_init_source(ctx_json)
 		if source.length() > 0
-			_emit_stmt_from_source(ctx, source, 0)
+			// The parsed fragment must be handed to _emit_statement_inline;
+			// a handle that is only allocated never reaches the client _start.
+			integer stmt_h = _emit_stmt_from_source(ctx, source, 0)
+			if stmt_h != 0
+				integer err = _emit_statement_inline(ctx, stmt_h)
 		_ctx_clear_error(ctx)
 		return 0
 
@@ -3230,8 +3234,10 @@ functions:
 	// _ui_update_element + instance.onMount() calls. Returns "" when no
 	// components need hydration (no statements to emit).
 	string emit_ui_client_init_source(string context_json)
-		string build_state = extract_json_field(context_json, "build_state")
-		string components_csv = extract_json_field(build_state, "frame.ui:components")
+		// build_state is a nested object, which extract_json_field cannot
+		// return whole (it stops at the first comma). The key is unique in the
+		// context JSON and its value is a plain string, so read it directly.
+		string components_csv = extract_json_field(context_json, "frame.ui:components")
 		if components_csv == ""
 			return ""
 		string statements = ""
