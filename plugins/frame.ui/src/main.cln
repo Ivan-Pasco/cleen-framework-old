@@ -304,10 +304,10 @@ functions:
 	// to expand_page_typed.
 	integer process_html_typed(integer ctx, string ctx_json)
 		_ctx_set_error_context(ctx, "PLUGIN_UI_PROCESS_HTML", "process_html")
-		string html = extract_json_field(ctx_json, "html")
-		string path = extract_json_field(ctx_json, "path")
-		string registry_json = extract_json_field(ctx_json, "registry_json")
-		string companion_json = extract_json_field(ctx_json, "companion_json")
+		string html = decode_json_string(extract_json_field_escaped(ctx_json, "html"))
+		string path = decode_json_string(extract_json_field_escaped(ctx_json, "path"))
+		string registry_json = decode_json_string(extract_json_field_escaped(ctx_json, "registry_json"))
+		string companion_json = decode_json_string(extract_json_field_escaped(ctx_json, "companion_json"))
 		string layout = extract_page_attr(html, "layout")
 		string auth = extract_page_attr(html, "auth")
 		string roles = extract_page_attr(html, "roles")
@@ -1210,6 +1210,150 @@ functions:
 		result = result + "}"
 		return result
 
+	// Number of leading tabs on a line.
+	integer leading_tabs(string line)
+		integer n = 0
+		boolean counting = true
+		while counting and n < line.length()
+			if line.substring(n, n + 1) == "\t"
+				n = n + 1
+			else
+				counting = false
+		return n
+
+	// Return the lines nested under the `<section_name>:` header in a
+	// component body (events: or functions:), or "" when the section is
+	// absent. Lines keep their original indentation.
+	string component_section_lines(string text, string section_name)
+		string result = ""
+		boolean in_section = false
+		integer section_indent = 0
+		string remaining = text
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = ""
+			if nl == -1
+				line = remaining
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string trimmed = line.trim()
+			if in_section
+				if trimmed.length() > 0 and leading_tabs(line) <= section_indent
+					in_section = false
+				else
+					result = result + line + "\n"
+			if not in_section
+				if trimmed == section_name + ":"
+					in_section = true
+					section_indent = leading_tabs(line)
+		return result
+
+	// Parse a parameter list ("a, b: integer" or "integer a, string b")
+	// into the class-spec params JSON array.
+	string component_params_json(string params_src)
+		string result = "["
+		boolean first = true
+		string remaining = params_src.trim()
+		while remaining.length() > 0
+			integer comma = remaining.indexOf(",")
+			string param = ""
+			if comma == -1
+				param = remaining.trim()
+				remaining = ""
+			else
+				param = remaining.substring(0, comma).trim()
+				remaining = remaining.substring(comma + 1, remaining.length())
+			if param.length() > 0
+				string p_name = param
+				string p_type = "any"
+				integer colon = param.indexOf(":")
+				if colon != -1
+					p_name = param.substring(0, colon).trim()
+					p_type = param.substring(colon + 1, param.length()).trim()
+				else
+					integer sp = param.indexOf(" ")
+					if sp != -1
+						p_type = param.substring(0, sp).trim()
+						p_name = param.substring(sp + 1, param.length()).trim()
+				if not first
+					result = result + ","
+				result = result + spec_field(p_name, p_type)
+				first = false
+		return result + "]"
+
+	// Turn one collected method (header line + dedented body) into a
+	// class-spec method entry. Header forms: `name(params):` (events:) and
+	// `ret name(params)` (functions:). Returns "" for malformed headers.
+	string component_method_entry(integer ctx, string header, string body)
+		string h = header.trim()
+		if h.endsWith(":")
+			h = h.substring(0, h.length() - 1).trim()
+		integer open = h.indexOf("(")
+		integer close = h.indexOf(")")
+		if open <= 0 or close < open
+			return ""
+		string head = h.substring(0, open).trim()
+		string params_src = h.substring(open + 1, close)
+		string ret = "void"
+		string m_name = head
+		integer sp = head.indexOf(" ")
+		if sp != -1
+			ret = head.substring(0, sp).trim()
+			m_name = head.substring(sp + 1, head.length()).trim()
+		string body_src = body
+		if body_src.trim().length() == 0
+			body_src = "return\n"
+		integer bh = _emit_stmt_from_source(ctx, body_src, 0)
+		return spec_method_inline_bh(m_name, component_params_json(params_src), ret, bh)
+
+	// Collect the methods declared in a component's events: or functions:
+	// section as comma-separated class-spec method entries.
+	string component_section_methods(integer ctx, string text, string section_name)
+		string lines = component_section_lines(text, section_name)
+		string entries = ""
+		integer header_indent = -1
+		string header = ""
+		string body = ""
+		string remaining = lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = ""
+			if nl == -1
+				line = remaining
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string trimmed = line.trim()
+			if trimmed.length() > 0
+				integer ind = leading_tabs(line)
+				boolean is_visibility = trimmed == "public:" or trimmed == "private:"
+				if is_visibility or header_indent == -1 or ind <= header_indent
+					if header != ""
+						string entry = component_method_entry(ctx, header, body)
+						if entry != ""
+							if entries != ""
+								entries = entries + ","
+							entries = entries + entry
+					header = ""
+					body = ""
+					if is_visibility
+						header_indent = -1
+					else
+						header_indent = ind
+						header = trimmed
+				else
+					body = body + line.substring(header_indent + 1, line.length()) + "\n"
+		if header != ""
+			string last_entry = component_method_entry(ctx, header, body)
+			if last_entry != ""
+				if entries != ""
+					entries = entries + ","
+				entries = entries + last_entry
+		return entries
+
 	// Build a state:-block field entry: {"name":"...","type_handle":N,"default_expr_handle":N}
 	// per §3.4 fields_json_lp schema.
 	string spec_state_field(string name, integer type_handle, integer default_expr_handle)
@@ -1285,11 +1429,18 @@ functions:
 
 		// Parse the component body (before html, html content, after html, fallback).
 		string parsed = parse_component_body(body)
-		string before_html = extract_json_field(parsed, "before")
-		string html_content = extract_json_field(parsed, "html")
-		string after_html = extract_json_field(parsed, "after")
-		string fallback_html = extract_json_field(parsed, "fallback")
-		string state_fields = extract_state_fields(before_html)
+		// Decode each section: extract_json_field returns raw escaped text and
+		// stops at the first escaped quote, which truncated html at `class="`
+		// and hid the state: and events: sections.
+		string before_html = decode_json_string(extract_json_field_escaped(parsed, "before"))
+		string html_content = decode_json_string(extract_json_field_escaped(parsed, "html"))
+		string after_html = decode_json_string(extract_json_field_escaped(parsed, "after"))
+		string fallback_html = decode_json_string(extract_json_field_escaped(parsed, "fallback"))
+		// Sections that become methods (events:, functions:).
+		string section_text = remove_state_dot(before_html + "\n" + after_html)
+		// state: and inputs: entries both become class fields, so the render
+		// body and handlers can reference them by bare name.
+		string state_fields = component_section_lines(before_html, "state") + component_section_lines(before_html, "inputs")
 		before_html = strip_state_block(before_html)
 		before_html = remove_state_dot(before_html)
 
@@ -1309,11 +1460,8 @@ functions:
 		// _fallback (only when component has a fallback)
 		if fallback_html != ""
 			fields_json = fields_json + "," + spec_field("_fallback", "string")
-		// Inputs field (only when html has inputs: sub-block)
-		boolean has_inputs = (html_content != "" and before_html.indexOf("inputs:") != -1)
-		if has_inputs
-			fields_json = fields_json + "," + spec_field("inputs", "Inputs")
-		// State fields extracted from before_html (each line is "type name" or "type name = default")
+		// State and input fields (each line is "type name [= default]" or
+		// "name: type [= default]")
 		string state_lines_trimmed = state_fields.trim()
 		if state_lines_trimmed.length() > 0
 			string sf_remaining = state_lines_trimmed
@@ -1328,8 +1476,17 @@ functions:
 					sf_remaining = sf_remaining.substring(nl_pos + 1, sf_remaining.length())
 				string sf_trim = sf_line.trim()
 				if sf_trim.length() > 0
+					integer sf_colon = sf_trim.indexOf(":")
+					integer sf_eq = sf_trim.indexOf("=")
 					integer sp = sf_trim.indexOf(" ")
-					if sp > 0
+					if sf_colon > 0 and (sf_eq == -1 or sf_colon < sf_eq)
+						string sf_cname = sf_trim.substring(0, sf_colon).trim()
+						string sf_ctype = sf_trim.substring(sf_colon + 1, sf_trim.length()).trim()
+						integer sf_ceq = sf_ctype.indexOf("=")
+						if sf_ceq != -1
+							sf_ctype = sf_ctype.substring(0, sf_ceq).trim()
+						fields_json = fields_json + "," + spec_field(sf_cname, sf_ctype)
+					else if sp > 0
 						string sf_type = sf_trim.substring(0, sp)
 						string sf_rest = sf_trim.substring(sp + 1, sf_trim.length()).trim()
 						// Drop any default assignment: keep only the name segment.
@@ -1389,6 +1546,13 @@ functions:
 		methods_json = methods_json + spec_method_inline_bh("render", "[]", "string", render_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"content\",\"type\":\"string\"}]", "void", setslot_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("renderSSR", "[]", "string", renderssr_bh)
+		// User-declared events: handlers and functions: methods.
+		string event_methods = component_section_methods(ctx, section_text, "events")
+		if event_methods != ""
+			methods_json = methods_json + "," + event_methods
+		string function_methods = component_section_methods(ctx, section_text, "functions")
+		if function_methods != ""
+			methods_json = methods_json + "," + function_methods
 		methods_json = methods_json + "]"
 
 		// -------- Assemble the class spec --------
@@ -1991,7 +2155,7 @@ functions:
 							if has_data
 								result = result + "\" + _html_escape(data." + strip_spaces(expr) + ") + \""
 							else
-								result = result + "\" + _html_escape(" + strip_spaces(expr) + ") + \""
+								result = result + "\" + _html_escape((" + strip_spaces(expr) + ").toString()) + \""
 						remaining = remaining.substring(brace_end + 1, remaining.length())
 		result = result + "\"\n"
 		return result
@@ -2169,7 +2333,9 @@ functions:
 			client = "off"
 		string class_name = "__Screen_" + screen_name
 		string result = ""
-		result = result + "{\n"
+		// Clean has no bare `{ }` blocks; an `if true` body gives the
+		// instance its own scope so sibling islands can reuse the name.
+		result = result + "if true\n"
 		result = result + "\t" + class_name + " _screen = " + class_name + "()\n"
 		string props_code = extract_screen_props(tag_content, screen_name)
 		if props_code != ""
@@ -2177,7 +2343,6 @@ functions:
 		result = result + "\thtml = html + \"<div id='screen-" + screen_name + "'>\"\n"
 		result = result + "\thtml = html + _screen.render()\n"
 		result = result + "\thtml = html + \"</div>\"\n"
-		result = result + "}\n"
 		return result
 
 	string extract_screen_props(string tag_content, string screen_name)
@@ -2228,7 +2393,8 @@ functions:
 		string result = ""
 		if client != "off"
 			result = result + "html = html + \"<div data-island='" + tag_name + "' data-client='" + client + "'>\"\n"
-		result = result + "{\n"
+		// Own scope per embedded component (see render_screen_island).
+		result = result + "if true\n"
 		result = result + "\t" + class_name + " _comp = " + class_name + "()\n"
 		if props != ""
 			result = result + props
@@ -2251,7 +2417,6 @@ functions:
 					result = result + "\t" + sline + "\n"
 			result = result + "\t_comp.setSlot(_slot)\n"
 		result = result + "\thtml = html + _comp.render()\n"
-		result = result + "}\n"
 		if client != "off"
 			result = result + "html = html + \"</div>\"\n"
 		return result
@@ -2361,7 +2526,7 @@ functions:
 					result = result + "\" + " + strip_spaces(expr) + " + \""
 				else
 					string expr = remaining.substring(startIdx + 1, end)
-					result = result + "\" + _html_escape(" + strip_spaces(expr) + ") + \""
+					result = result + "\" + _html_escape((" + strip_spaces(expr) + ").toString()) + \""
 				remaining = remaining.substring(end + 1, remaining.length())
 		return result
 
@@ -2545,7 +2710,7 @@ functions:
 							result = result + "\" + " + strip_spaces(expr) + " + \""
 						else
 							string expr = remaining.substring(brace_start + 1, brace_end)
-							result = result + "\" + _html_escape(" + strip_spaces(expr) + ") + \""
+							result = result + "\" + _html_escape((" + strip_spaces(expr) + ").toString()) + \""
 						remaining = remaining.substring(brace_end + 1, remaining.length())
 		result = result + "\""
 		return result
@@ -2658,7 +2823,7 @@ functions:
 							result = result + "\" + " + strip_spaces(expr) + " + \""
 						else
 							string expr = remaining.substring(brace_start + 1, brace_end)
-							result = result + "\" + _html_escape(" + strip_spaces(expr) + ") + \""
+							result = result + "\" + _html_escape((" + strip_spaces(expr) + ").toString()) + \""
 						remaining = remaining.substring(brace_end + 1, remaining.length())
 		result = result + "\"\n"
 		return result
@@ -2753,7 +2918,7 @@ functions:
 					result = result + "\" + " + strip_spaces(expr) + " + \""
 				else
 					string expr = remaining.substring(startIdx + 1, end)
-					result = result + "\" + _html_escape(" + strip_spaces(expr) + ") + \""
+					result = result + "\" + _html_escape((" + strip_spaces(expr) + ").toString()) + \""
 				remaining = remaining.substring(end + 1, remaining.length())
 		result = result + "\""
 		return result
@@ -2860,7 +3025,7 @@ functions:
 				html_line_indent = html_line_indent + 1
 				scan = scan - 1
 		integer html_end = body.length()
-		string sections = ",inputs:,state:,functions:,computed:,events:,fallback:,"
+		string sections = ",inputs:,state:,functions:,computed:,events:,fallback:,style:,"
 		string search_remaining = body.substring(content_start, body.length())
 		integer line_start = 0
 		while line_start < search_remaining.length()
@@ -2880,7 +3045,7 @@ functions:
 				string trimmed = line.trim()
 				if trimmed.endsWith(":")
 					string section_name = trimmed.substring(0, trimmed.length() - 1)
-					if sections.indexOf("," + section_name + ",") != -1
+					if sections.indexOf("," + section_name + ":,") != -1
 						html_end = content_start + line_start
 						after = body.substring(html_end, body.length())
 						line_start = search_remaining.length()
@@ -2915,7 +3080,7 @@ functions:
 						else
 							fallback_line_indent = fallback_line_indent + 1
 							fscan = fscan - 1
-					string fallback_sections = ",inputs:,state:,functions:,computed:,events:,html:,"
+					string fallback_sections = ",inputs:,state:,functions:,computed:,events:,html:,style:,"
 					string fsearch = body.substring(fallback_content_start, body.length())
 					integer fline_start = 0
 					while fline_start < fsearch.length()
@@ -2935,7 +3100,7 @@ functions:
 							string ftrimmed = fline.trim()
 							if ftrimmed.endsWith(":")
 								string fsection_name = ftrimmed.substring(0, ftrimmed.length() - 1)
-								if fallback_sections.indexOf("," + fsection_name + ",") != -1
+								if fallback_sections.indexOf("," + fsection_name + ":,") != -1
 									fallback_end = fallback_content_start + fline_start
 									fline_start = fsearch.length()
 								else
