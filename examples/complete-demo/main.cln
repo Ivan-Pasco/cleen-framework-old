@@ -1,6 +1,11 @@
 package: CompleteDemo
     version: "1.0.0"
 
-    target: web
-        plugins: [frame.ui, frame.server, frame.data, frame.auth, frame.canvas]
+    // The server build covers the UI, API and data folders. The canvas
+    // scene in app/canvas/ is browser code (every frame.canvas bridge is
+    // hosts=["browser"]) and is built as its own browser module.
+    shared: [app/ui, app/server, app/data]
+
+    target: server
+        plugins: [frame.ui, frame.server, frame.data, frame.auth]
         entry: app/ui/web/pages/index.html

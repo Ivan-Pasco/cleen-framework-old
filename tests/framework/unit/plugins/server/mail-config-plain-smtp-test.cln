@@ -1,0 +1,39 @@
+// Test: frame.server — `server: mail:` settings reach the SMTP client as written.
+//
+// Regression: frame.server always configured TLS (it ignored `secure: false`)
+// and passed the quoted config values through with their quotes, so every
+// send failed before connecting with `Invalid from address '"test@example.com"'`.
+// With `secure: false` the client opens a plain SMTP connection to the
+// configured host and port. Port 1 on 127.0.0.1 has no SMTP server, so the
+// send must fail at the connection step — not on the from address and not in
+// a TLS handshake.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+	mail:
+		host: "127.0.0.1"
+		port: 1
+		secure: false
+		username: ""
+		password: ""
+		from: "test@example.com"
+
+endpoints:
+	GET "/test":
+		boolean sent = email.send("dest@example.com", "hello", "<b>hi</b>", "hi")
+		string err = email.lastError()
+		boolean ok_failed = sent == false
+		boolean ok_connect = err.contains("Connection error")
+		boolean ok_from = err.contains("Invalid from address") == false
+		boolean ok_plain = err.contains("tls") == false and err.contains("TLS") == false
+		if ok_failed and ok_connect and ok_from and ok_plain
+			printl("PASS: server-mail-config-plain-smtp")
+		else
+			printl("FAIL: server-mail-config-plain-smtp " + err)
+		return json({ok: true})
+
+start:
+	printl("[boot] server-mail-config-plain-smtp ready")

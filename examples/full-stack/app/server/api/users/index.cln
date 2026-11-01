@@ -1,16 +1,22 @@
 // Users API
 
 endpoints:
-	[admin] GET "/api/users":
-		string users = User.find:
+	GET "/api/users" [admin]:
+		// Project only public columns so password hashes never leave the server.
+		list<User> users = User.find:
+			select: id, name, email, role, active, created_at
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"users\": " + users + "}")
+		return json({ok: true, users: users})
 
-	[admin] POST "/api/users":
-		string body = body()
-		string hash = auth.password.hash(body)
-		User.insert:
-			password_hash = hash
-			role = "user"
-			active = true
+	POST "/api/users" [admin]:
+		any data = json.tryTextToData(body())
+		if data == null
+			return badRequest("Invalid JSON")
+		User user = User()
+		user.name = data.name.toString()
+		user.email = data.email.toString()
+		user.password_hash = auth.hashPassword(data.password.toString())
+		user.role = "user"
+		user.active = true
+		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"user created\"}")

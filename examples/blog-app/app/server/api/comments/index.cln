@@ -2,26 +2,22 @@
 
 endpoints:
 	GET "/api/comments":
-		string postId = param("post_id")
-		string comments = Comment.find:
+		integer postId = req.query("post_id").toInteger()
+		list<Comment> comments = Comment.find:
 			where:
-				post_id = postId
+				post_id == postId
 			order: created_at asc
-		return jsonResponse("{\"ok\": true, \"comments\": " + comments + "}")
+		return json({ok: true, comments: comments})
 
-	[user, admin] POST "/api/comments":
-		string body = body()
-		any data = json.tryTextToData(body)
+	POST "/api/comments" [user, admin]:
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string postId = json.get(data, "post_id")
-		string commentBody = json.get(data, "body")
-		if postId == "" or commentBody == ""
+		if data.post_id == null or data.body == null
 			return badRequest("post_id and body are required")
-		string session = auth.getCurrentUser()
-		string authorId = json.getField(session, "id")
-		Comment.insert:
-			post_id = postId
-			author_id = authorId
-			body = commentBody
+		Comment comment = Comment()
+		comment.post_id = data.post_id.toInteger()
+		comment.author_id = auth.userId()
+		comment.body = data.body.toString()
+		Database.save(comment)
 		return jsonResponse("{\"ok\": true}")

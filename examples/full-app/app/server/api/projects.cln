@@ -1,39 +1,43 @@
 // Projects API
 
 endpoints:
-	[user, admin] GET "/api/projects":
-		string projects = Project.find:
+	GET "/api/projects" [user, admin]:
+		list<Project> projects = Project.find:
 			order: name asc
-		return jsonResponse("{\"ok\": true, \"projects\": " + projects + "}")
+		return json({ok: true, projects: projects})
 
-	[user, admin] POST "/api/projects":
-		string body = body()
-		Project.insert:
-			name = body
+	POST "/api/projects" [user, admin]:
+		Project project = Project()
+		project.name = body()
+		Database.save(project)
 		return jsonResponse("{\"ok\": true, \"message\": \"project created\"}")
 
-	[user, admin] GET "/api/projects/:id":
-		string id = param("id")
-		string project = Project.first:
+	GET "/api/projects/:id" [user, admin]:
+		integer projectId = param("id").toInteger()
+		Project project = Project.first:
 			where:
-				id = id
-		if project == "" or project == "null"
+				id == projectId
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"project\": " + project + "}")
+		return json({ok: true, project: project})
 
-	[user, admin] PUT "/api/projects/:id":
-		string id = param("id")
-		string body = body()
-		Project.update:
-			set:
-				name = body
+	PUT "/api/projects/:id" [user, admin]:
+		integer projectId = param("id").toInteger()
+		Project project = Project.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"project updated\", \"id\": \"" + id + "\"}")
+				id == projectId
+		onError:
+			return notFound()
+		project.name = body()
+		Database.save(project)
+		return jsonResponse("{\"ok\": true, \"message\": \"project updated\", \"id\": " + projectId.toString() + "}")
 
-	[user, admin] DELETE "/api/projects/:id":
-		string id = param("id")
-		Project.delete:
+	DELETE "/api/projects/:id" [user, admin]:
+		integer projectId = param("id").toInteger()
+		Project project = Project.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"project deleted\", \"id\": \"" + id + "\"}")
+				id == projectId
+		onError:
+			return notFound()
+		Database.delete(project)
+		return jsonResponse("{\"ok\": true, \"message\": \"project deleted\", \"id\": " + projectId.toString() + "}")

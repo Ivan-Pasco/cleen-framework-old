@@ -1,0 +1,44 @@
+// Test: frame.ui — `<screen name="X">` places the core `screen X:` block.
+//
+// A screen is a core block (grammar.ebnf §6.10) with one copy of its
+// screen-scoped state. frame.ui only provides the <screen> placement tag:
+// it renders the screen's own scoped `X.render()` inside a wrapper element.
+// Two screens may both declare render() — each tag renders its own screen.
+
+plugins:
+	frame.ui
+
+page ScreensPage:
+	<main>
+		<screen name="Counter" client="on"></screen>
+		<screen name="Greeter"></screen>
+	</main>
+
+start:
+	Counter.increment()
+	ScreensPage page = ScreensPage()
+	string out = page.render()
+	boolean ok_counter = out.contains("<div id='screen-Counter' data-screen='Counter' data-client='on'><p class='count'>Count: 4</p></div>")
+	boolean ok_greeter = out.contains("<div id='screen-Greeter' data-screen='Greeter' data-client='off'><p class='greet'>Hello from Greeter</p></div>")
+	if ok_counter and ok_greeter
+		printl("PASS: ui-screen-placement")
+	else
+		printl("FAIL: ui-screen-placement " + out)
+
+screen Counter:
+	state:
+		integer count = 3
+
+	functions:
+		string render()
+			html:
+				<p class="count">Count: {count.toString()}</p>
+
+		void increment()
+			count = count + 1
+
+screen Greeter:
+	functions:
+		string render()
+			html:
+				<p class="greet">Hello from Greeter</p>

@@ -1,6 +1,6 @@
 package: TodoApi
-    version: "1.0.0"
+	version: "1.0.0"
 
-    target: web
-        plugins: [frame.data, frame.server, frame.auth, frame.ui]
-        entry: app/ui/web/pages/index.html
+	target: server
+		plugins: [frame.data, frame.server, frame.auth]
+		entry: app/server/main.cln

@@ -1,0 +1,77 @@
+// Test: frame.client — form: block generated state and submit() validation.
+// Spec: frame-client.ebnf §2 (form_block) and §4 (generated state contract).
+//
+// form: expands to one string state variable per field (default value
+// assigned), submitting / formError / formSuccess, and a void submit().
+// submit() validates required fields before sending; the request itself is
+// awaited with `later` (grammar.ebnf §4.9 later_assignment), so the code
+// after the request runs in a continuation when the response arrives.
+// This test drives the validation path only — it returns before the
+// request is sent, so it runs without a browser host.
+
+plugins:
+	frame.client
+
+form: post "/api/tasks"
+	title required
+	note default="none"
+	on success: clear emit "created"
+	on error: show
+
+start:
+	boolean ok = true
+
+	if title != ""
+		ok = false
+		printl("FAIL: title default should be empty")
+	if note != "none"
+		ok = false
+		printl("FAIL: note default should be none")
+	if submitting
+		ok = false
+		printl("FAIL: submitting should start false")
+	if formError != ""
+		ok = false
+		printl("FAIL: formError should start empty")
+	if formSuccess != ""
+		ok = false
+		printl("FAIL: formSuccess should start empty")
+
+	submit()
+	if formError != "title is required"
+		ok = false
+		printl("FAIL: submit() with empty title should set formError, got: " + formError)
+	if submitting
+		ok = false
+		printl("FAIL: submitting should stay false when validation fails")
+
+	title = "   "
+	submit()
+	if formError != "title is required"
+		ok = false
+		printl("FAIL: whitespace-only title should fail validation")
+
+	// Valid fields: the request is sent and submit() returns while it is
+	// still awaiting the response, so submitting stays true and nothing in
+	// the response branch (formSuccess, clear, emit) has run yet.
+	title = "Buy milk"
+	submit()
+	if formError != ""
+		ok = false
+		printl("FAIL: formError should be cleared before sending, got: " + formError)
+	if submitting == false
+		ok = false
+		printl("FAIL: submitting should be true while awaiting the response")
+	if formSuccess != ""
+		ok = false
+		printl("FAIL: formSuccess must not be set before the response arrives")
+	if title != "Buy milk"
+		ok = false
+		printl("FAIL: fields must not be cleared before the response arrives")
+
+	if ok
+		printl("PASS: client-form-submit-state")
+
+functions:
+	void created()
+		printl("created")

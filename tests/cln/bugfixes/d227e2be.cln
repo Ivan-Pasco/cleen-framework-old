@@ -11,11 +11,16 @@
 plugins:
 	frame.data
 
+// Fixed: was a bare-field `data Widget:` block and the positional
+// `Widget(0, "test")` constructor, frame-data.ebnf v2 requires the `fields:`
+// sub-block (DAT-M015); data classes are built field by field.
 data Widget:
-	integer id
-	string name
+	fields:
+		integer id primary generated
+		string name
 
 start:
-	Widget w = Widget(0, "test")
+	Widget w = Widget()
+	w.name = "test"
 	Database.save(w)
-	print("saved")
+	printl("PASS: d227e2be")

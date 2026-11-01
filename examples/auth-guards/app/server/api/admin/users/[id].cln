@@ -1,6 +1,6 @@
 // Admin user detail - requires admin role
 
 endpoints:
-	[admin] GET "/api/admin/users/:id":
+	GET "/api/admin/users/:id" [admin]:
 		string userId = param("id")
 		return jsonResponse("{\"message\": \"User details\", \"id\": \"" + userId + "\"}")

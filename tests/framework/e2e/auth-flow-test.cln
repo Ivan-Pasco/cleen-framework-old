@@ -1,21 +1,40 @@
 // E2E: full auth flow — hash password, sign JWT, set session, log out.
 
+// Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
+// reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
+// Fixed: was a hardcoded `secret:` literal, frame-auth.ebnf jwt_secret_field
+// requires `env.get("VAR")` (AUTH-C004); the test runner exports JWT_SECRET.
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 	jwt:
-		secret: "e2e-test-jwt-secret-min-32-bytes-ok"
-		alg: "HS256"
-		ttlMinutes: 15
+		secret = env.get("JWT_SECRET")
+		alg = "HS256"
+		ttlMinutes = 15
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` / `.insert_id:` /
+// `.update:` / `.delete:` block mutations, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015) and writes through `Database.save(entity)` /
+// `Database.delete(entity)`; the new id is read from `entity.id` (DAT-S001,
+// DAT-S003, DAT-Q014). Tables are created with `Model.migrate()` (DAT-C005).
 data User:
-	integer id
-	string email
-	string passwordHash
+	fields:
+		integer id primary generated
+		string email required
+		string passwordHash required
 
 start:
 	printl("[boot] e2e-auth-flow server ready")
@@ -24,9 +43,12 @@ endpoints:
 	GET "/test":
 		// Register
 		string hash = crypto.hashPassword("hunter2")
-		integer uid = User.insert_id:
-			email = "alice@example.com"
-			passwordHash = hash
+		User.migrate()
+		User account = User()
+		account.email = "alice@example.com"
+		account.passwordHash = hash
+		Database.save(account)
+		integer uid = account.id
 		boolean ok_register = uid > 0
 
 		// Login: fetch by email, verify password, set session.
@@ -34,11 +56,11 @@ endpoints:
 			where:
 				email == "alice@example.com"
 		boolean ok_verify = crypto.verifyPassword("hunter2", u.passwordHash)
-		auth.setSession("{\"user_id\":" + uid.toString() + ",\"role\":\"user\"}")
+		auth.setSession("\{\"user_id\":" + uid.toString() + ",\"role\":\"user\"\}")
 		boolean ok_auth = auth.isAuthenticated() and auth.userId() == uid
 
 		// Sign a JWT for the same subject.
-		string token = auth.jwt.sign("{\"sub\":\"" + uid.toString() + "\"}")
+		string token = auth.jwt.sign("\{\"sub\":\"" + uid.toString() + "\"\}")
 		string decoded = auth.jwt.verify(token)
 		boolean ok_jwt = token.length() > 0 and decoded.length() > 0
 

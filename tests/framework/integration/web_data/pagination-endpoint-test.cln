@@ -1,20 +1,33 @@
 // Integration: paginated model exposed via HTTP endpoint.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data Item:` block and `Item.insert:` block
+// mutations, frame-data.ebnf v2 requires the `fields:` sub-block (DAT-M015)
+// and writes through `Database.save(entity)` (DAT-S001).
 data Item:
-	integer id
-	string name
+	fields:
+		integer id primary generated
+		string name required
 
 start:
 	printl("[boot] integration-pagination-endpoint server ready")
 
 endpoints:
 	GET "/test":
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Item.migrate()
+
 		iterate i in 1 to 15
-			Item.insert:
-				name = "item-" + i.toString()
+			Item item = Item()
+			item.name = "item-" + i.toString()
+			Database.save(item)
 
 		PagedResult<Item> page = Item.paginate:
 			paginate:

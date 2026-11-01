@@ -12,14 +12,15 @@ A complete REST API example demonstrating Frame Framework plugins.
 
 ```
 todo-api/
-├── main.cln                    # Main entry point
+├── main.cln                    # Package manifest (target: server)
 ├── app/
+│   ├── auth/
+│   │   └── auth.cln            # Session + role configuration (auth: block)
 │   ├── data/
-│   │   └── models.cln         # Data models (User, Todo, Category)
-│   ├── api/
-│   │   └── endpoints.cln      # REST API endpoints
-│   └── config/
-│       └── auth.cln           # Authentication configuration
+│   │   └── models/             # User, Todo, Category, TodoCategory data blocks
+│   └── server/
+│       ├── main.cln            # Server entry (port, table migrations)
+│       └── api/                # REST API endpoints
 └── README.md
 ```
 
@@ -66,10 +67,10 @@ todo-api/
 ### Todo
 - `id` - Primary key (auto-increment)
 - `title` - Todo title
-- `description` - Todo description
+- `description` - Todo description (field `details`, column `description`)
 - `completed` - Completion status
 - `priority` - Priority level (0-9)
-- `owner` - User relationship
+- `owner_id` - Owning user (relation `owner`)
 - `created_at` - Creation timestamp
 - `due_date` - Optional due date
 
@@ -77,7 +78,7 @@ todo-api/
 - `id` - Primary key (auto-increment)
 - `name` - Category name
 - `color` - Hex color code
-- `owner` - User relationship
+- `owner_id` - Owning user (relation `owner`)
 
 ## Example Requests
 

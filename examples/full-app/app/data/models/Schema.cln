@@ -1,16 +1,32 @@
 // Database schema - Task Management Application
+// `description` is a reserved keyword (grammar.ebnf §1.2), so the fields are
+// named `details` and mapped onto the `description` column.
 
-data User
-	string email
-	string name
+data User:
+	fields:
+		integer id primary generated
+		string email required unique
+		string name
 
-data Project
-	string name
-	string description
+data Project:
+	fields:
+		integer id primary generated
+		string name required
+		string details as "description"
 
-data Task
-	string title
-	string description
-	string status
-	integer project_id
-	integer assignee_id
+data Task:
+	fields:
+		integer id primary generated
+		string title required
+		string details as "description"
+		string status default: "pending"
+		integer project_id
+		integer assignee_id
+
+	indexes:
+		status
+		project_id
+
+	relations:
+		project: belongs_to Project on project_id
+		assignee: belongs_to User on assignee_id

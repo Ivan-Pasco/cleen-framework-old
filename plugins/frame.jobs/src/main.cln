@@ -210,6 +210,7 @@ functions:
 
 				string section_rem = job_section
 				boolean in_retry = false
+				integer retry_indent = 0
 				integer sec_safety = 0
 
 				while sec_safety < 300 and section_rem.length() > 0
@@ -229,10 +230,13 @@ functions:
 
 					if sec_trimmed == "retry:"
 						in_retry = true
+						retry_indent = sec_line.indexOf("retry:")
 						continue
 
+					// retry: settings are the lines indented deeper than `retry:`
+					// itself; the first line back at its level ends the section.
 					if in_retry
-						if sec_line.startsWith("\t\t") or sec_line.startsWith("    ")
+						if sec_line.indexOf(sec_trimmed) > retry_indent
 							if sec_trimmed.startsWith("maxAttempts:")
 								string val = sec_trimmed.substring(12, sec_trimmed.length()).trim()
 								max_attempts = val.toInteger()

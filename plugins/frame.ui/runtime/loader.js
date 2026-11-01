@@ -2389,7 +2389,10 @@
 				return writeString(substitute(template, args));
 			},
 
-			_i18n_t_count: (keyPtr, keyLen, count, argsPtr, argsLen) => {
+			_i18n_t_count: (keyPtr, keyLen, countArg, argsPtr, argsLen) => {
+				// count is an i64 (function-registry.toml) — a BigInt at the
+				// JS-WASM boundary. Plural selection works on a JS number.
+				const count = Number(countArg);
 				// Selects the correct plural form from the bundle, then substitutes.
 				// Plural maps: key_zero / key_one / key_two / key_few / key_many / key_other
 				// Uses Intl.PluralRules for CLDR-accurate category selection.

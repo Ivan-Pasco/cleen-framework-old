@@ -2,12 +2,8 @@ package: ApiServer
 	version: "1.0.0"
 	description: "REST API server with authentication"
 
+	shared: [app/data/]
+
 	target: server
 		plugins: [frame.server, frame.data, frame.auth]
-
-	server:
-		port: 3000
-
-	auth:
-		strategy: jwt
-		secret: env.get("JWT_SECRET")
+		entry: app/server/main.cln

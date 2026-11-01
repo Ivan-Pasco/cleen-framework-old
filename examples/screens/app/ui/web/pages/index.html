@@ -8,32 +8,14 @@
 </head>
 <body>
 	<h1>Clean UI Screens Example</h1>
-	<p>This example demonstrates the islands architecture with interactive screens embedded in HTML pages.</p>
+	<p>This example places screens on an HTML page. Each screen is a view with its own screen-scoped state.</p>
 
-	<h2>Counter (Interactive)</h2>
-	<p>A simple counter with increment, decrement, and reset buttons.</p>
-	<screen name="Counter" client="on" count="10" label="My Counter"></screen>
+	<h2>Counter</h2>
+	<p>A counter with increment, decrement, and reset buttons.</p>
+	<screen name="Counter" client="on"></screen>
 
-	<h2>Counter (SSR Only)</h2>
-	<p>Same counter but rendered on server only, no client interactivity.</p>
-	<screen name="Counter" client="off" count="42" label="Static Counter"></screen>
-
-	<h2>Todo List (Interactive)</h2>
+	<h2>Todo List</h2>
 	<p>A todo list demonstrating text input and state management.</p>
 	<screen name="TodoList" client="on"></screen>
-
-	<h2>Multiple Counters</h2>
-	<p>Multiple independent counter instances on the same page.</p>
-	<div style="display: flex; gap: 20px; flex-wrap: wrap;">
-		<screen name="Counter" client="on" count="0" label="Counter A"></screen>
-		<screen name="Counter" client="on" count="100" label="Counter B"></screen>
-	</div>
-
-	<h2>Lazy Hydration (visible)</h2>
-	<p>This counter will only hydrate when scrolled into view.</p>
-	<div style="margin-top: 100vh; padding: 20px; background: #e0e0e0; border-radius: 8px;">
-		<p><em>Scroll down to see lazy hydration in action...</em></p>
-		<screen name="Counter" client="visible" count="0" label="Lazy Counter"></screen>
-	</div>
 </body>
 </html>

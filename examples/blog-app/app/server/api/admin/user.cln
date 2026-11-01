@@ -1,20 +1,17 @@
 // Admin: delete user endpoint
 
 endpoints:
-	[admin] DELETE "/api/admin/user":
-		string body = body()
-		any data = json.tryTextToData(body)
+	DELETE "/api/admin/user" [admin]:
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string userId = json.get(data, "id")
-		if userId == ""
+		if data.id == null
 			return badRequest("User id is required")
-		string user = User.first:
+		integer userId = data.id.toInteger()
+		User user = User.first:
 			where:
-				id = userId
-		if user == "" or user == "null"
+				id == userId
+		onError:
 			return notFound()
-		User.delete:
-			where:
-				id = userId
+		Database.delete(user)
 		return jsonResponse("{\"ok\": true}")

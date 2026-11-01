@@ -1,14 +1,12 @@
 // Single comment endpoints
 
 endpoints:
-	[user, admin] DELETE "/api/comments/:id":
-		string id = param("id")
-		string comment = Comment.first:
+	DELETE "/api/comments/:id" [user, admin]:
+		integer commentId = param("id").toInteger()
+		Comment comment = Comment.first:
 			where:
-				id = id
-		if comment == "" or comment == "null"
+				id == commentId
+		onError:
 			return notFound()
-		Comment.delete:
-			where:
-				id = id
+		Database.delete(comment)
 		return jsonResponse("{\"ok\": true}")

@@ -1,35 +1,32 @@
 // Counter Screen - Interactive counter component
-// Demonstrates basic state and event handling with bridge functions
+// Demonstrates screen-scoped state and event handling with bridge functions.
+// Buttons dispatch to the screen's functions by name (UI-B006).
 
-state:
-	integer count = 0
-	string label = "Count"
+screen Counter:
+	state:
+		integer count = 0
+		string label = "Count"
 
-functions:
-	string render()
-		html:
-			<div class="counter-container">
-				<p class="counter-label" id="counter-display">{label}: {count.toString()}</p>
-				<div class="counter-buttons">
-					<button class="btn-decrement">-</button>
-					<button class="btn-increment">+</button>
-					<button class="btn-reset">Reset</button>
+	functions:
+		string render()
+			html:
+				<div class="counter-container">
+					<p class="counter-label" id="counter-display">{label}: {count.toString()}</p>
+					<div class="counter-buttons">
+						<button class="btn-decrement" onclick="decrement">-</button>
+						<button class="btn-increment" onclick="increment">+</button>
+						<button class="btn-reset" onclick="resetCount">Reset</button>
+					</div>
 				</div>
-			</div>
 
-	increment()
-		count = count + 1
-		integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
+		void increment()
+			count = count + 1
+			integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
 
-	decrement()
-		count = count - 1
-		integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
+		void decrement()
+			count = count - 1
+			integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
 
-	resetCount()
-		count = 0
-		integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
-
-start:
-	integer s = ui.onEvent(".btn-increment", "click", increment)
-	s = ui.onEvent(".btn-decrement", "click", decrement)
-	s = ui.onEvent(".btn-reset", "click", resetCount)
+		void resetCount()
+			count = 0
+			integer s = ui.updateElement("#counter-display", label + ": " + count.toString())

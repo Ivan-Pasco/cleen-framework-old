@@ -1,6 +1,11 @@
 // Test: frame.auth — roles: block and hasRole / can permission checks.
 // Server-shaped: runner drives /test to enter request context.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 

@@ -1,0 +1,10 @@
+// Server entry — endpoints are discovered from app/server/api/.
+
+plugins:
+	frame.server
+
+server:
+	port: 3000
+
+start:
+	printl("Endpoints test server ready on port 3000")

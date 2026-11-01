@@ -1,41 +1,50 @@
 // E2E: complete todo app boot + full CRUD lifecycle.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` / `.insert_id:` /
+// `.update:` / `.delete:` block mutations, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015) and writes through `Database.save(entity)` /
+// `Database.delete(entity)`; the new id is read from `entity.id` (DAT-S001,
+// DAT-S003, DAT-Q014). Tables are created with `Model.migrate()` (DAT-C005).
 data Todo:
-	integer id
-	string title
-	boolean done
+	fields:
+		integer id primary generated
+		string title required
+		boolean done required
 
 start:
 	printl("[boot] e2e-todo-app server ready")
 
 endpoints:
 	GET "/test":
-		integer id = Todo.insert_id:
-			title = "buy milk"
-			done = false
+		Todo.migrate()
+
+		Todo todo = Todo()
+		todo.title = "buy milk"
+		todo.done = false
+		Database.save(todo)
 
 		list<Todo> before = Todo.find:
 			where:
 				done == false
 		boolean ok_pending = before.length() == 1
 
-		Todo.update:
-			set:
-				done = true
-			where:
-				id == id
+		todo.done = true
+		Database.save(todo)
 
 		list<Todo> completed = Todo.find:
 			where:
 				done == true
 		boolean ok_completed = completed.length() == 1
 
-		Todo.delete:
-			where:
-				id == id
+		Database.delete(todo)
 		integer remaining = Todo.count
 		boolean ok_gone = remaining == 0
 

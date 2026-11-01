@@ -1,9 +1,11 @@
 // Post model
-data Post
-	string slug
-	string title
-	string excerpt
-	string content
-	string author
-	integer read_time
-	string created_at
+data Post:
+	fields:
+		integer id primary generated
+		string slug required unique
+		string title required
+		string excerpt
+		string content
+		string author
+		integer read_time
+		string created_at

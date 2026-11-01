@@ -1,7 +1,10 @@
 // User model
-data User
-	integer id
-	string name
-	string email
-	string role
-	boolean active
+// Fixed: was a bare-field `data User` block, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015).
+data User:
+	fields:
+		integer id primary generated
+		string name required
+		string email
+		string role
+		boolean active

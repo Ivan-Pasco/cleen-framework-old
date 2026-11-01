@@ -1,9 +1,12 @@
 // Admin user management endpoint
 
 endpoints:
-	[admin] DELETE "/api/admin/users/:id":
-		string id = param("id")
-		User.delete:
+	DELETE "/api/admin/users/:id" [admin]:
+		integer userId = param("id").toInteger()
+		User user = User.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"user deleted\", \"id\": \"" + id + "\"}")
+				id == userId
+		onError:
+			return notFound()
+		Database.delete(user)
+		return jsonResponse("{\"ok\": true, \"message\": \"user deleted\", \"id\": " + userId.toString() + "}")

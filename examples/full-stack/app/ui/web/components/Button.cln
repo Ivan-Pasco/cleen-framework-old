@@ -1,9 +1,11 @@
 // Button component
-component: name="Button", client="on"
+// Tag: <ui-button label="..." variant="primary">
+// Hydrate an instance with client="on" at the usage site (UI-B008).
 
-props:
-	string label
-	string variant
+component: tag="ui-button"
+	inputs:
+		label: string = ""
+		variant: string = "primary"
 
-button: class="btn btn-{variant}"
-	{label}
+	html:
+		<button class="btn btn-{variant}">{label}</button>

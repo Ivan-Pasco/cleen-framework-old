@@ -1,5 +1,5 @@
 // Admin dashboard - requires admin role
 
 endpoints:
-	[admin] GET "/api/admin/dashboard":
+	GET "/api/admin/dashboard" [admin]:
 		return jsonResponse("{\"message\": \"Admin dashboard\"}")

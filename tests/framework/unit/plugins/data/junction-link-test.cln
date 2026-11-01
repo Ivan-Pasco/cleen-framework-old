@@ -1,31 +1,48 @@
 // Test: frame.data — one-to-many junction via foreign key traversal.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` block mutations,
+// frame-data.ebnf v2 requires the `fields:` sub-block (DAT-M015) and writes
+// through `Database.save(entity)` (DAT-S001).
 data Author:
-	integer id
-	string name
+	fields:
+		integer id primary generated
+		string name required
 
 data Book:
-	integer id
-	string title
-	integer authorId
+	fields:
+		integer id primary generated
+		string title required
+		integer authorId required
 
 endpoints:
 	GET "/test":
-		Author.insert:
-			name = "Alice"
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Author.migrate()
+		Book.migrate()
+
+		Author newAuthor = Author()
+		newAuthor.name = "Alice"
+		Database.save(newAuthor)
 		Author alice = Author.first:
 			where:
 				name == "Alice"
 
-		Book.insert:
-			title = "Book One"
-			authorId = alice.id
-		Book.insert:
-			title = "Book Two"
-			authorId = alice.id
+		Book bookOne = Book()
+		bookOne.title = "Book One"
+		bookOne.authorId = alice.id
+		Database.save(bookOne)
+		Book bookTwo = Book()
+		bookTwo.title = "Book Two"
+		bookTwo.authorId = alice.id
+		Database.save(bookTwo)
 
 		list<Book> alicesBooks = Book.find:
 			where:

@@ -52,7 +52,7 @@ get_keywords = "get_keywords"
 [bridge]
 functions = [
   { name = "_i18n_t", params = ["string", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
-  { name = "_i18n_t_count", params = ["string", "integer", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
+  { name = "_i18n_t_count", params = ["string", "i64", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
   { name = "_i18n_locale", params = [], returns = "string", hosts = ["all"] },
   { name = "_i18n_set_locale", params = ["string"], returns = "void", expand_strings = true, hosts = ["all"] },
   { name = "_i18n_format_number", params = ["number", "string", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
@@ -124,4 +124,4 @@ anti_pattern = "hardcoding number formatting (e.g. '$' + price.toString()) — d
 example = "patterns/locale-aware-formatting.cln"
 
 [build]
-built_with_compiler = "0.33.165"
+built_with_compiler = "0.33.166"

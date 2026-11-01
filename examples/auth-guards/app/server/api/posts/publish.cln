@@ -1,5 +1,5 @@
 // Post publish - requires editor or admin role
 
 endpoints:
-	[editor, admin] POST "/api/posts/publish":
+	POST "/api/posts/publish" [editor, admin]:
 		return jsonResponse("{\"message\": \"Post published\"}")

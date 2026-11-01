@@ -1,28 +1,35 @@
 // Single post API
+// Fixed: was `Post.update:` / `Post.delete:` block mutations, frame-data.ebnf
+// v2 requires load-mutate-save and `Database.delete(entity)` (DAT-S001,
+// DAT-S003). `first` returns the record or null (DAT-Q001).
 
 endpoints:
 	GET "/api/posts/:id":
-		string id = param("id")
-		string post = Post.first:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		if post == "" or post == "null"
+				id == postId
+		if post == null
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"post\": " + post + "}")
+		return jsonResponse("\{\"ok\": true, \"post\": " + json.dataToText(post) + "\}")
 
 	PUT "/api/posts/:id":
-		string id = param("id")
-		string body = body()
-		Post.update:
-			set:
-				title = body
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"post updated\", \"id\": \"" + id + "\"}")
+				id == postId
+		if post == null
+			return notFound()
+		post.title = body()
+		Database.save(post)
+		return jsonResponse("\{\"ok\": true, \"message\": \"post updated\", \"id\": " + postId.toString() + "\}")
 
 	DELETE "/api/posts/:id":
-		string id = param("id")
-		Post.delete:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"post deleted\", \"id\": \"" + id + "\"}")
+				id == postId
+		if post == null
+			return notFound()
+		Database.delete(post)
+		return jsonResponse("\{\"ok\": true, \"message\": \"post deleted\", \"id\": " + postId.toString() + "\}")

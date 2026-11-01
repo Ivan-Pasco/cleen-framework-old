@@ -29,16 +29,17 @@ endpoints:
 		string username = usernameField.toString()
 		string password = passwordField.toString()
 
-		integer insertId = User.insert:
-			email = email
-			username = username
-			password_hash = password
-			is_active = true
-
-		if insertId < 1
+		// Fixed: was a `User.insert:` block; frame-data v2 writes through
+		// `Database.save(entity)` and fills the generated id (DAT-S001, DAT-E002).
+		User user = User()
+		user.email = email
+		user.username = username
+		user.password_hash = password
+		user.is_active = true
+		if not Database.save(user)
 			return badRequest("Insert failed")
 
-		return json({ "ok": true, "id": insertId, "email": email, "username": username })
+		return json({ "ok": true, "id": user.id, "email": email, "username": username })
 
 	GET "/api/users/:id":
 		string userId = param("id")
@@ -56,9 +57,14 @@ endpoints:
 
 	DELETE "/api/users/:id":
 		string userId = param("id")
-		User.delete:
+		// Fixed: was a `User.delete:` block; frame-data v2 deletes a loaded
+		// entity with `Database.delete(entity)` (DAT-S001).
+		User user = User.first:
 			where:
 				id == userId.toInteger()
+		if user == null
+			return notFound()
+		Database.delete(user)
 		return json({ "ok": true, "message": "User deleted" })
 
 	POST "/api/users/login":

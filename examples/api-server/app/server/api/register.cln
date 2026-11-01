@@ -2,10 +2,15 @@
 
 endpoints:
 	POST "/api/register":
-		string body = body()
-		string hash = auth.password.hash(body)
-		User.insert:
-			password_hash = hash
-			role = "user"
-			active = true
+		any data = json.tryTextToData(body())
+		if data == null
+			return badRequest("Invalid JSON")
+
+		User user = User()
+		user.email = data.email.toString()
+		user.name = data.name.toString()
+		user.password_hash = auth.hashPassword(data.password.toString())
+		user.role = "user"
+		user.active = true
+		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"registered\"}")

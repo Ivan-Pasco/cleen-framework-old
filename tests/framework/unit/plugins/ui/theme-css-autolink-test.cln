@@ -1,0 +1,48 @@
+// Test: frame.ui — /theme.css auto-link (frame-ui-semantics UI-S009).
+//
+// A project with a `styles` block gets <link rel="stylesheet"
+// href="/theme.css"> in every page's <head>: html: blocks, page blocks and
+// pages rendered from .html templates. The link is added once, before
+// </head>, and not again when the page already links /theme.css.
+
+plugins:
+	frame.ui
+
+styles Theme:
+	variables:
+		color-bg: "#0a0a0f"
+
+page ThemedPage:
+	<html>
+		<head><title>Themed</title></head>
+		<body><p>page</p></body>
+	</html>
+
+start:
+	string link = "<link rel=\"stylesheet\" href=\"/theme.css\">"
+	string doc = renderDoc()
+	boolean ok_block = doc.contains(link + "</head>")
+	ThemedPage page = ThemedPage()
+	string paged = page.render()
+	boolean ok_page = paged.contains(link + "</head>")
+	string linked = renderLinked()
+	boolean ok_once = linked.indexOf("/theme.css") == linked.lastIndexOf("/theme.css")
+	if ok_block and ok_page and ok_once
+		printl("PASS: ui-theme-css-autolink")
+	else
+		printl("FAIL: ui-theme-css-autolink " + doc + " | " + paged + " | " + linked)
+
+functions:
+	string renderDoc()
+		html:
+			<html>
+				<head><title>Doc</title></head>
+				<body><p>doc</p></body>
+			</html>
+
+	string renderLinked()
+		html:
+			<html>
+				<head><link rel="stylesheet" href="/theme.css"></head>
+				<body><p>linked</p></body>
+			</html>

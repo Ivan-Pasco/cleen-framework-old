@@ -3,31 +3,60 @@
 // `return first:` inside a queries: method body must resolve its receiver to
 // the enclosing model, not fail with SYN001 on the plugin-emitted fragment.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3401
 
+// Fixed: was `name: type pk auto` field lines, frame-data.ebnf v2 requires
+// `type_ref identifier {constraint}` with `primary` / `generated` (§2.2).
+// Fixed: was the inline `where slug == s and ...` query line, frame-data.ebnf
+// §5.1 requires `where:` with one condition per line (AND-ed, DAT-Q009).
 data Page:
 	fields:
-		id: integer pk auto
-		slug: string unique
-		is_active: boolean
+		integer id primary generated
+		string slug unique
+		boolean is_active
 
 	queries:
 		Page bySlug(string s)
 			return first:
-				where slug == s and is_active == true
+				where:
+					slug == s
+					is_active == true
+
+start:
+	printl("[boot] data-queries-subblock-first-shorthand server ready")
+
+// Fixed: was `Page.data.bySlug(...)` on the data class itself, frame-data.ebnf
+// v2.1.1 dispatches `.data.<method>` through an entity whose link field is
+// named exactly `data` and typed with the data class (DAT-A006, DAT-A007).
+class PageEntity
+	public:
+		Page data
 
 endpoints:
 	GET "/test":
-		Page.insert:
-			slug = "hello"
-			is_active = true
-		Page.insert:
-			slug = "gone"
-			is_active = false
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Page.migrate()
 
-		Page found = Page.data.bySlug("hello")
-		Page missing = Page.data.bySlug("gone")
+		// Fixed: was `Page.insert:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` (DAT-S001).
+		Page hello = Page()
+		hello.slug = "hello"
+		hello.is_active = true
+		Database.save(hello)
+		Page gone = Page()
+		gone.slug = "gone"
+		gone.is_active = false
+		Database.save(gone)
+
+		PageEntity pages = PageEntity()
+		Page found = pages.data.bySlug("hello")
+		Page missing = pages.data.bySlug("gone")
 
 		boolean ok = found != null and missing == null
 		if ok
@@ -35,6 +64,3 @@ endpoints:
 		else
 			printl("FAIL: data-queries-subblock-first-shorthand")
 		return json({ok: ok})
-
-start:
-	printl("[boot] data-queries-subblock-first-shorthand server ready")

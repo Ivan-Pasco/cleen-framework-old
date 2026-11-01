@@ -12,7 +12,7 @@ A RESTful API server demonstrating the Frame plugin system with authentication, 
 
 ## Plugins Used
 
-- `frame.web` - HTTP server and routing
+- `frame.server` - HTTP server and routing
 - `frame.data` - ORM and database operations
 - `frame.auth` - JWT authentication and authorization
 
@@ -20,10 +20,10 @@ A RESTful API server demonstrating the Frame plugin system with authentication, 
 
 ```bash
 # Install plugins
-cleen plugin install frame.web frame.data frame.auth
+cleen plugin install frame.server frame.data frame.auth
 
 # Compile
-cln compile main.cln -o api-server.wasm --plugins
+cln compile main.cln -o api-server.wasm
 
 # Run (requires host bridge runtime)
 ./host-bridge run api-server.wasm

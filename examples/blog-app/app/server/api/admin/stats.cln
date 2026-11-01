@@ -1,11 +1,12 @@
 // Admin: site statistics endpoint
 
 endpoints:
-	[admin] GET "/api/admin/stats":
-		string users = User.find:
+	GET "/api/admin/stats" [admin]:
+		list<User> users = User.find:
+			select: id, email, name, role, created_at
 			order: created_at desc
-		string posts = Post.find:
+		list<Post> posts = Post.find:
 			order: created_at desc
-		string comments = Comment.find:
+		list<Comment> comments = Comment.find:
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"users\": " + users + ", \"posts\": " + posts + ", \"comments\": " + comments + "}")
+		return json({ok: true, users: users, posts: posts, comments: comments})

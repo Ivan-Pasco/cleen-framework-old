@@ -13,7 +13,7 @@
 //     process_text_node / process_element (~430 v3 LOC — Am 6 required),
 //     render_element / render_element_hidden / render_validation_error_span /
 //     render_element_with_preview / render_element_with_stream /
-//     render_screen_island / extract_screen_props (~820 v3 LOC),
+//     render_screen_island (~820 v3 LOC),
 //     render_component (~210 v3 LOC — Am 6 for props/slot), expand_html_block /
 //     html_block_to_code / process_block_* / html_block_to_statements /
 //     extract_block_attributes / interpolate_block_attr (~1050 v3 LOC — Am 6),
@@ -121,6 +121,7 @@ external:
 	// state: block fields (Sub-cycle 1 minimal set; Sub-cycles 2/3 may add more) ----
 	integer _type_class_ref(integer ctx, string name)
 	integer _type_string(integer ctx)
+	integer _type_boolean(integer ctx)
 	integer _expr_call(integer ctx, string callee, string args_json)
 	// ---- Diagnostics (§5) ----
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
@@ -200,17 +201,116 @@ functions:
 		integer render_p_str = _type_string(ctx)
 		integer render_r_str = _type_string(ctx)
 		string render_params = "[{\"name\":\"name\",\"type_handle\":" + render_p_str.toString() + "}]"
-		string render_body = "return _ui_render_page(\"app/ui/web/pages/\" + name + \".html\", \"{}\")\n"
+		string render_body = "return _ui_head_links(_ui_render_page(\"app/ui/web/pages/\" + name + \".html\", \"{}\"))\n"
 		ui_helper_function(ctx, "render", render_params, render_r_str, render_body, 1)
 		// renderWith(name: string, data: string) -> string
 		integer rw_p_name = _type_string(ctx)
 		integer rw_p_data = _type_string(ctx)
 		integer rw_r_str = _type_string(ctx)
 		string rw_params = "[{\"name\":\"name\",\"type_handle\":" + rw_p_name.toString() + "},{\"name\":\"data\",\"type_handle\":" + rw_p_data.toString() + "}]"
-		string rw_body = "return _ui_render_page(\"app/ui/web/pages/\" + name + \".html\", data)\n"
+		string rw_body = "return _ui_head_links(_ui_render_page(\"app/ui/web/pages/\" + name + \".html\", data))\n"
 		ui_helper_function(ctx, "renderWith", rw_params, rw_r_str, rw_body, 1)
+		// _ui_add_root_class(markup: string, cls: string) -> string
+		// Adds `cls` to the class list of the first element in `markup` — the
+		// outer element of a rendered component (UI-C009, `class=` on a
+		// component tag). Merges into an existing class="..." / class='...'.
+		integer arc_p_markup = _type_string(ctx)
+		integer arc_p_cls = _type_string(ctx)
+		integer arc_r_str = _type_string(ctx)
+		string arc_params = "[{\"name\":\"markup\",\"type_handle\":" + arc_p_markup.toString() + "},{\"name\":\"cls\",\"type_handle\":" + arc_p_cls.toString() + "}]"
+		ui_helper_function(ctx, "_ui_add_root_class", arc_params, arc_r_str, add_root_class_body(), 1)
+		// _ui_attr_has(attrs, name) / _ui_attr_get(attrs, name): read one
+		// attribute from the JSON object of tag attributes the host passes to
+		// a component render export (string values only).
+		integer ah_p_attrs = _type_string(ctx)
+		integer ah_p_name = _type_string(ctx)
+		integer ah_r = _type_boolean(ctx)
+		string ah_params = "[{\"name\":\"attrs\",\"type_handle\":" + ah_p_attrs.toString() + "},{\"name\":\"name\",\"type_handle\":" + ah_p_name.toString() + "}]"
+		ui_helper_function(ctx, "_ui_attr_has", ah_params, ah_r, "return attrs.indexOf(\"\\\"\" + name + \"\\\":\\\"\") != -1\n", 1)
+		integer ag_p_attrs = _type_string(ctx)
+		integer ag_p_name = _type_string(ctx)
+		integer ag_r = _type_string(ctx)
+		string ag_params = "[{\"name\":\"attrs\",\"type_handle\":" + ag_p_attrs.toString() + "},{\"name\":\"name\",\"type_handle\":" + ag_p_name.toString() + "}]"
+		ui_helper_function(ctx, "_ui_attr_get", ag_params, ag_r, attr_get_body(), 1)
+		// _ui_head_links(page: string) -> string
+		// UI-S009 theme auto-link: when the project declares a `styles` block,
+		// adds <link rel="stylesheet" href="/theme.css"> before the page's
+		// </head>. Without a styles block the page is returned unchanged.
+		integer hl_p_page = _type_string(ctx)
+		integer hl_r_str = _type_string(ctx)
+		string hl_params = "[{\"name\":\"page\",\"type_handle\":" + hl_p_page.toString() + "}]"
+		ui_helper_function(ctx, "_ui_head_links", hl_params, hl_r_str, head_links_body(_build_state_get("frame.ui.has_styles") == "1"), 1)
 		_ctx_clear_error(ctx)
 		return 0
+
+	// Body source of the _ui_head_links helper (see emit_ui_helpers_typed).
+	// The theme link is added once, before the first </head>, and only when
+	// the page does not already link /theme.css itself.
+	string head_links_body(boolean has_styles)
+		if has_styles == false
+			return "return page\n"
+		string b = "integer head_end = page.indexOf(\"</head>\")\n"
+		b = b + "if head_end == -1\n"
+		b = b + "\treturn page\n"
+		b = b + "if page.indexOf(\"href=\\\"/theme.css\\\"\") != -1 or page.indexOf(\"href='/theme.css'\") != -1\n"
+		b = b + "\treturn page\n"
+		b = b + "return page.substring(0, head_end) + \"<link rel=\\\"stylesheet\\\" href=\\\"/theme.css\\\">\" + page.substring(head_end, page.length())\n"
+		return b
+
+	// Body source of the _ui_attr_get helper (see emit_ui_helpers_typed):
+	// the decoded string value of key `name` in the JSON object `attrs`, or
+	// "" when absent.
+	string attr_get_body()
+		string b = "string key = \"\\\"\" + name + \"\\\":\\\"\"\n"
+		b = b + "integer at = attrs.indexOf(key)\n"
+		b = b + "if at == -1\n"
+		b = b + "\treturn \"\"\n"
+		b = b + "integer i = at + key.length()\n"
+		b = b + "string out = \"\"\n"
+		b = b + "while i < attrs.length()\n"
+		b = b + "\tstring c = attrs.substring(i, i + 1)\n"
+		b = b + "\tif c == \"\\\"\"\n"
+		b = b + "\t\treturn out\n"
+		b = b + "\tif c == \"\\\\\" and i + 1 < attrs.length()\n"
+		b = b + "\t\tstring e = attrs.substring(i + 1, i + 2)\n"
+		b = b + "\t\tif e == \"n\"\n"
+		b = b + "\t\t\tout = out + \"\\n\"\n"
+		b = b + "\t\telse if e == \"t\"\n"
+		b = b + "\t\t\tout = out + \"\\t\"\n"
+		b = b + "\t\telse\n"
+		b = b + "\t\t\tout = out + e\n"
+		b = b + "\t\ti = i + 2\n"
+		b = b + "\telse\n"
+		b = b + "\t\tout = out + c\n"
+		b = b + "\t\ti = i + 1\n"
+		b = b + "return out\n"
+		return b
+
+	// Body source of the _ui_add_root_class helper (see emit_ui_helpers_typed).
+	string add_root_class_body()
+		string b = "if cls == \"\"\n"
+		b = b + "\treturn markup\n"
+		b = b + "integer open_pos = markup.indexOf(\"<\")\n"
+		b = b + "if open_pos == -1\n"
+		b = b + "\treturn markup\n"
+		b = b + "integer close_pos = markup.indexOf(\">\", open_pos)\n"
+		b = b + "if close_pos == -1\n"
+		b = b + "\treturn markup\n"
+		b = b + "string open_tag = markup.substring(open_pos, close_pos)\n"
+		b = b + "integer dq = open_tag.indexOf(\" class=\\\"\")\n"
+		b = b + "integer sq = open_tag.indexOf(\" class='\")\n"
+		b = b + "integer at = -1\n"
+		b = b + "if dq != -1\n"
+		b = b + "\tat = open_pos + dq + 8\n"
+		b = b + "else if sq != -1\n"
+		b = b + "\tat = open_pos + sq + 8\n"
+		b = b + "if at != -1\n"
+		b = b + "\treturn markup.substring(0, at) + cls + \" \" + markup.substring(at, markup.length())\n"
+		b = b + "integer insert_at = close_pos\n"
+		b = b + "if close_pos > 0 and markup.substring(close_pos - 1, close_pos) == \"/\"\n"
+		b = b + "\tinsert_at = close_pos - 1\n"
+		b = b + "return markup.substring(0, insert_at) + \" class=\\\"\" + cls + \"\\\"\" + markup.substring(insert_at, markup.length())\n"
+		return b
 
 	// artifact_emitters lifecycle slot. Ensures a default theme.css exists via
 	// build_state. Emits no Clean statements — the side effect is the build_state write.
@@ -283,7 +383,126 @@ functions:
 		if block_name == "ui"
 			return expand_ui_stub(ctx, attrs_json, body)
 
+		// styles Name: block — frame-ui.ebnf §4 styles_block. Produces no
+		// Clean code; its CSS is added to the frame.ui stylesheet artifact.
+		if block_name == "styles"
+			return expand_styles_typed(ctx, attrs_json, body)
+
 		return 0
+
+// ============================================================================
+// STYLES BLOCK — frame-ui.ebnf §4 (styles_block)
+// ============================================================================
+// `styles <Name>:` scopes design-token variables and global CSS rules to a
+// named stylesheet:
+//   variables:  css_variable_declaration = css_token_name ":" string_literal
+//               → `--<token>: <value>;` declared on :root
+//   global:     css_rule_line = string_literal | identifier | expression
+//               → raw CSS rules, emitted verbatim (string literals unquoted)
+// The resulting CSS is appended to build_state["frame.ui.theme.css"], the
+// source of frame.ui's `theme.css` static-asset artifact (plugin.toml
+// [[artifacts]]), which the server publishes at /theme.css.
+
+functions:
+	integer expand_styles_typed(integer ctx, string attrs_json, string body)
+		_ctx_set_error_context(ctx, "PLUGIN_UI_STYLES", "expand_styles")
+		string sheet_name = extract_json_field(attrs_json, "model_name")
+		if sheet_name == ""
+			return plugin_error(ctx, "FRAME-UI-E020", "styles block requires a stylesheet name, e.g. `styles Theme:`")
+		string css = styles_block_to_css(sheet_name, body)
+		if css.startsWith("!")
+			return plugin_error(ctx, "FRAME-UI-E021", css.substring(1, css.length()))
+		string existing = _build_state_get("frame.ui.theme.css")
+		_build_state_set("frame.ui.theme.css", existing + css)
+		// UI-S009: a styles block turns on the /theme.css auto-link.
+		_build_state_set("frame.ui.has_styles", "1")
+		_ctx_clear_error(ctx)
+		return 0
+
+	// Translate a styles block body into CSS. Returns the CSS text, or a
+	// message prefixed with "!" when the body does not match styles_section.
+	string styles_block_to_css(string sheet_name, string body)
+		string vars_css = ""
+		string global_css = ""
+		string section = ""
+		integer section_indent = -1
+		integer global_base = -1
+		integer pos = 0
+		integer body_len = body.length()
+		while pos < body_len
+			integer nl = body.indexOf("\n", pos)
+			if nl == -1
+				nl = body_len
+			string raw = body.substring(pos, nl)
+			string line = raw.trim()
+			pos = nl + 1
+			if line.length() > 0 and line.startsWith("//") == false
+				integer indent = count_leading_ws(raw)
+				if section_indent == -1 or indent <= section_indent
+					if line == "variables:"
+						section = "variables"
+					else if line == "global:"
+						section = "global"
+					else
+						return "!styles " + sheet_name + ": unknown section `" + line + "` (expected `variables:` or `global:`)"
+					section_indent = indent
+				else if section == "variables"
+					integer colon = line.indexOf(":")
+					if colon <= 0
+						return "!styles " + sheet_name + ": expected `token-name: \"value\"` in variables:, got `" + line + "`"
+					string token = line.substring(0, colon).trim()
+					string value = line.substring(colon + 1, line.length()).trim()
+					if is_css_token_name(token) == false
+						return "!styles " + sheet_name + ": `" + token + "` is not a valid CSS token name (lowercase letters, digits and '-')"
+					if is_quoted_literal(value) == false
+						return "!styles " + sheet_name + ": value of `" + token + "` must be a string literal"
+					string decoded = decode_json_string(value.substring(1, value.length() - 1))
+					vars_css = vars_css + "\t--" + token + ": " + decoded + ";\n"
+				else
+					if global_base == -1
+						global_base = indent
+					integer cut = global_base
+					if indent < cut
+						cut = indent
+					string rule = raw.substring(cut, raw.length()).trimEnd()
+					if is_quoted_literal(line)
+						rule = decode_json_string(line.substring(1, line.length() - 1))
+					global_css = global_css + rule + "\n"
+		string css = "/* styles " + sheet_name + " */\n"
+		if vars_css != ""
+			css = css + ":root {\n" + vars_css + "}\n"
+		return css + global_css
+
+	// Number of leading tab/space characters.
+	integer count_leading_ws(string s)
+		integer i = 0
+		boolean scanning = true
+		while scanning and i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch == "\t" or ch == " "
+				i = i + 1
+			else
+				scanning = false
+		return i
+
+	// css_token_name = ( LOWER_ALPHA | "-" ) , { ALPHANUMERIC | "-" }
+	boolean is_css_token_name(string name)
+		if name.length() == 0
+			return false
+		string lower = "abcdefghijklmnopqrstuvwxyz"
+		string allowed = lower + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+		string first = name.substring(0, 1)
+		if first != "-" and lower.indexOf(first) == -1
+			return false
+		integer i = 1
+		while i < name.length()
+			if allowed.indexOf(name.substring(i, i + 1)) == -1
+				return false
+			i = i + 1
+		return true
+
+	boolean is_quoted_literal(string s)
+		return s.length() >= 2 and s.startsWith("\"") and s.endsWith("\"")
 
 // ============================================================================
 // TOP-LEVEL PROCESSORS (SKELETON — Sub-cycles 2/3)
@@ -339,6 +558,15 @@ functions:
 		_ctx_set_error_context(ctx, "PLUGIN_UI_ASSEMBLE", "assemble")
 		boolean has_server = ctx_json.indexOf("\"has_frame_server\":true") != -1
 		list<string> source_files = parse_source_files(ctx_json)
+
+		// UI-S009: assemble sees every project file before any block is
+		// expanded, so it records whether a `styles` block exists for the
+		// _ui_head_links helper (module_helpers) to read.
+		integer __ssi = 0
+		while __ssi < source_files.length()
+			if source_declares_styles(source_files[__ssi])
+				_build_state_set("frame.ui.has_styles", "1")
+			__ssi = __ssi + 1
 
 		// -------- Phase 1: build routes-guard table --------
 		string __routes_guard_table = ""
@@ -459,9 +687,9 @@ functions:
 								// a2b84ca5 — companion handler returned unparseable data).
 								body_source = body_source + "\tany __rd = " + module_name + "_load(null)\n"
 								body_source = body_source + "\tstring __d = json.encode(__rd)\n"
-								body_source = body_source + "\treturn _ui_render_page(\"" + html_path + "\", __d)\n"
+								body_source = body_source + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", __d))\n"
 							else
-								body_source = body_source + "\treturn _ui_render_page(\"" + html_path + "\", \"{}\")\n"
+								body_source = body_source + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", \"{}\"))\n"
 							// Compose this page's render() function definition inline
 							// (avoid the parallel-list pattern — see fingerprint
 							// d9f480ae). Each body_source line is at one leading tab
@@ -702,7 +930,7 @@ functions:
 
 	// IDE keyword support.
 	string get_keywords()
-		return "[\"component\", \"inputs\", \"state\", \"render\", \"tag\", \"client\", \"if\", \"else\", \"each\", \"bind\", \"slot\", \"html\", \"ui\", \"theme\", \"colors\", \"spacing\"]"
+		return "[\"component\", \"inputs\", \"state\", \"render\", \"tag\", \"client\", \"if\", \"else\", \"each\", \"bind\", \"slot\", \"html\", \"ui\", \"theme\", \"colors\", \"spacing\", \"styles\", \"variables\", \"global\"]"
 
 // ============================================================================
 // STRING HELPER (VERBATIM PORT FROM v1 — workaround for buggy trim())
@@ -1418,7 +1646,7 @@ functions:
 				_build_state_set("frame.ui:components", entry)
 			else
 				_build_state_set("frame.ui:components", components_state + ";" + entry)
-			string render_export = tag.replace("-", "_") + "_render"
+			string render_export = component_render_export(tag)
 			string component_obj = "{\"tag\":\"" + tag + "\",\"class\":\"" + name + "\",\"hydration\":\"" + client + "\",\"render_export\":\"" + render_export + "\"}"
 			string manifest_state = _build_state_get("frame.ui.components.json")
 			if manifest_state == ""
@@ -1440,7 +1668,8 @@ functions:
 		string section_text = remove_state_dot(before_html + "\n" + after_html)
 		// state: and inputs: entries both become class fields, so the render
 		// body and handlers can reference them by bare name.
-		string state_fields = component_section_lines(before_html, "state") + component_section_lines(before_html, "inputs")
+		string input_lines = component_section_lines(before_html, "inputs")
+		string state_fields = component_section_lines(before_html, "state") + input_lines
 		before_html = strip_state_block(before_html)
 		before_html = remove_state_dot(before_html)
 
@@ -1516,7 +1745,7 @@ functions:
 				else
 					render_chain = fb_open + " + " + render_chain + " + " + fb_close
 			if render_chain != ""
-				if render_operand_count <= 40
+				if render_operand_count <= 40 and html_has_component_tag(cleaned_html) == false
 					render_body_source = render_body_source + "__html = __html + " + render_chain + "\n"
 				else
 					string body_stmts = html_block_to_statements(cleaned_html)
@@ -1540,12 +1769,16 @@ functions:
 		integer render_bh = _emit_stmt_from_source(ctx, render_body_source, 0)
 		integer setslot_bh = _emit_stmt_from_source(ctx, setslot_body_source, 0)
 		integer renderssr_bh = _emit_stmt_from_source(ctx, renderssr_body_source, 0)
+		// setInput(attr, value): a tag attribute written as text, converted
+		// to the declared input type (UI-C010).
+		integer setinput_bh = _emit_stmt_from_source(ctx, set_input_body(input_lines), 0)
 
 		// -------- Assemble the methods array --------
 		string methods_json = "["
 		methods_json = methods_json + spec_method_inline_bh("render", "[]", "string", render_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"content\",\"type\":\"string\"}]", "void", setslot_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("renderSSR", "[]", "string", renderssr_bh)
+		methods_json = methods_json + "," + spec_method_inline_bh("setInput", "[{\"name\":\"attr\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setinput_bh)
 		// User-declared events: handlers and functions: methods.
 		string event_methods = component_section_methods(ctx, section_text, "events")
 		if event_methods != ""
@@ -1573,7 +1806,115 @@ functions:
 
 		// -------- Emit the class via _emit_class_full --------
 		ui_component_class(ctx, class_spec)
+
+		// -------- Request-time render export (component_tag_render) --------
+		// clean-server renders a custom tag in a request-time `.html` page by
+		// calling `<tag without hyphens>_render(attrs_json)` with the tag's
+		// attributes (bridge-host-classes.md §4.1).
+		if tag != ""
+			integer rx_p_attrs = _type_string(ctx)
+			integer rx_r_str = _type_string(ctx)
+			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
+			ui_helper_function(ctx, component_render_export(tag), rx_params, rx_r_str, render_export_body(name, input_lines), 3)
 		return 0
+
+	// Export name the host looks up for a custom tag: the tag with its
+	// hyphens removed, plus `_render` (`my-card` → `mycard_render`).
+	string component_render_export(string tag)
+		return tag.replace("-", "") + "_render"
+
+	// (name, type) of each `inputs:` line, as "name type" lines. Accepts both
+	// `type name [= default]` and `name: type [= default]`.
+	string input_name_types(string input_lines)
+		string result = ""
+		string remaining = input_lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string t = line.trim()
+			integer eq = t.indexOf("=")
+			if eq != -1
+				t = t.substring(0, eq).trim()
+			integer colon = t.indexOf(":")
+			integer sp = t.indexOf(" ")
+			if colon > 0
+				result = result + t.substring(0, colon).trim() + " " + t.substring(colon + 1, t.length()).trim() + "\n"
+			else if sp > 0
+				result = result + t.substring(sp + 1, t.length()).trim() + " " + t.substring(0, sp) + "\n"
+		return result
+
+	// Body of setInput(attr, value): assigns the input named by the attribute
+	// (camelCase name or its kebab-case form), converting the text to the
+	// declared type. Attributes that are not scalar inputs are ignored.
+	string set_input_body(string input_lines)
+		string body = ""
+		string remaining = input_name_types(input_lines)
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			integer sp = entry.indexOf(" ")
+			string input_name = entry.substring(0, sp)
+			string input_type = entry.substring(sp + 1, entry.length())
+			string converted = ""
+			if input_type == "string"
+				converted = "value"
+			else if input_type == "integer"
+				converted = "value.toInteger()"
+			else if input_type == "number"
+				converted = "value.toNumber()"
+			else if input_type == "boolean"
+				converted = "value.toBoolean()"
+			if converted != ""
+				string cond = "attr == \"" + input_name + "\""
+				string kebab = camel_to_kebab(input_name)
+				if kebab != input_name
+					cond = cond + " or attr == \"" + kebab + "\""
+				string keyword = "if "
+				if body != ""
+					keyword = "else if "
+				body = body + keyword + cond + "\n\t" + input_name + " = " + converted + "\n"
+		if body == ""
+			return "return\n"
+		return body
+
+	// Body of the request-time render export: builds the component, applies
+	// each attribute present in `attrs` (a JSON object of attribute name →
+	// text) through setInput, and adds a `class` attribute to the outer
+	// element (UI-C009).
+	string render_export_body(string class_name, string input_lines)
+		string body = class_name + " __comp = " + class_name + "()\n"
+		string remaining = input_name_types(input_lines)
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			string input_name = entry.substring(0, entry.indexOf(" "))
+			string kebab = camel_to_kebab(input_name)
+			body = body + "if _ui_attr_has(attrs, \"" + input_name + "\")\n\t__comp.setInput(\"" + input_name + "\", _ui_attr_get(attrs, \"" + input_name + "\"))\n"
+			if kebab != input_name
+				body = body + "if _ui_attr_has(attrs, \"" + kebab + "\")\n\t__comp.setInput(\"" + kebab + "\", _ui_attr_get(attrs, \"" + kebab + "\"))\n"
+		body = body + "return _ui_add_root_class(__comp.render(), _ui_attr_get(attrs, \"class\"))\n"
+		return body
+
+	// `userName` → `user-name`.
+	string camel_to_kebab(string input)
+		string result = ""
+		integer i = 0
+		while i < input.length()
+			string ch = input.substring(i, i + 1)
+			string lower = ch.toLowerCase()
+			if ch != lower and i > 0
+				result = result + "-" + lower
+			else
+				result = result + lower
+			i = i + 1
+		return result
 
 	// component: dispatcher arm. Sub-cycle 1 (2026-07-05) — routes through
 	// expand_component_typed, which builds a §3.13 class spec JSON and emits
@@ -1692,7 +2033,11 @@ functions:
 		string auth = get_attr(attrs_json, "auth", "")
 		string roles = get_attr(attrs_json, "roles", "")
 		string render_code = html_to_render(body, "{}", false)
-		string page_name = path_to_class_name(path)
+		// frame-ui.ebnf page_block: `page <ClassName>:` names the page class;
+		// the path-derived name is the fallback for header-less forms.
+		string page_name = extract_json_field(attrs_json, "model_name")
+		if page_name == ""
+			page_name = path_to_class_name(path)
 		expand_page_typed(ctx, page_name, path, layout, auth, roles, render_code, "")
 		_ctx_clear_error(ctx)
 		return 0
@@ -2075,6 +2420,13 @@ functions:
 				if text.trim().length() > 0
 					result = result + process_text_node(text, has_data)
 				remaining = remaining.substring(tag_start, remaining.length())
+			else if remaining.startsWith("<!--")
+				// HTML comment: source annotation, not rendered output.
+				integer comment_end = remaining.indexOf("-->")
+				if comment_end == -1
+					remaining = ""
+				else
+					remaining = remaining.substring(comment_end + 3, remaining.length())
 			else
 				integer tag_end = find_tag_end(remaining)
 				if tag_end == -1
@@ -2246,6 +2598,8 @@ functions:
 				result = result + "html = html + \"<input type='hidden' name='_csrf' value='\" + csrf_generate() + \"'>\"\n"
 		if is_void_element(tag_name) == false
 			result = result + "html = html + \"</" + tag_name + ">\"\n"
+		if tag_name == "head"
+			result = result + "html = _ui_head_links(html)\n"
 		return result
 
 	string render_element_hidden(string tag_name, string tag_content, string inner_html, string registry_json, boolean has_data)
@@ -2324,62 +2678,20 @@ functions:
 			result = result + "html = html + \"</" + tag_name + ">\"\n"
 		return result
 
+	// `<screen name="X" client="...">` places the core `screen X:` block on
+	// the page: it calls the screen's own scoped render function `X.render()`.
+	// A screen holds one copy of its screen-scoped state (spec §23 "State in
+	// Screens"), so the tag carries no state of its own — `name` and `client`
+	// are its only attributes.
 	string render_screen_island(string tag_content, string inner_html, string registry_json)
 		string screen_name = extract_attr_value("<" + tag_content + ">", "name")
-		if screen_name == ""
-			screen_name = "Unknown"
 		string client = extract_attr_value("<" + tag_content + ">", "client")
 		if client == ""
 			client = "off"
-		string class_name = "__Screen_" + screen_name
 		string result = ""
-		// Clean has no bare `{ }` blocks; an `if true` body gives the
-		// instance its own scope so sibling islands can reuse the name.
-		result = result + "if true\n"
-		result = result + "\t" + class_name + " _screen = " + class_name + "()\n"
-		string props_code = extract_screen_props(tag_content, screen_name)
-		if props_code != ""
-			result = result + props_code
-		result = result + "\thtml = html + \"<div id='screen-" + screen_name + "'>\"\n"
-		result = result + "\thtml = html + _screen.render()\n"
-		result = result + "\thtml = html + \"</div>\"\n"
-		return result
-
-	string extract_screen_props(string tag_content, string screen_name)
-		string result = ""
-		string excluded = ",name,client,props,"
-		string remaining = tag_content
-		integer space_pos = remaining.indexOf(" ")
-		if space_pos == -1
-			return ""
-		remaining = remaining.substring(space_pos + 1, remaining.length())
-		if remaining.endsWith("/")
-			remaining = remaining.substring(0, remaining.length() - 1)
-		remaining = remaining.trim()
-		while remaining.length() > 0
-			integer eq_pos = remaining.indexOf("=")
-			if eq_pos == -1
-				remaining = ""
-			else
-				string attr_name = remaining.substring(0, eq_pos).trim()
-				string after_eq = remaining.substring(eq_pos + 1, remaining.length())
-				string quote = after_eq.substring(0, 1)
-				if quote == "\"" or quote == "'"
-					integer end_quote = after_eq.indexOf(quote, 1)
-					if end_quote != -1
-						string attr_value = after_eq.substring(1, end_quote)
-						if excluded.indexOf("," + attr_name + ",") == -1
-							if is_numeric(attr_value)
-								result = result + "\t_screen." + attr_name + " = " + attr_value + "\n"
-							else if attr_value == "true" or attr_value == "false"
-								result = result + "\t_screen." + attr_name + " = " + attr_value + "\n"
-							else
-								result = result + "\t_screen." + attr_name + " = \"" + attr_value + "\"\n"
-						remaining = after_eq.substring(end_quote + 1, after_eq.length()).trim()
-					else
-						remaining = ""
-				else
-					remaining = ""
+		result = result + "html = html + \"<div id='screen-" + screen_name + "' data-screen='" + screen_name + "' data-client='" + client + "'>\"\n"
+		result = result + "html = html + " + screen_name + ".render()\n"
+		result = result + "html = html + \"</div>\"\n"
 		return result
 
 	string render_component(string tag_name, string tag_content, string inner_html, string registry_json, boolean has_data)
@@ -2416,7 +2728,17 @@ functions:
 				else if sline.trim().length() > 0
 					result = result + "\t" + sline + "\n"
 			result = result + "\t_comp.setSlot(_slot)\n"
-		result = result + "\thtml = html + _comp.render()\n"
+		// `class="..."` on the component tag is added to the component's outer
+		// HTML element (UI-C009), merged with any class the component's own
+		// markup already sets. `{expr}` values are evaluated at render time.
+		string class_attr = extract_attr_value("<" + tag_content + ">", " class")
+		if class_attr != ""
+			string class_expr = "\"" + class_attr + "\""
+			if class_attr.startsWith("{") and class_attr.endsWith("}")
+				class_expr = class_attr.substring(1, class_attr.length() - 1).trim()
+			result = result + "\thtml = html + _ui_add_root_class(_comp.render(), " + class_expr + ")\n"
+		else
+			result = result + "\thtml = html + _comp.render()\n"
 		if client != "off"
 			result = result + "html = html + \"</div>\"\n"
 		return result
@@ -2531,7 +2853,11 @@ functions:
 		return result
 
 	string extract_component_props(string tag_content)
-		string directives = ",cl-if,cl-else,cl-iterate,cl-bind,cl-client,cl-slot,cl-show,cl-validate,"
+		// `client` on a component tag is its hydration mode (frame-ui-semantics
+		// UI-D001), handled by render_component — not a component prop.
+		// `class` is a plain HTML attribute that goes on the component's outer
+		// element (frame-ui-semantics UI-C009), also handled by render_component.
+		string directives = ",client,class,cl-if,cl-else,cl-iterate,cl-bind,cl-client,cl-slot,cl-show,cl-validate,"
 		string result = ""
 		string remaining = tag_content
 		integer space_pos = remaining.indexOf(" ")
@@ -2559,7 +2885,7 @@ functions:
 								string expr = attr_value.substring(1, attr_value.length() - 1).trim()
 								result = result + "\t_comp." + prop_name + " = " + expr + "\n"
 							else
-								result = result + "\t_comp." + prop_name + " = \"" + attr_value + "\"\n"
+								result = result + "\t_comp.setInput(\"" + attr_name + "\", \"" + escape_string(attr_value) + "\")\n"
 						remaining = after_eq.substring(end_quote + 1, after_eq.length()).trim()
 					else
 						remaining = ""
@@ -2593,13 +2919,17 @@ functions:
 			target = var_name
 		string result = "string " + target + " = \"\"\n"
 		if chain != ""
-			if operand_count <= 40
+			// A component tag renders through statements (instance, props,
+			// render()), so a block that contains one uses the statement form.
+			if operand_count <= 40 and html_has_component_tag(cleaned) == false
 				result = result + target + " = " + target + " + " + chain + "\n"
 			else
 				string stmts = html_block_to_statements(cleaned)
 				if target != "__html"
 					stmts = stmts.replace("__html", target)
 				result = result + stmts
+		if cleaned.indexOf("</head>") != -1
+			result = result + target + " = _ui_head_links(" + target + ")\n"
 		if var_name == ""
 			// FRAME-UI-HTML-INTERP-CORRUPTION-AND-WS-DROP (fp 95bdb1bb4b890c7a):
 			// Concatenate with an empty literal via the `+` operator to force a
@@ -2628,6 +2958,13 @@ functions:
 				if text.trim().length() > 0
 					piece = process_block_text_node(text)
 				remaining = remaining.substring(tag_start, remaining.length())
+			else if remaining.startsWith("<!--")
+				// HTML comment: source annotation, not rendered output.
+				integer comment_end = remaining.indexOf("-->")
+				if comment_end == -1
+					remaining = ""
+				else
+					remaining = remaining.substring(comment_end + 3, remaining.length())
 			else
 				integer tag_end = find_tag_end(remaining)
 				if tag_end == -1
@@ -2731,6 +3068,25 @@ functions:
 			result = result + " + \"</" + tag_name + ">\""
 		return result
 
+	// True when `html` contains an opening custom tag (a tag name with a
+	// hyphen, UI-C002) — i.e. a component usage.
+	boolean html_has_component_tag(string html)
+		integer pos = html.indexOf("<")
+		while pos != -1
+			integer name_end = pos + 1
+			boolean done = false
+			while name_end < html.length() and done == false
+				string c = html.substring(name_end, name_end + 1)
+				if c == " " or c == ">" or c == "/" or c == "\t" or c == "\n"
+					done = true
+				else
+					name_end = name_end + 1
+			string name = html.substring(pos + 1, name_end)
+			if name.indexOf("-") != -1 and name.startsWith("!") == false
+				return true
+			pos = html.indexOf("<", pos + 1)
+		return false
+
 	string html_block_to_statements(string html)
 		string result = ""
 		string remaining = html
@@ -2746,6 +3102,13 @@ functions:
 				if text.trim().length() > 0
 					result = result + process_block_text_node_stmt(text)
 				remaining = remaining.substring(tag_start, remaining.length())
+			else if remaining.startsWith("<!--")
+				// HTML comment: source annotation, not rendered output.
+				integer comment_end = remaining.indexOf("-->")
+				if comment_end == -1
+					remaining = ""
+				else
+					remaining = remaining.substring(comment_end + 3, remaining.length())
 			else
 				integer tag_end = find_tag_end(remaining)
 				if tag_end == -1
@@ -2830,6 +3193,10 @@ functions:
 
 	string process_block_element_stmt(string tag_content, string inner_html)
 		string tag_name = extract_tag_name(tag_content)
+		// A custom tag (name with a hyphen, UI-C002) is a component: render
+		// it with its attributes as inputs, exactly like a page does.
+		if tag_name.indexOf("-") != -1
+			return render_component(tag_name, tag_content, inner_html, "{}", false).replace("html = html + ", "__html = __html + ")
 		string result = "__html = __html + \"<" + tag_name
 		string attrs = extract_block_attributes(tag_content)
 		if attrs != ""
@@ -3260,7 +3627,7 @@ functions:
 				_build_state_set("frame.ui:components", entry)
 			else
 				_build_state_set("frame.ui:components", components_state + ";" + entry)
-			string render_export = tag.replace("-", "_") + "_render"
+			string render_export = component_render_export(tag)
 			string component_obj = "{\"tag\":\"" + tag + "\",\"class\":\"" + name + "\",\"hydration\":\"" + client + "\",\"render_export\":\"" + render_export + "\"}"
 			string manifest_state = _build_state_get("frame.ui.components.json")
 			if manifest_state == ""
@@ -4641,6 +5008,17 @@ functions:
 		injected_json = injected_json + "{\"virtual_path\":\"__frame_ui_diagnostics.cln\",\"content\":\"" + escape_json_string(diag_module) + "\"}"
 		first_injected = false
 		return "{\"injected_sources\":[" + injected_json + "],\"transformed_sources\":[" + transformed_json + "]}"
+
+	// True when an assemble source-file entry ({"path":..,"content":..}, content
+	// JSON-escaped) is a .cln file with a top-level `styles <Name>:` block
+	// (frame-ui.ebnf styles_block) — a line that starts with `styles `.
+	boolean source_declares_styles(string file_obj)
+		string path = extract_json_field(file_obj, "path")
+		if path.endsWith(".cln") == false
+			return false
+		if file_obj.indexOf("\"content\":\"styles ") != -1
+			return true
+		return file_obj.indexOf("\\nstyles ") != -1
 
 	list<string> parse_source_files(string input_json)
 		list<string> result = []

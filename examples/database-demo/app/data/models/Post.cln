@@ -1,7 +1,10 @@
 // Post model
-data Post
-	integer id
-	string title
-	integer author_id
-	string author
-	string date
+// Fixed: was a bare-field `data Post` block, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015).
+data Post:
+	fields:
+		integer id primary generated
+		string title required
+		integer author_id
+		string author
+		string date

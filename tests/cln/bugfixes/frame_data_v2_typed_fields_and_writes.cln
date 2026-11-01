@@ -1,0 +1,62 @@
+// Test: bugfixes/frame_data_v2_typed_fields_and_writes — v2 data block end to end
+// Component: framework/frame.data
+// Grammar: frame-data.ebnf §2.2 field_declaration (`type_ref identifier {constraint}`),
+//   §4 database_service_expression, §5 query_expression (bare `count`, `first:`)
+// Fixed in: framework v3.0.16
+// Expected output (run with DATABASE_URL=sqlite::memory:):
+//   PASS: frame-data-v2-typed-fields-and-writes
+//
+//   Regression guard for the v2 port of the framework tests:
+//   - `integer id primary generated` named the field `integer` (CLASS002
+//     duplicate `__string` / `__integer` fields);
+//   - data-class fields were private, so `user.name` could not be read or set;
+//   - INSERT listed `id` without a value, and SQLite left `id` NULL because
+//     the table used `SERIAL` (only `INTEGER PRIMARY KEY` auto-assigns there);
+//   - the generated id was read from `"id":` only, not SQLite's
+//     `"last_insert_id":`;
+//   - `first:` returned the raw JSON row instead of a record, and booleans
+//     stored as 0/1 never read back as true;
+//   - two `first:` queries in one body redeclared `__first_sql` (SEM007).
+
+plugins:
+	frame.data
+
+data User:
+	fields:
+		integer id primary generated
+		string name required
+		boolean active
+
+start:
+	User schema = User()
+	schema.migrate()
+
+	User alice = User()
+	alice.name = "Alice"
+	alice.active = true
+	boolean saved = Database.save(alice)
+	boolean ok_saved = saved and alice.id == 1
+
+	integer total = User.count
+	boolean ok_count = total == 1
+
+	User found = User.first:
+		where:
+			name == "Alice"
+	boolean ok_first = found.name == "Alice" and found.active
+
+	found.name = "Alicia"
+	Database.save(found)
+	User renamed = User.first:
+		where:
+			name == "Alicia"
+	boolean ok_update = renamed.name == "Alicia"
+
+	boolean removed = Database.delete(renamed)
+	integer after = User.count
+	boolean ok_delete = removed and after == 0
+
+	if ok_saved and ok_count and ok_first and ok_update and ok_delete
+		printl("PASS: frame-data-v2-typed-fields-and-writes")
+	else
+		printl("FAIL: frame-data-v2-typed-fields-and-writes saved=" + saved.toString() + " id=" + alice.id.toString() + " count=" + total.toString() + " first=" + found.name + " updated=" + renamed.name + " deleted=" + removed.toString() + " after=" + after.toString())

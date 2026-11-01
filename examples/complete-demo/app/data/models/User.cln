@@ -1,9 +1,12 @@
 // User data model - frame.data plugin
+// Fixed: was the v1 bare-field `data User` form; frame-data.ebnf v2 requires
+// `data User:` with a `fields:` sub-block (DAT-M015).
 
-data User
-	integer id : pk, auto
-	string email : unique, required
-	string username : required
-	string password_hash : required
-	datetime created_at
-	boolean is_active = true
+data User:
+	fields:
+		integer id primary generated
+		string email required unique
+		string username required
+		string password_hash required
+		string created_at
+		boolean is_active default: true

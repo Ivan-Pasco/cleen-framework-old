@@ -1119,23 +1119,60 @@ functions:
 				line_end = fields_body.length()
 			string line = fields_body.substring(line_start, line_end).trim()
 			if line.length() > 0
-				// The first whitespace-separated token is the field name.
-				integer sp_pos = line.indexOf(" ")
-				integer tab_pos = line.indexOf("\t")
-				integer name_end = line.length()
-				if sp_pos != -1 and sp_pos < name_end
-					name_end = sp_pos
-				if tab_pos != -1 and tab_pos < name_end
-					name_end = tab_pos
-				string field_name = line.substring(0, name_end).trim()
-				if field_name.length() > 0 and field_name.substring(field_name.length() - 1, field_name.length()) == ":"
-					field_name = field_name.substring(0, field_name.length() - 1).trim()
+				string field_name = v2_field_line_name(line)
 				if field_name.length() > 0
 					if result.length() > 0
 						result = result + ","
 					result = result + field_name
 			line_start = line_end + 1
 		return result
+
+	// True when `tok` starts a field constraint in a v2 `fields:` line
+	// (frame-data.ebnf §2.2 field_constraint). Used to tell the base form
+	// `type_ref identifier {constraint}` from the transitional
+	// `identifier {constraint}` form.
+	boolean is_v2_field_constraint_word(string tok)
+		if tok == "primary" or tok == "generated" or tok == "required" or tok == "unique"
+			return true
+		if tok == "default:" or tok == "default" or tok == "as"
+			return true
+		return false
+
+	// Return the field name of one v2 `fields:` line, accepting both the base
+	// form `type_ref identifier {constraint}` and the transitional
+	// `identifier {constraint}` / `identifier: type` forms.
+	string v2_field_line_name(string line)
+		string first_tok = ""
+		string second_tok = ""
+		integer pos = 0
+		integer len = line.length()
+		integer tok_index = 0
+		while pos < len and tok_index < 2
+			while pos < len
+				string ch = line.substring(pos, pos + 1)
+				if ch != " " and ch != "\t"
+					break
+				pos = pos + 1
+			integer tok_begin = pos
+			while pos < len
+				string ch2 = line.substring(pos, pos + 1)
+				if ch2 == " " or ch2 == "\t"
+					break
+				pos = pos + 1
+			string tok = line.substring(tok_begin, pos).trim()
+			if tok.length() > 0
+				if tok_index == 0
+					first_tok = tok
+				else
+					second_tok = tok
+				tok_index = tok_index + 1
+		if first_tok.length() == 0
+			return ""
+		if first_tok.endsWith(":")
+			return first_tok.substring(0, first_tok.length() - 1).trim()
+		if second_tok.length() > 0 and not is_v2_field_constraint_word(second_tok)
+			return second_tok
+		return first_tok
 
 	// Map a v2 bare constraint token to its v1-pipeline equivalent.
 	// v2 keywords (spec DAT-M015..M017): primary, generated, required, unique.
@@ -1202,10 +1239,37 @@ functions:
 				break
 			pos = pos + 1
 		field_name = line.substring(name_start, pos).trim()
+		boolean name_had_colon = false
 		if field_name.length() > 0 and field_name.substring(field_name.length() - 1, field_name.length()) == ":"
 			field_name = field_name.substring(0, field_name.length() - 1).trim()
+			name_had_colon = true
 		if field_name.length() == 0
 			return ""
+
+		// frame-data.ebnf v2.1.0 base form: `type_ref identifier {constraint}`.
+		// When the first token is followed by a token that is not a field
+		// constraint keyword, the first token is the type and the second is
+		// the field name (`integer id primary generated`). Otherwise the line
+		// is the transitional `identifier {constraint}` form.
+		if not name_had_colon
+			integer peek = pos
+			while peek < len
+				string pch = line.substring(peek, peek + 1)
+				if pch != " " and pch != "\t"
+					break
+				peek = peek + 1
+			integer second_start = peek
+			while peek < len
+				string pch2 = line.substring(peek, peek + 1)
+				if pch2 == " " or pch2 == "\t"
+					break
+				peek = peek + 1
+			string second_tok = line.substring(second_start, peek).trim()
+			if second_tok.length() > 0 and not is_v2_field_constraint_word(second_tok)
+				field_type = field_name
+				field_name = second_tok
+				pos = peek
+				first_after_name = false
 
 		// Walk the remaining tokens.
 		while pos < len
@@ -1928,7 +1992,10 @@ functions:
 			if fname.length() > 0
 				if not first
 					result = result + ","
-				result = result + "{\"name\":\"" + safe_field_name(fname) + "\",\"type\":\"" + clean_ftype + "\"}"
+				// Persisted columns are public: callers construct the record,
+				// read `entity.id` after Database.save (DAT-E002, DAT-Q014) and
+				// mutate fields before re-saving (load-mutate-save, DAT-S001).
+				result = result + "{\"name\":\"" + safe_field_name(fname) + "\",\"type\":\"" + clean_ftype + "\",\"visibility\":\"public\"}"
 				first = false
 			pos = comma + 1
 			tpos = tcomma + 1
@@ -2160,14 +2227,21 @@ functions:
 	// indexes_sql: newline-separated list of CREATE INDEX statements to
 	// execute after CREATE TABLE. Pass "" to skip the index phase.
 	integer build_migrate_body(integer ctx, string table_name, boolean has_tenant, string indexes_sql)
-		string src = ""
+		// Generated primary key DDL per engine. `SERIAL` is Postgres/MySQL;
+		// SQLite only auto-assigns a key for an `INTEGER PRIMARY KEY` (rowid
+		// alias) and otherwise leaves `id` NULL. The engine is known only at
+		// run time, so probe for SQLite before creating the table.
+		string src = "string __pk_def = \"id SERIAL PRIMARY KEY\"\n"
+		src = src + "string __engine_probe = _db_query(\"SELECT sqlite_version() AS v\", \"[]\")\n"
+		src = src + "if __engine_probe.indexOf(\"\\\"ok\\\":true\") != -1\n"
+		src = src + "\t__pk_def = \"id INTEGER PRIMARY KEY AUTOINCREMENT\"\n"
 		if has_tenant
 			src = src + "string __field_defs = __field_definitions()\n"
 			src = src + "if __field_defs.indexOf(\"tenant_id\") == -1\n"
 			src = src + "\t__field_defs = \"tenant_id TEXT NOT NULL, \" + __field_defs\n"
-			src = src + "string sql = \"CREATE TABLE IF NOT EXISTS " + table_name + " (id SERIAL PRIMARY KEY, \" + __field_defs + \")\"\n"
+			src = src + "string sql = \"CREATE TABLE IF NOT EXISTS " + table_name + " (\" + __pk_def + \", \" + __field_defs + \")\"\n"
 		else
-			src = src + "string sql = \"CREATE TABLE IF NOT EXISTS " + table_name + " (id SERIAL PRIMARY KEY, \" + __field_definitions() + \")\"\n"
+			src = src + "string sql = \"CREATE TABLE IF NOT EXISTS " + table_name + " (\" + __pk_def + \", \" + __field_definitions() + \")\"\n"
 		src = src + "integer affected = _db_execute(sql, \"[]\")\n"
 		// V2 indexes: sub-block consumer (Sub-cycle 1, 2026-07-18).
 		// Emit one _db_execute call per CREATE INDEX statement. Executed
@@ -2260,13 +2334,37 @@ functions:
 		integer body_arr = arr1(ctx, ret_stmt)
 		return sblk(ctx, body_arr)
 
-	// Build body for: string __placeholder_list() — calls __generate_placeholders(N).
+	// Build body for: string __placeholder_list() — returns the "$1, $2, ..."
+	// literal for the INSERT column count. The count is known at expand time,
+	// so the list is built here rather than by a runtime loop.
 	integer build_placeholder_list_body(integer ctx, integer field_count)
-		integer n_lit = il(ctx, field_count)
-		integer call_expr = call1(ctx, "__generate_placeholders", n_lit)
-		integer ret_stmt = sr(ctx, call_expr)
+		string placeholders = ""
+		integer i = 1
+		while i <= field_count
+			if i > 1
+				placeholders = placeholders + ", "
+			placeholders = placeholders + "$" + i.toString()
+			i = i + 1
+		integer lit = sl(ctx, placeholders)
+		integer ret_stmt = sr(ctx, lit)
 		integer body_arr = arr1(ctx, ret_stmt)
 		return sblk(ctx, body_arr)
+
+	// Comma-separated field list with the `id` entry removed.
+	string csv_without_id(string field_names)
+		string result = ""
+		integer pos = 0
+		while pos < field_names.length()
+			integer comma_pos = field_names.indexOf(",", pos)
+			if comma_pos == -1
+				comma_pos = field_names.length()
+			string field = field_names.substring(pos, comma_pos).trim()
+			if field.length() > 0 and field != "id"
+				if result.length() > 0
+					result = result + ","
+				result = result + field
+			pos = comma_pos + 1
+		return result
 
 	// Build body for: string __update_set() — returns UPDATE SET SQL literal.
 	integer build_update_set_body(integer ctx, string update_set_sql)
@@ -2349,7 +2447,11 @@ functions:
 		methods = methods + ",{\"kind\":\"inline\",\"name\":\"delete\",\"params\":[],\"return_type\":\"boolean\",\"body_handle\":" + del_bh.toString() + "}"
 
 		// --- __field_list() ---
-		integer fl_bh = build_field_list_body(ctx, field_names)
+		// INSERT columns: every persisted field except the generated `id`
+		// primary key. Must stay aligned with __to_params (which skips `id`)
+		// and __placeholder_list.
+		string insert_field_names = csv_without_id(field_names)
+		integer fl_bh = build_field_list_body(ctx, insert_field_names)
 		if _ctx_had_error(ctx) != 0
 			return ""
 		methods = methods + ",{\"kind\":\"inline\",\"name\":\"__field_list\",\"params\":[],\"return_type\":\"string\",\"body_handle\":" + fl_bh.toString() + "}"
@@ -2361,7 +2463,7 @@ functions:
 		methods = methods + ",{\"kind\":\"inline\",\"name\":\"__field_definitions\",\"params\":[],\"return_type\":\"string\",\"body_handle\":" + fd_bh.toString() + "}"
 
 		// --- __placeholder_list() ---
-		integer fc = count_fields(field_names)
+		integer fc = count_fields(insert_field_names)
 		integer pl_bh = build_placeholder_list_body(ctx, fc)
 		if _ctx_had_error(ctx) != 0
 			return ""
@@ -2404,7 +2506,24 @@ functions:
 		methods = methods + ",{\"kind\":\"inline\",\"name\":\"__update_set\",\"params\":[],\"return_type\":\"string\",\"body_handle\":" + us_bh.toString() + "}"
 
 		// --- __extract_id(string result) ---
-		string eid_src = "integer id_pos = result.indexOf(\"\\\"id\\\":\")\nif id_pos == -1\n\treturn 0\ninteger value_start = id_pos + 5\ninteger value_end = value_start\nwhile value_end < result.length()\n\tstring ch = result.substring(value_end, value_end + 1)\n\tif ch == \",\" or ch == \"}\" or ch == \" \"\n\t\tbreak\n\tvalue_end = value_end + 1\nreturn result.substring(value_start, value_end).toInteger()\n"
+		// Postgres answers INSERT ... RETURNING with a row (`"id":N`); SQLite
+		// reports the generated key as `"last_insert_id":N`. The number after
+		// the matched key runs up to the next `,`, `}` or space.
+		string eid_src = "integer id_pos = result.indexOf(\"\\\"id\\\":\")\n"
+		eid_src = eid_src + "integer key_len = 5\n"
+		eid_src = eid_src + "if id_pos == -1\n"
+		eid_src = eid_src + "\tid_pos = result.indexOf(\"\\\"last_insert_id\\\":\")\n"
+		eid_src = eid_src + "\tkey_len = 17\n"
+		eid_src = eid_src + "if id_pos == -1\n"
+		eid_src = eid_src + "\treturn 0\n"
+		eid_src = eid_src + "integer value_start = id_pos + key_len\n"
+		eid_src = eid_src + "integer value_end = value_start\n"
+		eid_src = eid_src + "while value_end < result.length()\n"
+		eid_src = eid_src + "\tstring ch = result.substring(value_end, value_end + 1)\n"
+		eid_src = eid_src + "\tif ch == \",\" or ch == \"}\" or ch == \" \"\n"
+		eid_src = eid_src + "\t\tbreak\n"
+		eid_src = eid_src + "\tvalue_end = value_end + 1\n"
+		eid_src = eid_src + "return result.substring(value_start, value_end).toInteger()\n"
 		integer eid_bh = _emit_stmt_from_source(ctx, eid_src, 0)
 		if _ctx_had_error(ctx) != 0
 			return ""
@@ -2493,6 +2612,38 @@ functions:
 	// 0. Prior versions embedded the function declaration line at the top
 	// of `src` and indented the body — that's a SYN001 under
 	// _emit_stmt_from_source, which parses at statement scope.
+	// Source lines (one tab deep) copying each primitive column of
+	// `__row_json` into the matching field of `__row`.
+	string row_field_assignments(string field_names, string field_types)
+		string src = ""
+		integer fpos = 0
+		integer tpos = 0
+		while fpos < field_names.length()
+			integer comma = field_names.indexOf(",", fpos)
+			if comma == -1
+				comma = field_names.length()
+			integer tcomma = field_types.indexOf(",", tpos)
+			if tcomma == -1
+				tcomma = field_types.length()
+			string field = field_names.substring(fpos, comma).trim()
+			string ftype = field_types.substring(tpos, tcomma).trim()
+			if is_primitive_type(ftype)
+				string base = "\t__row." + safe_field_name(field) + " = json.get(__row_json, \"" + field + "\")"
+				if ftype == "integer"
+					src = src + base + ".toInteger()\n"
+				else if ftype == "number"
+					src = src + base + ".toNumber()\n"
+				else if ftype == "boolean"
+					// SQLite stores booleans as 0/1; Postgres returns true/false.
+					string bvar = "__b_" + safe_field_name(field)
+					src = src + "\tstring " + bvar + " = json.get(__row_json, \"" + field + "\")\n"
+					src = src + "\t__row." + safe_field_name(field) + " = (" + bvar + " == \"true\") or (" + bvar + " == \"1\")\n"
+				else
+					src = src + base + "\n"
+			fpos = comma + 1
+			tpos = tcomma + 1
+		return src
+
 	integer emit_parse_as_function(integer ctx, string model_name, string field_names, string field_types)
 		string src = "list<" + model_name + "> __result = []\n"
 		src = src + "string __pa_data = json.get(__json, \"data\")\n"
@@ -2502,31 +2653,7 @@ functions:
 		src = src + "while __check != \"\"\n"
 		src = src + "\t" + model_name + " __row = " + model_name + "()\n"
 		src = src + "\tstring __row_json = json.get(__pa_rows, __i.toString())\n"
-		string fields = field_names
-		string types = field_types
-		integer fpos = 0
-		integer tpos = 0
-		while fpos < fields.length()
-			integer comma = fields.indexOf(",", fpos)
-			if comma == -1
-				comma = fields.length()
-			integer tcomma = types.indexOf(",", tpos)
-			if tcomma == -1
-				tcomma = types.length()
-			string field = fields.substring(fpos, comma).trim()
-			string ftype = types.substring(tpos, tcomma).trim()
-			if is_primitive_type(ftype)
-				string base = "\t__row." + safe_field_name(field) + " = json.get(__row_json, \"" + field + "\")"
-				if ftype == "integer"
-					src = src + base + ".toInteger()\n"
-				else if ftype == "number"
-					src = src + base + ".toNumber()\n"
-				else if ftype == "boolean"
-					src = src + base + " == \"true\"\n"
-				else
-					src = src + base + "\n"
-			fpos = comma + 1
-			tpos = tcomma + 1
+		src = src + row_field_assignments(field_names, field_types)
 		src = src + "\t__result.add(__row)\n"
 		src = src + "\t__i = __i + 1\n"
 		src = src + "\t__check = json.get(__pa_rows, __i.toString())\n"
@@ -2540,6 +2667,103 @@ functions:
 		integer pa_r_elem = _type_class_ref(ctx, model_name)
 		integer pa_r_list = _type_array(ctx, pa_r_elem)
 		return _emit_function(ctx, "__parse_as_" + model_name, "[{\"name\":\"__json\",\"type_handle\":" + pa_p_str.toString() + "}]", pa_r_list, pa_body_h, 0)
+
+	// DAT-Q021 — emit the per-model pagination result classes and the two
+	// top-level functions that build them from the host's result envelope:
+	//   PagedResult_<M>:  items, totalCount, totalPages, currentPage, perPage,
+	//                     hasNext, hasPrev
+	//   CursorResult_<M>: items, nextCursor, hasNext, hasPrev, count
+	//   __paged_as_<M>(json) / __cursor_as_<M>(json, after)
+	// The host answers _db_paginate with {"ok":..,"data":{"data":[rows],
+	// "total","page","per_page","total_pages"}} and _db_cursor_page with
+	// {"ok":..,"data":{"data":[rows],"next_cursor","has_more"}}; the rows are
+	// materialized through __parse_as_<M>, which reads data.rows.
+	integer emit_pagination_classes(integer ctx, string model_name)
+		string items_type = "list<" + model_name + ">"
+		string paged_name = "PagedResult_" + model_name
+		string paged_spec = "{\"name\":\"" + paged_name + "\",\"parent\":null,\"fields\":["
+		paged_spec = paged_spec + "{\"name\":\"items\",\"type\":\"" + items_type + "\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"totalCount\",\"type\":\"integer\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"totalPages\",\"type\":\"integer\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"currentPage\",\"type\":\"integer\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"perPage\",\"type\":\"integer\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"hasNext\",\"type\":\"boolean\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + ",{\"name\":\"hasPrev\",\"type\":\"boolean\",\"visibility\":\"public\"}"
+		paged_spec = paged_spec + "],\"methods\":[]}"
+		_emit_class_full(ctx, _batch_stringLit(ctx, paged_spec), 1)
+		if _ctx_had_error(ctx) != 0
+			return 1
+
+		string cursor_name = "CursorResult_" + model_name
+		string cursor_spec = "{\"name\":\"" + cursor_name + "\",\"parent\":null,\"fields\":["
+		cursor_spec = cursor_spec + "{\"name\":\"items\",\"type\":\"" + items_type + "\",\"visibility\":\"public\"}"
+		cursor_spec = cursor_spec + ",{\"name\":\"nextCursor\",\"type\":\"string\",\"visibility\":\"public\"}"
+		cursor_spec = cursor_spec + ",{\"name\":\"hasNext\",\"type\":\"boolean\",\"visibility\":\"public\"}"
+		cursor_spec = cursor_spec + ",{\"name\":\"hasPrev\",\"type\":\"boolean\",\"visibility\":\"public\"}"
+		cursor_spec = cursor_spec + ",{\"name\":\"count\",\"type\":\"integer\",\"visibility\":\"public\"}"
+		cursor_spec = cursor_spec + "],\"methods\":[]}"
+		_emit_class_full(ctx, _batch_stringLit(ctx, cursor_spec), 1)
+		if _ctx_had_error(ctx) != 0
+			return 1
+
+		string pg = paged_name + " __pr = " + paged_name + "()\n"
+		pg = pg + "string __pr_data = json.get(__json, \"data\")\n"
+		pg = pg + "__pr.items = __parse_as_" + model_name + "(\"{\\\"data\\\":{\\\"rows\\\":\" + json.get(__pr_data, \"data\") + \"}}\")\n"
+		pg = pg + "__pr.totalCount = json.get(__pr_data, \"total\").toInteger()\n"
+		pg = pg + "__pr.totalPages = json.get(__pr_data, \"total_pages\").toInteger()\n"
+		pg = pg + "__pr.currentPage = json.get(__pr_data, \"page\").toInteger()\n"
+		pg = pg + "__pr.perPage = json.get(__pr_data, \"per_page\").toInteger()\n"
+		pg = pg + "__pr.hasNext = __pr.currentPage < __pr.totalPages\n"
+		pg = pg + "__pr.hasPrev = __pr.currentPage > 1\n"
+		pg = pg + "return __pr\n"
+		integer pg_body = _emit_stmt_from_source(ctx, pg, 0)
+		if _ctx_had_error(ctx) != 0 or pg_body == 0
+			return 1
+		integer pg_p_json = _type_string(ctx)
+		integer pg_ret = _type_class_ref(ctx, paged_name)
+		_emit_function(ctx, "__paged_as_" + model_name, "[{\"name\":\"__json\",\"type_handle\":" + pg_p_json.toString() + "}]", pg_ret, pg_body, 0)
+		if _ctx_had_error(ctx) != 0
+			return 1
+
+		string cr = cursor_name + " __cr = " + cursor_name + "()\n"
+		cr = cr + "string __cr_data = json.get(__json, \"data\")\n"
+		cr = cr + "__cr.items = __parse_as_" + model_name + "(\"{\\\"data\\\":{\\\"rows\\\":\" + json.get(__cr_data, \"data\") + \"}}\")\n"
+		cr = cr + "string __cr_next = json.get(__cr_data, \"next_cursor\")\n"
+		cr = cr + "if __cr_next == \"null\"\n"
+		cr = cr + "\t__cr_next = \"\"\n"
+		cr = cr + "__cr.nextCursor = __cr_next\n"
+		cr = cr + "string __cr_more = json.get(__cr_data, \"has_more\")\n"
+		cr = cr + "__cr.hasNext = __cr_more == \"true\" or __cr_more == \"1\"\n"
+		cr = cr + "__cr.hasPrev = __after != \"\"\n"
+		cr = cr + "__cr.count = __cr.items.length()\n"
+		cr = cr + "return __cr\n"
+		integer cr_body = _emit_stmt_from_source(ctx, cr, 0)
+		if _ctx_had_error(ctx) != 0 or cr_body == 0
+			return 1
+		integer cr_p_json = _type_string(ctx)
+		integer cr_p_after = _type_string(ctx)
+		integer cr_ret = _type_class_ref(ctx, cursor_name)
+		_emit_function(ctx, "__cursor_as_" + model_name, "[{\"name\":\"__json\",\"type_handle\":" + cr_p_json.toString() + "},{\"name\":\"__after\",\"type_handle\":" + cr_p_after.toString() + "}]", cr_ret, cr_body, 0)
+		if _ctx_had_error(ctx) != 0
+			return 1
+		return 0
+
+	// Emit the top-level __first_as_<Model>(json) function: the first row of
+	// a _db_query result materialized as <Model>, or null when there is no
+	// row (DAT-Q001 — `first` returns T?).
+	integer emit_first_as_function(integer ctx, string model_name)
+		string src = "list<" + model_name + "> __fa_rows = __parse_as_" + model_name + "(__json)\n"
+		src = src + "if __fa_rows.length() == 0\n"
+		src = src + "\treturn null\n"
+		src = src + "return __fa_rows[0]\n"
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if _ctx_had_error(ctx) != 0
+			return 0
+		if body_h == 0
+			return 0
+		integer p_str = _type_string(ctx)
+		integer r_type = _type_class_ref(ctx, model_name)
+		return _emit_function(ctx, "__first_as_" + model_name, "[{\"name\":\"__json\",\"type_handle\":" + p_str.toString() + "}]", r_type, body_h, 0)
 
 	// Emit the top-level __find_as_strings_<Model> function.
 	integer emit_json_rows_function(integer ctx, string model_name)
@@ -2912,6 +3136,17 @@ functions:
 
 		// Emit top-level functions.
 		emit_parse_as_function(ctx, model_name, field_names, field_types)
+		if _ctx_had_error(ctx) != 0
+			return 1
+
+		emit_first_as_function(ctx, model_name)
+		if _ctx_had_error(ctx) != 0
+			return 1
+
+		// DAT-Q021: PagedResult_<Model> / CursorResult_<Model> — the concrete
+		// classes behind the PagedResult<Model> / CursorResult<Model> shorthand
+		// (plugin.toml instance_class, plugin-contract.md §4.5).
+		emit_pagination_classes(ctx, model_name)
 		if _ctx_had_error(ctx) != 0
 			return 1
 
@@ -3670,10 +3905,40 @@ functions:
 	// Multi-branch (tenant / dynamic-order / with-where) shapes emit statement
 	// preambles via _emit_stmt_from_source and return the trailing expression
 	// handle. See v1 expand_find (main.v1.cln:1349) for the DSL semantics.
+	// Suffix that keeps the plugin's preamble temporaries (`__find_sql`,
+	// `__first_sql`, ...) unique per query expansion. Preambles land in the
+	// enclosing scope, so two `<Model>.first:` queries in one function body
+	// would otherwise redeclare the same local (SEM007). The binding's
+	// variable name is unique in its scope; unbound queries fall back to the
+	// DSL body length.
+	string scoped_temp_suffix(string binding, string dsl_body)
+		string trimmed = binding.trim()
+		integer sp = trimmed.lastIndexOf(" ")
+		if sp != -1 and sp + 1 < trimmed.length()
+			return "_" + trimmed.substring(sp + 1, trimmed.length())
+		return "_q" + dsl_body.length().toString()
+
+	// _emit_stmt_from_source with the query-preamble temporaries renamed by
+	// scoped_temp_suffix.
+	integer emit_scoped_stmt(integer ctx, string sfx, string src, integer origin)
+		string out = src.replace("__find_sql", "__find_sql" + sfx)
+		out = out.replace("__find_tenant", "__find_tenant" + sfx)
+		out = out.replace("__find_tf", "__find_tf" + sfx)
+		out = out.replace("__first_sql", "__first_sql" + sfx)
+		out = out.replace("__first_tenant", "__first_tenant" + sfx)
+		out = out.replace("__first_tf", "__first_tf" + sfx)
+		out = out.replace("__where_json_pg", "__where_json_pg" + sfx)
+		out = out.replace("__paged_json", "__paged_json" + sfx)
+		out = out.replace("__where_json_cur", "__where_json_cur" + sfx)
+		out = out.replace("__cursor_json", "__cursor_json" + sfx)
+		out = out.replace("__cursor_after", "__cursor_after" + sfx)
+		return _emit_stmt_from_source(ctx, out, origin)
+
 	integer expand_find(integer ctx, string model_name, string body)
 		_ctx_set_error_context(ctx, "FRAME-DATA-E003", "expand_find for " + model_name)
 		string binding = extract_binding_line(body)
 		string dsl_body = strip_binding_line(body)
+		string sfx = scoped_temp_suffix(binding, dsl_body)
 		string table_name = pluralize(to_snake_case(model_name))
 		string where_clause = extract_subblock(dsl_body, "where:")
 		string order_clause = extract_subblock(dsl_body, "order:")
@@ -3733,13 +3998,13 @@ functions:
 				sql = sql + " LIMIT " + limit_clause.trim()
 			if offset_clause.length() > 0
 				sql = sql + " OFFSET " + offset_clause.trim()
-			string call_src = "json.get(json.get(_db_query(\"" + sql + "\", \"[]\"), \"data\"), \"rows\")"
+			string call_src = "__parse_as_" + model_name + "(_db_query(\"" + sql + "\", \"[]\"))"
 			string stmt_src = ""
 			if binding.length() > 0
 				stmt_src = binding + " = " + call_src
 			else
 				stmt_src = call_src
-			integer stmt_h = _emit_stmt_from_source(ctx, stmt_src, 0)
+			integer stmt_h = emit_scoped_stmt(ctx, sfx, stmt_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find parse failed for " + model_name)
 			integer emit_err = _emit_statement_into_start(ctx, stmt_h)
@@ -3757,26 +4022,26 @@ functions:
 			string dyn_var = resolved_order.trim()
 			string guard_src = "if not _db_valid_field(\"" + table_name + "\", " + dyn_var + ")\n"
 			guard_src = guard_src + "\treturn \"{\\\"ok\\\":false,\\\"err\\\":{\\\"code\\\":\\\"VALIDATION_ERROR\\\",\\\"message\\\":\\\"Unknown sort field: \\\" + " + dyn_var + " + \"\\\"}}\"\n"
-			integer guard_h = _emit_stmt_from_source(ctx, guard_src, 0)
+			integer guard_h = emit_scoped_stmt(ctx, sfx, guard_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find guard parse failed for " + model_name)
 			integer emit_guard = _emit_statement_into_start(ctx, guard_h)
 			if emit_guard != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find guard emit failed for " + model_name)
-		integer decl_h = _emit_stmt_from_source(ctx, "string __find_sql = \"" + sql_prefix + "\"\n", 0)
+		integer decl_h = emit_scoped_stmt(ctx, sfx, "string __find_sql = \"" + sql_prefix + "\"\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E003", "expand_find __find_sql decl parse failed for " + model_name)
 		integer emit_decl = _emit_statement_into_start(ctx, decl_h)
 		if emit_decl != 0
 			return plugin_error(ctx, "FRAME-DATA-E003", "expand_find __find_sql decl emit failed for " + model_name)
 		if has_tenant
-			integer t_decl_h = _emit_stmt_from_source(ctx, "string __find_tenant = tenant_getId()\n", 0)
+			integer t_decl_h = emit_scoped_stmt(ctx, sfx, "string __find_tenant = tenant_getId()\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find tenant decl parse failed for " + model_name)
 			integer emit_t_decl = _emit_statement_into_start(ctx, t_decl_h)
 			if emit_t_decl != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find tenant decl emit failed for " + model_name)
-			integer tf_decl_h = _emit_stmt_from_source(ctx, "string __find_tf = \"tenant_id = '\" + __find_tenant + \"'\"\n", 0)
+			integer tf_decl_h = emit_scoped_stmt(ctx, sfx, "string __find_tf = \"tenant_id = '\" + __find_tenant + \"'\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find tf decl parse failed for " + model_name)
 			integer emit_tf_decl = _emit_statement_into_start(ctx, tf_decl_h)
@@ -3787,28 +4052,28 @@ functions:
 				where_src = "__find_sql = __find_sql + \" WHERE \" + __find_tf + \" AND \" + (" + build_where_expr(resolved_where) + ")\n"
 			else
 				where_src = "__find_sql = __find_sql + \" WHERE \" + __find_tf\n"
-			integer where_h = _emit_stmt_from_source(ctx, where_src, 0)
+			integer where_h = emit_scoped_stmt(ctx, sfx, where_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find where parse failed for " + model_name)
 			integer emit_where = _emit_statement_into_start(ctx, where_h)
 			if emit_where != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find where emit failed for " + model_name)
 		else if resolved_where.length() > 0
-			integer where_h = _emit_stmt_from_source(ctx, "__find_sql = __find_sql + \" WHERE \" + (" + build_where_expr(resolved_where) + ")\n", 0)
+			integer where_h = emit_scoped_stmt(ctx, sfx, "__find_sql = __find_sql + \" WHERE \" + (" + build_where_expr(resolved_where) + ")\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find where parse failed for " + model_name)
 			integer emit_where = _emit_statement_into_start(ctx, where_h)
 			if emit_where != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find where emit failed for " + model_name)
 		if group_sql.length() > 0
-			integer group_h = _emit_stmt_from_source(ctx, "__find_sql = __find_sql + \"" + group_sql + "\"\n", 0)
+			integer group_h = emit_scoped_stmt(ctx, sfx, "__find_sql = __find_sql + \"" + group_sql + "\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find group parse failed for " + model_name)
 			integer emit_group = _emit_statement_into_start(ctx, group_h)
 			if emit_group != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find group emit failed for " + model_name)
 		if having_sql.length() > 0
-			integer having_h = _emit_stmt_from_source(ctx, "__find_sql = __find_sql + \"" + having_sql + "\"\n", 0)
+			integer having_h = emit_scoped_stmt(ctx, sfx, "__find_sql = __find_sql + \"" + having_sql + "\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find having parse failed for " + model_name)
 			integer emit_having = _emit_statement_into_start(ctx, having_h)
@@ -3820,33 +4085,33 @@ functions:
 				order_src = "__find_sql = __find_sql + \" ORDER BY \" + " + resolved_order.trim() + "\n"
 			else
 				order_src = "__find_sql = __find_sql + \" ORDER BY " + parse_order_clause(resolved_order) + "\"\n"
-			integer order_h = _emit_stmt_from_source(ctx, order_src, 0)
+			integer order_h = emit_scoped_stmt(ctx, sfx, order_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find order parse failed for " + model_name)
 			integer emit_order = _emit_statement_into_start(ctx, order_h)
 			if emit_order != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find order emit failed for " + model_name)
 		if limit_clause.length() > 0
-			integer limit_h = _emit_stmt_from_source(ctx, "__find_sql = __find_sql + \" LIMIT " + limit_clause.trim() + "\"\n", 0)
+			integer limit_h = emit_scoped_stmt(ctx, sfx, "__find_sql = __find_sql + \" LIMIT " + limit_clause.trim() + "\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find limit parse failed for " + model_name)
 			integer emit_limit = _emit_statement_into_start(ctx, limit_h)
 			if emit_limit != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find limit emit failed for " + model_name)
 		if offset_clause.length() > 0
-			integer offset_h = _emit_stmt_from_source(ctx, "__find_sql = __find_sql + \" OFFSET " + offset_clause.trim() + "\"\n", 0)
+			integer offset_h = emit_scoped_stmt(ctx, sfx, "__find_sql = __find_sql + \" OFFSET " + offset_clause.trim() + "\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find offset parse failed for " + model_name)
 			integer emit_offset = _emit_statement_into_start(ctx, offset_h)
 			if emit_offset != 0
 				return plugin_error(ctx, "FRAME-DATA-E003", "expand_find offset emit failed for " + model_name)
-		string tail = "json.get(json.get(_db_query(__find_sql, \"[]\"), \"data\"), \"rows\")"
+		string tail = "__parse_as_" + model_name + "(_db_query(__find_sql, \"[]\"))"
 		string tail_stmt_src = ""
 		if binding.length() > 0
 			tail_stmt_src = binding + " = " + tail
 		else
 			tail_stmt_src = tail
-		integer tail_h = _emit_stmt_from_source(ctx, tail_stmt_src, 0)
+		integer tail_h = emit_scoped_stmt(ctx, sfx, tail_stmt_src, 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E003", "expand_find tail parse failed for " + model_name)
 		integer emit_tail = _emit_statement_into_start(ctx, tail_h)
@@ -3874,7 +4139,7 @@ functions:
 			if order_clause.length() > 0
 				sql = sql + " ORDER BY " + parse_order_clause(order_clause)
 			sql = sql + " LIMIT 1"
-			return "return json.get(json.get(json.get(_db_query(\"" + sql + "\", \"[]\"), \"data\"), \"rows\"), \"0\")\n"
+			return "return __first_as_" + model_name + "(_db_query(\"" + sql + "\", \"[]\"))\n"
 
 		// Full path: build the SQL string in local vars, then return the
 		// row expression.
@@ -3883,7 +4148,7 @@ functions:
 		if order_clause.length() > 0
 			src = src + "__first_sql = __first_sql + \" ORDER BY " + parse_order_clause(order_clause) + "\"\n"
 		src = src + "__first_sql = __first_sql + \" LIMIT 1\"\n"
-		src = src + "return json.get(json.get(json.get(_db_query(__first_sql, \"[]\"), \"data\"), \"rows\"), \"0\")\n"
+		src = src + "return __first_as_" + model_name + "(_db_query(__first_sql, \"[]\"))\n"
 		return src
 
 	// Rewrite a queries: method body that uses the `return E.<verb>: <dsl>`
@@ -3940,6 +4205,7 @@ functions:
 		_ctx_set_error_context(ctx, "FRAME-DATA-E004", "expand_first for " + model_name)
 		string binding = extract_binding_line(body)
 		string dsl_body = strip_binding_line(body)
+		string sfx = scoped_temp_suffix(binding, dsl_body)
 		string table_name = pluralize(to_snake_case(model_name))
 		string where_clause = extract_subblock(dsl_body, "where:")
 		string order_clause = extract_subblock(dsl_body, "order:")
@@ -3951,13 +4217,13 @@ functions:
 			if order_clause.length() > 0
 				sql = sql + " ORDER BY " + parse_order_clause(order_clause)
 			sql = sql + " LIMIT 1"
-			string call_src = "json.get(json.get(json.get(_db_query(\"" + sql + "\", \"[]\"), \"data\"), \"rows\"), \"0\")"
+			string call_src = "__first_as_" + model_name + "(_db_query(\"" + sql + "\", \"[]\"))"
 			string stmt_src = ""
 			if binding.length() > 0
 				stmt_src = binding + " = " + call_src
 			else
 				stmt_src = call_src
-			integer stmt_h = _emit_stmt_from_source(ctx, stmt_src, 0)
+			integer stmt_h = emit_scoped_stmt(ctx, sfx, stmt_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first parse failed for " + model_name)
 			integer emit_err = _emit_statement_into_start(ctx, stmt_h)
@@ -3969,20 +4235,20 @@ functions:
 		// individually so the __first_sql declaration lives in the same scope
 		// as its mutations and the tail's _db_query call (SEM007 __first_sql
 		// otherwise — same class of bug as expand_find's multi-branch path).
-		integer decl_h = _emit_stmt_from_source(ctx, "string __first_sql = \"SELECT * FROM " + table_name + "\"\n", 0)
+		integer decl_h = emit_scoped_stmt(ctx, sfx, "string __first_sql = \"SELECT * FROM " + table_name + "\"\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E004", "expand_first __first_sql decl parse failed for " + model_name)
 		integer emit_decl = _emit_statement_into_start(ctx, decl_h)
 		if emit_decl != 0
 			return plugin_error(ctx, "FRAME-DATA-E004", "expand_first __first_sql decl emit failed for " + model_name)
 		if has_tenant
-			integer t_decl_h = _emit_stmt_from_source(ctx, "string __first_tenant = tenant_getId()\n", 0)
+			integer t_decl_h = emit_scoped_stmt(ctx, sfx, "string __first_tenant = tenant_getId()\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first tenant decl parse failed for " + model_name)
 			integer emit_t_decl = _emit_statement_into_start(ctx, t_decl_h)
 			if emit_t_decl != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first tenant decl emit failed for " + model_name)
-			integer tf_decl_h = _emit_stmt_from_source(ctx, "string __first_tf = \"tenant_id = '\" + __first_tenant + \"'\"\n", 0)
+			integer tf_decl_h = emit_scoped_stmt(ctx, sfx, "string __first_tf = \"tenant_id = '\" + __first_tenant + \"'\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first tf decl parse failed for " + model_name)
 			integer emit_tf_decl = _emit_statement_into_start(ctx, tf_decl_h)
@@ -3993,39 +4259,39 @@ functions:
 				where_src = "__first_sql = __first_sql + \" WHERE \" + __first_tf + \" AND \" + (" + build_where_expr(where_clause) + ")\n"
 			else
 				where_src = "__first_sql = __first_sql + \" WHERE \" + __first_tf\n"
-			integer where_h = _emit_stmt_from_source(ctx, where_src, 0)
+			integer where_h = emit_scoped_stmt(ctx, sfx, where_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first where parse failed for " + model_name)
 			integer emit_where = _emit_statement_into_start(ctx, where_h)
 			if emit_where != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first where emit failed for " + model_name)
 		else if where_clause.length() > 0
-			integer where_h = _emit_stmt_from_source(ctx, "__first_sql = __first_sql + \" WHERE \" + (" + build_where_expr(where_clause) + ")\n", 0)
+			integer where_h = emit_scoped_stmt(ctx, sfx, "__first_sql = __first_sql + \" WHERE \" + (" + build_where_expr(where_clause) + ")\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first where parse failed for " + model_name)
 			integer emit_where = _emit_statement_into_start(ctx, where_h)
 			if emit_where != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first where emit failed for " + model_name)
 		if order_clause.length() > 0
-			integer order_h = _emit_stmt_from_source(ctx, "__first_sql = __first_sql + \" ORDER BY " + parse_order_clause(order_clause) + "\"\n", 0)
+			integer order_h = emit_scoped_stmt(ctx, sfx, "__first_sql = __first_sql + \" ORDER BY " + parse_order_clause(order_clause) + "\"\n", 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first order parse failed for " + model_name)
 			integer emit_order = _emit_statement_into_start(ctx, order_h)
 			if emit_order != 0
 				return plugin_error(ctx, "FRAME-DATA-E004", "expand_first order emit failed for " + model_name)
-		integer limit_h = _emit_stmt_from_source(ctx, "__first_sql = __first_sql + \" LIMIT 1\"\n", 0)
+		integer limit_h = emit_scoped_stmt(ctx, sfx, "__first_sql = __first_sql + \" LIMIT 1\"\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E004", "expand_first limit parse failed for " + model_name)
 		integer emit_limit = _emit_statement_into_start(ctx, limit_h)
 		if emit_limit != 0
 			return plugin_error(ctx, "FRAME-DATA-E004", "expand_first limit emit failed for " + model_name)
-		string tail = "json.get(json.get(json.get(_db_query(__first_sql, \"[]\"), \"data\"), \"rows\"), \"0\")"
+		string tail = "__first_as_" + model_name + "(_db_query(__first_sql, \"[]\"))"
 		string tail_stmt_src = ""
 		if binding.length() > 0
 			tail_stmt_src = binding + " = " + tail
 		else
 			tail_stmt_src = tail
-		integer tail_h = _emit_stmt_from_source(ctx, tail_stmt_src, 0)
+		integer tail_h = emit_scoped_stmt(ctx, sfx, tail_stmt_src, 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E004", "expand_first tail parse failed for " + model_name)
 		integer emit_tail = _emit_statement_into_start(ctx, tail_h)
@@ -4111,11 +4377,13 @@ functions:
 		return 0
 
 	// Expand <Model>.paginate: block. Emits preamble statements (where JSON
-	// composition, dynamic-order guard) and returns json.parse(<paged_json>).
+	// composition, dynamic-order guard) and returns __paged_as_<Model>(<paged_json>),
+	// a PagedResult_<Model> (DAT-Q021).
 	integer expand_paginate(integer ctx, string model_name, string body)
 		_ctx_set_error_context(ctx, "FRAME-DATA-E008", "expand_paginate for " + model_name)
 		string binding = extract_binding_line(body)
 		string dsl_body = strip_binding_line(body)
+		string sfx = scoped_temp_suffix(binding, dsl_body)
 		string table_name = pluralize(to_snake_case(model_name))
 		string where_clause = extract_subblock(dsl_body, "where:")
 		string order_clause = extract_subblock(dsl_body, "order:")
@@ -4149,13 +4417,13 @@ functions:
 		if order_is_dynamic
 			string guard_src = "if not _db_valid_field(\"" + table_name + "\", " + order_out + ")\n"
 			guard_src = guard_src + "\treturn \"{\\\"ok\\\":false,\\\"err\\\":{\\\"code\\\":\\\"VALIDATION_ERROR\\\",\\\"message\\\":\\\"Unknown sort field: \\\" + " + order_out + " + \"\\\"}}\"\n"
-			integer guard_h = _emit_stmt_from_source(ctx, guard_src, 0)
+			integer guard_h = emit_scoped_stmt(ctx, sfx, guard_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate guard parse failed for " + model_name)
 			integer emit_guard = _emit_statement_into_start(ctx, guard_h)
 			if emit_guard != 0
 				return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate guard emit failed for " + model_name)
-		integer wj_h = _emit_stmt_from_source(ctx, "string __where_json_pg = " + where_json_expr + "\n", 0)
+		integer wj_h = emit_scoped_stmt(ctx, sfx, "string __where_json_pg = " + where_json_expr + "\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate where_json decl parse failed for " + model_name)
 		integer emit_wj = _emit_statement_into_start(ctx, wj_h)
@@ -4166,25 +4434,25 @@ functions:
 			order_inject_src = order_inject_src + "\t__where_json_pg = \"{\\\"__order\\\":\\\"\" + " + order_out + " + \"\\\"}\"\n"
 			order_inject_src = order_inject_src + "else\n"
 			order_inject_src = order_inject_src + "\t__where_json_pg = __where_json_pg.substring(0, __where_json_pg.length() - 1) + \",\\\"__order\\\":\\\"\" + " + order_out + " + \"\\\"}\"\n"
-			integer order_inject_h = _emit_stmt_from_source(ctx, order_inject_src, 0)
+			integer order_inject_h = emit_scoped_stmt(ctx, sfx, order_inject_src, 0)
 			if _ctx_had_error(ctx) != 0
 				return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate order injection parse failed for " + model_name)
 			integer emit_order_inject = _emit_statement_into_start(ctx, order_inject_h)
 			if emit_order_inject != 0
 				return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate order injection emit failed for " + model_name)
-		integer pj_h = _emit_stmt_from_source(ctx, "string __paged_json = _db_paginate(\"" + table_name + "\", __where_json_pg, " + page_expr + ", " + per_page_expr + ")\n", 0)
+		integer pj_h = emit_scoped_stmt(ctx, sfx, "string __paged_json = _db_paginate(\"" + table_name + "\", __where_json_pg, " + page_expr + ", " + per_page_expr + ")\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate paged_json decl parse failed for " + model_name)
 		integer emit_pj = _emit_statement_into_start(ctx, pj_h)
 		if emit_pj != 0
 			return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate paged_json decl emit failed for " + model_name)
-		string tail = "json.parse(__paged_json)"
+		string tail = "__paged_as_" + model_name + "(__paged_json)"
 		string tail_stmt_src = ""
 		if binding.length() > 0
 			tail_stmt_src = binding + " = " + tail
 		else
 			tail_stmt_src = tail
-		integer tail_h = _emit_stmt_from_source(ctx, tail_stmt_src, 0)
+		integer tail_h = emit_scoped_stmt(ctx, sfx, tail_stmt_src, 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E008", "expand_paginate tail parse failed for " + model_name)
 		integer emit_tail = _emit_statement_into_start(ctx, tail_h)
@@ -4193,11 +4461,13 @@ functions:
 		return 0
 
 	// Expand <Model>.cursor: block. Emits preamble statements (where JSON,
-	// cursor field extraction) and returns json.parse(<cursor_json>).
+	// cursor field extraction) and returns __cursor_as_<Model>(<cursor_json>,
+	// <after>), a CursorResult_<Model> (DAT-Q021).
 	integer expand_cursor(integer ctx, string model_name, string body)
 		_ctx_set_error_context(ctx, "FRAME-DATA-E009", "expand_cursor for " + model_name)
 		string binding = extract_binding_line(body)
 		string dsl_body = strip_binding_line(body)
+		string sfx = scoped_temp_suffix(binding, dsl_body)
 		string table_name = pluralize(to_snake_case(model_name))
 		string where_clause = extract_subblock(dsl_body, "where:")
 		string cursor_clause = extract_subblock(dsl_body, "cursor:")
@@ -4219,25 +4489,31 @@ functions:
 		string where_json_expr = build_where_json_expr(where_clause)
 		// Emit each preamble statement individually — same scoping fix as
 		// expand_find / expand_first / expand_paginate.
-		integer wj_h = _emit_stmt_from_source(ctx, "string __where_json_cur = " + where_json_expr + "\n", 0)
+		integer wj_h = emit_scoped_stmt(ctx, sfx, "string __where_json_cur = " + where_json_expr + "\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor where_json decl parse failed for " + model_name)
 		integer emit_wj = _emit_statement_into_start(ctx, wj_h)
 		if emit_wj != 0
 			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor where_json decl emit failed for " + model_name)
-		integer cj_h = _emit_stmt_from_source(ctx, "string __cursor_json = _db_cursor_page(\"" + table_name + "\", __where_json_cur, " + per_page_expr + ", " + after_expr + ", " + by_expr + ")\n", 0)
+		integer ca_h = emit_scoped_stmt(ctx, sfx, "string __cursor_after = " + after_expr + "\n", 0)
+		if _ctx_had_error(ctx) != 0
+			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor after decl parse failed for " + model_name)
+		integer emit_ca = _emit_statement_into_start(ctx, ca_h)
+		if emit_ca != 0
+			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor after decl emit failed for " + model_name)
+		integer cj_h = emit_scoped_stmt(ctx, sfx, "string __cursor_json = _db_cursor_page(\"" + table_name + "\", __where_json_cur, " + per_page_expr + ", __cursor_after, " + by_expr + ")\n", 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor cursor_json decl parse failed for " + model_name)
 		integer emit_cj = _emit_statement_into_start(ctx, cj_h)
 		if emit_cj != 0
 			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor cursor_json decl emit failed for " + model_name)
-		string tail = "json.parse(__cursor_json)"
+		string tail = "__cursor_as_" + model_name + "(__cursor_json, __cursor_after)"
 		string tail_stmt_src = ""
 		if binding.length() > 0
 			tail_stmt_src = binding + " = " + tail
 		else
 			tail_stmt_src = tail
-		integer tail_h = _emit_stmt_from_source(ctx, tail_stmt_src, 0)
+		integer tail_h = emit_scoped_stmt(ctx, sfx, tail_stmt_src, 0)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-DATA-E009", "expand_cursor tail parse failed for " + model_name)
 		integer emit_tail = _emit_statement_into_start(ctx, tail_h)
@@ -4892,10 +5168,56 @@ functions:
 //     error("transaction failed")
 
 functions:
+	// Normalize a block body whose first line arrives already trimmed while
+	// the following lines keep their indentation. The first line sits at the
+	// body's base level, so the second non-blank line is either at the base
+	// level or — when the first line opens a block with a trailing `:` — one
+	// level deeper. Strip that base indentation from every following line.
+	string dedent_block_body(string body)
+		integer first_nl = body.indexOf("\n")
+		if first_nl == -1
+			return body
+		string first_line = body.substring(0, first_nl).trim()
+		string rest = body.substring(first_nl + 1, body.length())
+		// Indentation (in tabs) of the first non-blank following line.
+		integer probe = 0
+		integer second_indent = -1
+		while probe < rest.length() and second_indent == -1
+			integer le = rest.indexOf("\n", probe)
+			if le == -1
+				le = rest.length()
+			string ln = rest.substring(probe, le)
+			if ln.trim().length() > 0
+				integer t = 0
+				while t < ln.length() and ln.substring(t, t + 1) == "\t"
+					t = t + 1
+				second_indent = t
+			probe = le + 1
+		if second_indent <= 0
+			return body
+		integer base = second_indent
+		if first_line.endsWith(":")
+			base = second_indent - 1
+		if base <= 0
+			return body
+		string out = first_line
+		integer pos = 0
+		while pos < rest.length()
+			integer le2 = rest.indexOf("\n", pos)
+			if le2 == -1
+				le2 = rest.length()
+			string ln2 = rest.substring(pos, le2)
+			integer strip = 0
+			while strip < base and strip < ln2.length() and ln2.substring(strip, strip + 1) == "\t"
+				strip = strip + 1
+			out = out + "\n" + ln2.substring(strip, ln2.length())
+			pos = le2 + 1
+		return out
+
 	string build_transaction_src(string body)
 		string result = "_db_begin()\n"
 		result = result + "boolean __tx_success = true\n"
-		result = result + body + "\n"
+		result = result + dedent_block_body(body) + "\n"
 		result = result + "_db_commit()\n"
 		result = result + "__tx_success = true\n"
 		result = result + "onError:\n"
@@ -4910,9 +5232,14 @@ functions:
 		_ctx_set_error_context(ctx, "FRAME-DATA-E014", "expand_transaction")
 		string src = build_transaction_src(body)
 		integer stmt = _emit_stmt_from_source(ctx, src, 0)
-		if _ctx_had_error(ctx) != 0
+		if _ctx_had_error(ctx) != 0 or stmt == 0
 			return plugin_error(ctx, "FRAME-DATA-E014", "expand_transaction failed")
-		return stmt
+		// The return value is a status code (0 = success), not the handle:
+		// the statements are placed at the block's position.
+		integer emit_err = _emit_statement_into_start(ctx, stmt)
+		if emit_err != 0
+			return plugin_error(ctx, "FRAME-DATA-E014", "expand_transaction emit failed")
+		return 0
 
 // ============================================================================
 // SUB-CYCLE 5: RAW QUERY + TYPED QUERY EXPANDERS

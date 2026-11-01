@@ -1,0 +1,44 @@
+// Test: frame.ui — styles block (frame-ui.ebnf §4 styles_block).
+//
+// `styles <Name>:` is a top-level declaration with a `variables:` section
+// (css_token_name: string_literal → CSS custom properties on :root) and a
+// `global:` section (raw CSS rule lines). It emits no Clean code: its CSS
+// goes into frame.ui's theme.css stylesheet artifact, so the program around
+// it compiles and runs unchanged. For this file the artifact holds:
+//   /* styles Theme */
+//   :root {
+//   	--color-bg: #0a0a0f;
+//   	--font-body: 'DM Sans', sans-serif;
+//   }
+//   body {
+//   	background: var(--color-bg);
+//   	font-family: var(--font-body);
+//   }
+//   main { max-width: 800px; }
+
+plugins:
+	frame.ui
+
+start:
+	// The runner compiles into tests/framework/output, where frame.ui writes
+	// the theme.css artifact next to the module.
+	string css = file.read("tests/framework/output/theme.css")
+	boolean ok_vars = css.contains("--color-bg: #0a0a0f;") and css.contains("--font-body: 'DM Sans', sans-serif;")
+	boolean ok_root = css.contains(":root {")
+	boolean ok_global = css.contains("background: var(--color-bg);") and css.contains("main { max-width: 800px; }")
+	if ok_vars and ok_root and ok_global
+		printl("PASS: ui-styles-block")
+	else
+		printl("FAIL: ui-styles-block css=" + css)
+
+styles Theme:
+	variables:
+		color-bg: "#0a0a0f"
+		font-body: "'DM Sans', sans-serif"
+
+	global:
+		body {
+			background: var(--color-bg);
+			font-family: var(--font-body);
+		}
+		"main { max-width: 800px; }"

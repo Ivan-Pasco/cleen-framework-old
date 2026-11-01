@@ -1,24 +1,39 @@
 // E2E: multi-plugin composition — auth + data + jobs + server in one app.
 
+// Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
+// reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.jobs
+	frame.server
+	frame.data
+	frame.auth
 
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	user: ["reminders.create"]
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` / `.insert_id:` /
+// `.update:` / `.delete:` block mutations, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015) and writes through `Database.save(entity)` /
+// `Database.delete(entity)`; the new id is read from `entity.id` (DAT-S001,
+// DAT-S003, DAT-Q014). Tables are created with `Model.migrate()` (DAT-C005).
 data Reminder:
-	integer id
-	integer userId
-	string message
-	integer runAt
+	fields:
+		integer id primary generated
+		integer userId required
+		string message required
+		integer runAt required
 
 start:
 	printl("[boot] e2e-multi-plugin server ready")
@@ -27,20 +42,23 @@ jobs:
 	SendReminder:
 		string args = job.args()
 		if args.length() > 0
-			job.succeed("{\"sent\":true}")
+			job.succeed("\{\"sent\":true\}")
 
 endpoints:
 	GET "/test":
-		auth.setSession("{\"user_id\":42,\"role\":\"user\"}")
+		auth.setSession("\{\"user_id\":42,\"role\":\"user\"\}")
 		boolean ok_auth = auth.isAuthenticated() and auth.can("reminders.create")
 
-		integer id = Reminder.insert_id:
-			userId = auth.userId()
-			message = "call mom"
-			runAt = time.now() + 3600
+		Reminder.migrate()
+		Reminder reminder = Reminder()
+		reminder.userId = auth.userId()
+		reminder.message = "call mom"
+		reminder.runAt = time.now() + 3600
+		Database.save(reminder)
+		integer id = reminder.id
 		boolean ok_data = id > 0
 
-		string jid = queue.enqueue("SendReminder", "{\"id\":" + id.toString() + "}")
+		string jid = queue.enqueue("SendReminder", "\{\"id\":" + id.toString() + "\}")
 		boolean ok_job = jid.length() > 0
 
 		if ok_auth and ok_data and ok_job

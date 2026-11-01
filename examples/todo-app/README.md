@@ -6,9 +6,13 @@ A REST API example demonstrating CRUD operations with Clean Framework.
 
 ```
 app/
+├── data/
+│   └── models/
+│       └── Todo.cln          → Todo data model
 ├── ui/
-│   └── pages/
-│       └── index.html        → GET /
+│   └── web/
+│       └── pages/
+│           └── index.html    → GET /
 └── server/
     └── api/
         ├── health.cln            → GET /api/health

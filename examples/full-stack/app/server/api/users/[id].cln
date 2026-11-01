@@ -1,28 +1,32 @@
 // Single user API
 
 endpoints:
-	[admin] GET "/api/users/:id":
-		string id = param("id")
-		string user = User.first:
+	GET "/api/users/:id" [admin]:
+		integer userId = param("id").toInteger()
+		User user = User.first:
 			where:
-				id = id
-		if user == "" or user == "null"
+				id == userId
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"user\": " + user + "}")
+		return json({ok: true, user: {id: user.id, name: user.name, email: user.email, role: user.role, active: user.active}})
 
-	[admin] PUT "/api/users/:id":
-		string id = param("id")
-		string body = body()
-		User.update:
-			set:
-				name = body
+	PUT "/api/users/:id" [admin]:
+		integer userId = param("id").toInteger()
+		User user = User.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"user updated\", \"id\": \"" + id + "\"}")
+				id == userId
+		onError:
+			return notFound()
+		user.name = body()
+		Database.save(user)
+		return jsonResponse("{\"ok\": true, \"message\": \"user updated\", \"id\": " + userId.toString() + "}")
 
-	[admin] DELETE "/api/users/:id":
-		string id = param("id")
-		User.delete:
+	DELETE "/api/users/:id" [admin]:
+		integer userId = param("id").toInteger()
+		User user = User.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"user deleted\", \"id\": \"" + id + "\"}")
+				id == userId
+		onError:
+			return notFound()
+		Database.delete(user)
+		return jsonResponse("{\"ok\": true, \"message\": \"user deleted\", \"id\": " + userId.toString() + "}")

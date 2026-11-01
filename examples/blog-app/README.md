@@ -98,139 +98,97 @@ frame api:sdk typescript src/api-client.ts
 ### 1. Data Models with Relationships
 
 ```clean
-// models/Post.cln
-data Post {
-	id: integer
-	title: string
-	content: string
-	author_id: integer
-	created_at: string
+// app/data/models/Post.cln
+data Post:
+	fields:
+		integer id primary generated
+		integer author_id required
+		string title required
+		string content required
+		string slug required unique
+		boolean published default: false
+		integer views default: 0
+		string created_at
+		string updated_at
 
-	// Relationship to User
-	belongsTo: User
+	indexes:
+		author_id
+		(published, created_at)
 
-	// Relationship to Comments
-	hasMany: Comment
-}
+	relations:
+		author: belongs_to User on author_id
 ```
 
 ### 2. API Endpoints
 
+Reads use the query DSL; writes construct or load an entity and go through
+`Database.save` / `Database.delete`.
+
 ```clean
-// HTTP API endpoints
+// app/server/api/posts/[id].cln
 endpoints:
-	GET "/api/posts":
-		return json(Post.find: order: createdAt desc)
-
-	POST "/api/posts" [auth]:
-		Post post = Post.insert(req.json(Post))
-		return json(post)
-
 	GET "/api/posts/:id":
-		Post? post = Post.first: where: id == req.params.id.toInteger()
-		if post == null
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
+			where:
+				id == postId
+		onError:
 			return notFound()
-		return json(post)
+		return json({ok: true, post: post})
 
-	PUT "/api/posts/:id" [auth]:
-		Post post = Post.update(req.params.id.toInteger(), req.json(Post))
-		return json(post)
-
-	DELETE "/api/posts/:id" [auth]:
-		Post.delete: where: id == req.params.id.toInteger()
-		return json({ deleted: true })
-
-	POST "/api/login":
-		return auth.session.login(req.json(Credentials))
-
-	POST "/api/logout":
-		return auth.session.logout()
-
-	GET "/api/me" [auth]:
-		return json(req.context.user)
+	DELETE "/api/posts/:id" [user, admin, editor]:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
+			where:
+				id == postId
+		onError:
+			return notFound()
+		Database.delete(post)
+		return jsonResponse("{\"ok\": true}")
 ```
 
-### 3. Components with Islands
+### 3. Components
 
 ```clean
-// components/PostList.cln
-component PostList {
-	// Island component for client-side interactivity
-	client: "visible"  // Hydrate when visible
+// app/ui/web/components/PostCard.cln
+component: tag="post-card"
+	inputs:
+		title: string = ""
+		excerpt: string = ""
+		author: string = ""
+		date: string = ""
 
-	data posts: Array<Post>
-	data currentPage: integer
-
-	Widget render() {
-		return html(
-			<div class="post-list">
-				{posts.map(post =>
-					<PostCard post={post} />
-				)}
-				<Pagination page={currentPage} />
-			</div>
-		)
-	}
-
-	// Client-side event handler
-	onClick loadMore() {
-		// Fetch more posts
-	}
-}
+	html:
+		<article class="post-card">
+			<h2>{title}</h2>
+			<p>{excerpt}</p>
+			<span>By {author} on {date}</span>
+		</article>
 ```
 
-### 4. Form Validation
+### 4. Authentication and Roles
 
 ```clean
-// Validate post creation
-import frame-ui:validation
+// app/auth/auth.cln
+auth:
+	session:
+		cookie = "blog.sid"
+		timeoutMinutes = 120
+		httpOnly = true
+		sameSite = "Lax"
 
-functions:
-	Widget createPostPage() {
-		data validator = FormValidator.new()
-		validator.addRule("title", required())
-		validator.addRule("title", minLength(5))
-		validator.addRule("content", required())
-		validator.addRule("content", minLength(100))
-
-		data result = validator.validate(formData)
-
-		if result.isValid() {
-			// Create post
-		} else {
-			// Show errors
-		}
-	}
+	roles:
+		admin: ["*"]
+		editor: ["posts.write", "comments.write"]
+		user: ["comments.write"]
 ```
 
-### 5. Authentication Guard
+Routes are guarded with inline role modifiers after the path:
 
 ```clean
-// Protect routes with authentication
 endpoints:
-	POST "/api/posts" [auth]:
-		Post post = Post.create(req.json(Post))
-		return json(post)
-```
-
-### 6. Database Queries
-
-```clean
-// Complex queries with relationships
-import frame-data:*
-
-functions:
-	Widget listPosts() {
-		data posts = Post.find()
-			.where("published", true)
-			.orderBy("created_at", "desc")
-			.limit(10)
-			.with("author")  // Eager load author
-			.with("comments") // Eager load comments
-			.execute()
-
-		return json(posts)
-	}
+	POST "/api/posts" [user, admin, editor]:
+		...
 ```
 
 ## Architecture Highlights

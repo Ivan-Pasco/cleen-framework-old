@@ -1,6 +1,11 @@
 // Test: frame.auth — session lifecycle inside a request handler.
 // Server-shaped: runner hits /test after boot to drive the assertions.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 

@@ -2,14 +2,13 @@
 
 endpoints:
 	GET "/api/todos":
-		string results = Todo.find:
+		list<Todo> results = Todo.find:
 			order: created_at desc
 
-		return jsonResponse(results)
+		return json(results)
 
 	POST "/api/todos":
-		string body = body()
-		any bodyData = json.tryTextToData(body)
+		any bodyData = json.tryTextToData(body())
 		if bodyData == null
 			return badRequest("Invalid JSON")
 
@@ -17,16 +16,15 @@ endpoints:
 		if titleField == null
 			return badRequest("Title is required")
 
-		string title = titleField.toString()
-		string desc = ""
+		Todo item = Todo()
+		item.title = titleField.toString()
+		item.details = ""
+		item.completed = 0
 
-		any descField = bodyData.description
+		any descField = json.get(bodyData, "description")
 		if descField != null
-			desc = descField.toString()
+			item.details = descField.toString()
 
-		integer newId = Todo.insert:
-			title = title
-			description = desc
-			completed = 0
+		Database.save(item)
 
-		return jsonResponse("{\"ok\":true,\"id\":" + newId.toString() + "}")
+		return jsonResponse("{\"ok\":true,\"id\":" + item.id.toString() + "}")

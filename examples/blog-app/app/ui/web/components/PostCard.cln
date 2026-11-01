@@ -1,16 +1,16 @@
 // PostCard component
-component: name="PostCard", client="off"
+// Tag: <post-card title="..." excerpt="..." author="..." date="...">
 
-props:
-	string title
-	string excerpt
-	string author
-	string date
+component: tag="post-card"
+	inputs:
+		title: string = ""
+		excerpt: string = ""
+		author: string = ""
+		date: string = ""
 
-article: class="post-card"
-	h2:
-		{title}
-	p:
-		{excerpt}
-	span:
-		"By {author} on {date}"
+	html:
+		<article class="post-card">
+			<h2>{title}</h2>
+			<p>{excerpt}</p>
+			<span>By {author} on {date}</span>
+		</article>

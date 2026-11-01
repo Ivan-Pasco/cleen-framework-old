@@ -2,55 +2,53 @@
 
 endpoints:
 	GET "/api/todos/:id":
-		string todoId = param("id")
+		integer todoId = param("id").toInteger()
 
-		string todo = Todo.first:
+		Todo item = Todo.first:
 			where:
-				id = todoId
-
-		if todo == null
+				id == todoId
+		onError:
 			return notFound()
 
-		return jsonResponse(todo)
+		return json(item)
 
 	PUT "/api/todos/:id":
-		string todoId = param("id")
+		integer todoId = param("id").toInteger()
 
-		string body = body()
-		any bodyData = json.tryTextToData(body)
+		any bodyData = json.tryTextToData(body())
 		if bodyData == null
 			return badRequest("Invalid JSON")
 
+		Todo item = Todo.first:
+			where:
+				id == todoId
+		onError:
+			return notFound()
+
 		any titleField = bodyData.title
-		any descField = bodyData.description
+		any descField = json.get(bodyData, "description")
 		any completedField = bodyData.completed
 
-		string title = ""
-		string desc = ""
-		integer completed = 0
-
 		if titleField != null
-			title = titleField.toString()
+			item.title = titleField.toString()
 		if descField != null
-			desc = descField.toString()
+			item.details = descField.toString()
 		if completedField != null
-			completed = completedField.toInteger()
+			item.completed = completedField.toInteger()
 
-		Todo.update:
-			set:
-				title = title
-				description = desc
-				completed = completed
-			where:
-				id = todoId
+		Database.save(item)
 
 		return jsonResponse("{\"ok\":true}")
 
 	DELETE "/api/todos/:id":
-		string todoId = param("id")
+		integer todoId = param("id").toInteger()
 
-		Todo.delete:
+		Todo item = Todo.first:
 			where:
-				id = todoId
+				id == todoId
+		onError:
+			return notFound()
+
+		Database.delete(item)
 
 		return jsonResponse("{\"ok\":true}")

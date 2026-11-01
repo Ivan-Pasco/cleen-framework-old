@@ -1,13 +1,16 @@
 // Posts API
+// Fixed: was `Post.insert:`, frame-data.ebnf v2 requires constructing the
+// entity and `Database.save(entity)` (DAT-S001). Query results are typed
+// lists/records (DAT-Q001) and are serialized with json.dataToText.
 
 endpoints:
 	GET "/api/posts":
-		string posts = Post.find:
+		list<Post> posts = Post.find:
 			order: date desc
-		return jsonResponse("{\"ok\": true, \"posts\": " + posts + "}")
+		return jsonResponse("\{\"ok\": true, \"posts\": " + json.dataToText(posts) + "\}")
 
 	POST "/api/posts":
-		string body = body()
-		Post.insert:
-			title = body
-		return jsonResponse("{\"ok\": true, \"message\": \"post created\"}")
+		Post post = Post()
+		post.title = body()
+		Database.save(post)
+		return jsonResponse("\{\"ok\": true, \"message\": \"post created\", \"id\": " + post.id.toString() + "\}")

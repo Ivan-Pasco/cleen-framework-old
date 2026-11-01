@@ -89,7 +89,7 @@ User dashboard with:
 2. **frame.server** - API endpoints
 3. **frame.auth** - Authentication & sessions
 4. **frame.ui** - SSR pages & forms
-5. **frame.canvas** - Particle animation
+5. **frame.canvas** - Particle animation (browser module, see below)
 
 ## Key Concepts Demonstrated
 
@@ -134,12 +134,23 @@ endpoints:
 ```
 
 ### Canvas Animations
+
+Canvas scenes run in the browser: every frame.canvas bridge function is
+browser-only, so `app/canvas/` is not part of the server build (`main.cln`
+limits the server build to `shared: [app/ui, app/server, app/data]`). The
+scene is its own browser module and draws into the page's
+`<canvas id="particles">` element:
+
+```bash
+cln compile app/canvas/particles.cln -o public/particles.wasm
+```
+
 ```clean
-canvas particles:
+canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
     state:
-        particles: list<Particle>
-    update:
-        // Physics simulation
-    render:
-        // Draw particles
+        number frameCount = 0.0
+
+    onFrame: param="dt"
+        frameCount = frameCount + dt * 60.0
+        canvas.circle x=400 y=200 radius=20 color="#ffffff30"
 ```

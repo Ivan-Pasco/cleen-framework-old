@@ -56,7 +56,7 @@ DOT_NAMESPACES = (
     "session.", "jwt.", "storage.", "audio.", "input.", "collision.",
     "camera.", "scene.", "page.", "res.", "req.", "json.", "job.",
     "schedule.", "locale.", "i18n.", "tween.", "particles.", "animState.",
-    "form.", "server.",
+    "form.", "server.", "file.",
 )
 
 # Standalone helper / builtin calls that count as "real" work.
@@ -86,7 +86,7 @@ HTML_BLOCK_RE = re.compile(r'^\s*html:\s*$', re.MULTILINE)
 DSL_BLOCK_RE = re.compile(
     r'^\s*(?:server|auth|roles|data\s+\w+|endpoints|middleware|routes|'
     r'canvasScene|component|page|locale|mail|jobs|schedule|mcp\s+"[^"]+"|'
-    r'transaction|load|form|send|state|events)\s*:',
+    r'transaction|load|form|send|state|events|styles\s+\w+)\s*:',
     re.MULTILINE,
 )
 

@@ -2,29 +2,22 @@
 
 endpoints:
 	POST "/api/auth/register":
-		string body = body()
-		any data = json.tryTextToData(body)
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string email = json.get(data, "email")
-		string password = json.get(data, "password")
-		string name = json.get(data, "name")
-		if email == "" or password == "" or name == ""
+		if data.email == null or data.password == null or data.name == null
 			return badRequest("Email, password, and name are required")
-		string existing = User.first:
+		string newEmail = data.email.toString()
+		boolean taken = User.exists:
 			where:
-				email = email
-		if existing != "" and existing != "null"
+				email == newEmail
+		if taken
 			return badRequest("An account with that email already exists")
-		string hash = auth.password.hash(password)
-		User.insert:
-			email = email
-			password_hash = hash
-			name = name
-			role = "user"
-		string user = User.first:
-			where:
-				email = email
-		string userId = json.getField(user, "id")
-		string token = auth.session.create(userId, "user")
+		User user = User()
+		user.email = newEmail
+		user.password_hash = auth.hashPassword(data.password.toString())
+		user.name = data.name.toString()
+		user.role = "user"
+		Database.save(user)
+		string token = auth.session.create(user.id, "{\"role\": \"user\"}")
 		return jsonResponse("{\"ok\": true, \"token\": \"" + token + "\"}")

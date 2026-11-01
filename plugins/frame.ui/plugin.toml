@@ -59,14 +59,15 @@ content_type    = "application/wasm"
 # Theme CSS as a static asset. Bytes come from build_state under
 # `frame.ui.theme.css` (populated by the plugin during expand) per
 # compiler/src/plugin_artifacts.rs::emit_static_asset_from_build_state.
-# Emitted only when at least one component is registered, matching
-# frontend.wasm's gate — UI-less server apps don't need a theme file.
+# Emitted when frame.ui has stylesheet content — the CSS of the project's
+# `styles <Name>:` blocks (frame-ui.ebnf §4), written under that key during
+# expand. Apps without a styles block get no theme file.
 [[artifacts]]
 name            = "theme.css"
 purpose         = "static_asset"
 emit            = "emit_ui_artifacts"
 output_relative = "{output_dir}/theme.css"
-required_when   = "has_build_state.frame.ui:components"
+required_when   = "has_build_state.frame.ui.theme.css"
 public          = true
 content_type    = "text/css"
 
@@ -109,7 +110,7 @@ assemble = "assemble_typed"
 lint = "lint_project"
 
 [handles]
-blocks = ["component", "page", "html", "ui"]
+blocks = ["component", "page", "html", "ui", "styles"]
 
 # Per-block typed-emission declarations (typed-emission.md §2.1).
 # version = 3 is required when expansion_version = "3.0.0". Every block the
@@ -129,6 +130,12 @@ expand = "expand_block_typed"
 version = 3
 
 [blocks.ui]
+expand = "expand_block_typed"
+version = 3
+
+# styles <Name>: — frame-ui.ebnf §4 styles_block. Emits no Clean code; the
+# block's CSS feeds build_state["frame.ui.theme.css"] (theme.css artifact).
+[blocks.styles]
 expand = "expand_block_typed"
 version = 3
 
@@ -350,7 +357,7 @@ functions = [
 
 [language]
 # Block-level keywords that start a declaration
-blocks = ["component", "page", "html", "ui"]
+blocks = ["component", "page", "html", "ui", "styles"]
 
 # Keywords used within plugin context
 keywords = [
@@ -616,4 +623,4 @@ anti_pattern = "triggering the destructive action immediately on click — alway
 example = "patterns/modal-confirm.cln"
 
 [build]
-built_with_compiler = "0.33.165"
+built_with_compiler = "0.33.166"

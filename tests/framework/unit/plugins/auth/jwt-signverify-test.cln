@@ -3,7 +3,10 @@
 
 start:
 	string secret = "test-secret-for-jwt-signverify-32bytes"
-	string payload = "{\"sub\":\"user1\",\"role\":\"user\"}"
+	// Fixed: was a payload without iat/exp, spec requires both claims on issued
+	// tokens (frame-auth-semantics.md AUTH-J002).
+	integer now = time.now()
+	string payload = "{\"sub\":\"user1\",\"role\":\"user\",\"iat\":" + now.toString() + ",\"exp\":" + (now + 3600).toString() + "}"
 
 	string token = jwt.sign(payload, secret, "HS256")
 	boolean ok_sign = token.length() > 0

@@ -1,7 +1,9 @@
 // Test: frame.jobs — queue.status, queue.result, queue.cancel.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.jobs
+	frame.server
 
 server:
 	port: 3400

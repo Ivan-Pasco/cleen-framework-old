@@ -1,30 +1,50 @@
 // Integration: auth + data — protected endpoint reads model backed by DB.
 
+// Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
+// reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	user: ["profile.view"]
 
+// Fixed: was a bare-field `data Profile:` block, frame-data.ebnf v2 requires
+// the `fields:` sub-block (DAT-M015).
 data Profile:
-	integer id
-	integer userId
-	string bio
+	fields:
+		integer id primary generated
+		integer userId required
+		string bio required
 
 start:
 	printl("[boot] integration-auth-data server ready")
 
 endpoints:
 	GET "/test":
-		Profile.insert:
-			userId = 1
-			bio = "user 1 profile"
-		auth.setSession("{\"user_id\":1,\"role\":\"user\"}")
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Profile.migrate()
+
+		// Fixed: was `Profile.insert:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` (DAT-S001).
+		Profile profile = Profile()
+		profile.userId = 1
+		profile.bio = "user 1 profile"
+		Database.save(profile)
+		auth.setSession("\{\"user_id\":1,\"role\":\"user\"\}")
 		boolean ok_auth = auth.isAuthenticated() and auth.can("profile.view")
 
 		Profile p = Profile.first:

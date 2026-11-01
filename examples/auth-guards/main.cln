@@ -1,6 +1,6 @@
 package: AuthGuards
-    version: "1.0.0"
+	version: "1.0.0"
 
-    target: web
-        plugins: [frame.ui, frame.server, frame.auth]
-        entry: app/ui/web/pages/index.html
+	target: server
+		plugins: [frame.ui, frame.server, frame.auth]
+		entry: app/ui/web/pages/index.html

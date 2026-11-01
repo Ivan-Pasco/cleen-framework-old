@@ -1,7 +1,7 @@
 // Header Component
 // Renders the site header with navigation
 
-component: tag="site-header"
+component: tag="app-header"
 	html:
 		<header class="site-header">
 			<div class="header-content">

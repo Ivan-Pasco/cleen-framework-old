@@ -1,6 +1,16 @@
 // Comment model
-data Comment
-	integer post_id
-	integer author_id
-	string body
-	string created_at
+data Comment:
+	fields:
+		integer id primary generated
+		integer post_id required
+		integer author_id required
+		string body required
+		string created_at
+
+	indexes:
+		post_id
+		author_id
+
+	relations:
+		post: belongs_to Post on post_id
+		author: belongs_to User on author_id

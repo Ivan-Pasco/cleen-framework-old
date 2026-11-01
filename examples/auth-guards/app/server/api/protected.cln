@@ -1,5 +1,5 @@
 // Protected endpoint - requires authentication
 
 endpoints:
-	[user] GET "/api/protected":
+	GET "/api/protected" [user]:
 		return jsonResponse("{\"message\": \"This is protected\"}")

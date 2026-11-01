@@ -1,0 +1,37 @@
+// Test: frame.canvas — a canvasScene with drawing commands expands and runs.
+//
+// The scene mixes plugin-built statements (canvas.* drawing commands, state
+// load/save) with user-authored statements (assignments, a while loop,
+// comments, layer routing) in one frame body. Drawing-command attribute values
+// are expressions: numbers, state variables, and arithmetic such as
+// `radius=size * 2.0`. Regression: the plugin pushed `_emit_stmt_from_source`
+// statement handles into batch arrays (PLUGIN013), passed every attribute
+// value as a string literal (SEM001 on number parameters), and sent comment
+// lines to the statement parser (SYN001).
+
+plugins:
+	frame.canvas
+
+start:
+	_frame_callback(0)
+	printl("PASS: canvas-scene-draw-commands")
+
+canvasScene: id="demo" width=200 height=100 fps=30 background="#000000"
+
+	state:
+		number frameCount = 0.0
+
+	onFrame: param="dt"
+		frameCount = frameCount + dt * 60.0
+
+		on layer "shapes":
+			// Center dot
+			canvas.circle x=100 y=50 radius=10 color="#ffffff"
+			canvas.rect x=0 y=0 width=20 height=20 color="#ff0000"
+
+			// Orbit
+			integer i = 0
+			while i < 3
+				number size = 2.0 + i.toNumber()
+				canvas.circle x=100.0 + size y=50.0 radius=size * 2.0 color="#4ecdc4"
+				i = i + 1

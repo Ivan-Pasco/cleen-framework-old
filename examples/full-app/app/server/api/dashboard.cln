@@ -1,9 +1,9 @@
 // Dashboard statistics API
 
 endpoints:
-	[user, admin] GET "/api/dashboard":
-		string tasks = Task.find:
+	GET "/api/dashboard" [user, admin]:
+		list<Task> tasks = Task.find:
 			order: status asc
-		string projects = Project.find:
+		list<Project> projects = Project.find:
 			order: name asc
-		return jsonResponse("{\"ok\": true, \"tasks\": " + tasks + ", \"projects\": " + projects + "}")
+		return json({ok: true, tasks: tasks, projects: projects})

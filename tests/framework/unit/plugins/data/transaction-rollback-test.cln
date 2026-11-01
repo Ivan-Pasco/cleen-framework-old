@@ -1,35 +1,52 @@
 // Test: frame.data — transaction: block commits atomically.
 // SQLite :memory: — no external DB required.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data Account:` block, frame-data.ebnf v2 requires
+// the `fields:` sub-block (DAT-M015).
 data Account:
-	integer id
-	string owner
-	integer balance
+	fields:
+		integer id primary generated
+		string owner required
+		integer balance required
 
 endpoints:
 	GET "/test":
-		Account.insert:
-			owner = "alice"
-			balance = 100
-		Account.insert:
-			owner = "bob"
-			balance = 50
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Account.migrate()
+
+		// Fixed: was `Account.insert:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` (DAT-S001).
+		Account aliceNew = Account()
+		aliceNew.owner = "alice"
+		aliceNew.balance = 100
+		Database.save(aliceNew)
+		Account bobNew = Account()
+		bobNew.owner = "bob"
+		bobNew.balance = 50
+		Database.save(bobNew)
 
 		// Commit path: transfer 30 from alice to bob within a transaction.
+		// Fixed: was `Account.update:` with set:/where:, frame-data.ebnf v2
+		// requires load-mutate-save via `Database.save(entity)` (DAT-S001).
 		transaction:
-			Account.update:
-				set:
-					balance = 70
+			Account payer = Account.first:
 				where:
 					owner == "alice"
-			Account.update:
-				set:
-					balance = 80
+			payer.balance = 70
+			Database.save(payer)
+			Account payee = Account.first:
 				where:
 					owner == "bob"
+			payee.balance = 80
+			Database.save(payee)
 
 		Account alice = Account.first:
 			where:

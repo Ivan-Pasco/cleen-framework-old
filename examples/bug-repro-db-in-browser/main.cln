@@ -19,9 +19,10 @@ package: BugReproDbInBrowser
 // Inlined so `cln build main.cln` discovers the model without needing a
 // package.clean.toml or explicit `use` directive.
 data Todo:
-	integer id
-	string title
-	integer completed
+	fields:
+		integer id primary generated
+		string title
+		integer completed
 
 start:
 	integer s = ui.onEvent(".btn-check", "click", "checkTodo")
@@ -38,7 +39,7 @@ functions:
 	checkTodo()
 		boolean exists = Todo.exists:
 			where:
-				id = 1
+				id == 1
 
 		found = exists
 		if found

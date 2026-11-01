@@ -1,47 +1,60 @@
 // Integration: CRUD over HTTP endpoints backed by a data model.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data Task:` block, frame-data.ebnf v2 requires
+// the `fields:` sub-block (DAT-M015).
 data Task:
-	integer id
-	string title
-	boolean done
+	fields:
+		integer id primary generated
+		string title required
+		boolean done required
 
 start:
 	printl("[boot] integration-crud-endpoints server ready")
 
 endpoints:
 	GET "/test":
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Task.migrate()
+
 		// CREATE
-		integer id = Task.insert_id:
-			title = "learn frame.data"
-			done = false
-		boolean ok_create = id > 0
+		// Fixed: was `Task.insert_id:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` then reading `entity.id` (DAT-Q014).
+		Task task = Task()
+		task.title = "learn frame.data"
+		task.done = false
+		Database.save(task)
+		integer taskId = task.id
+		boolean ok_create = taskId > 0
 
 		// READ
 		Task t = Task.first:
 			where:
-				id == id
+				id == taskId
 		boolean ok_read = t.title == "learn frame.data"
 
 		// UPDATE
-		Task.update:
-			set:
-				done = true
-			where:
-				id == id
+		// Fixed: was `Task.update:` with set:/where:, frame-data.ebnf v2
+		// requires load-mutate-save via `Database.save(entity)` (DAT-S001).
+		t.done = true
+		Database.save(t)
 
 		Task done_t = Task.first:
 			where:
-				id == id
+				id == taskId
 		boolean ok_update = done_t.done
 
 		// DELETE
-		integer removed = Task.delete:
-			where:
-				id == id
-		boolean ok_delete = removed == 1
+		// Fixed: was `Task.delete:` with where:, frame-data.ebnf v2 requires
+		// `Database.delete(entity)` (DAT-S003).
+		boolean ok_delete = Database.delete(done_t)
 
 		if ok_create and ok_read and ok_update and ok_delete
 			printl("PASS: integration-crud-endpoints")

@@ -1,16 +1,17 @@
 // Current user endpoints
 
 endpoints:
-	[user, admin] GET "/api/me":
+	GET "/api/me" [user, admin]:
 		string session = auth.getCurrentUser()
 		return jsonResponse("{\"ok\": true, \"user\": " + session + "}")
 
-	[user, admin] PUT "/api/me":
-		string body = body()
-		string session = auth.getCurrentUser()
-		User.update:
-			set:
-				name = body
+	PUT "/api/me" [user, admin]:
+		integer userId = auth.userId()
+		User user = User.first:
 			where:
-				id = session
+				id == userId
+		onError:
+			return notFound()
+		user.name = body()
+		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"profile updated\"}")

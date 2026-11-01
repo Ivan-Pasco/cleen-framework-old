@@ -1,5 +1,5 @@
 // Editor posts - requires editor role
 
 endpoints:
-	[editor] GET "/api/editor/posts":
+	GET "/api/editor/posts" [editor]:
 		return jsonResponse("{\"message\": \"Editor posts\"}")

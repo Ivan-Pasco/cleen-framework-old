@@ -1,10 +1,10 @@
 // Navbar component
-component: name="Navbar", client="off"
+// Tag: <app-navbar>
 
-nav: class="navbar"
-	a: href="/"
-		"Home"
-	a: href="/posts"
-		"Posts"
-	a: href="/users"
-		"Users"
+component: tag="app-navbar"
+	html:
+		<nav class="navbar">
+			<a href="/">Home</a>
+			<a href="/posts">Posts</a>
+			<a href="/users">Users</a>
+		</nav>

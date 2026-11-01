@@ -1,19 +1,33 @@
-// Test: frame.data — Model.insert / .first / .update / .delete roundtrip.
+// Test: frame.data — save (insert) / count / first / save (update) / delete roundtrip.
 // SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
 
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data User:` block, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015).
 data User:
-	integer id
-	string email
-	string name
+	fields:
+		integer id primary generated
+		string email required
+		string name required
 
 endpoints:
 	GET "/test":
-		User.insert:
-			email = "alice@example.com"
-			name = "Alice"
+		// Table creation: `Model.migrate()` (DAT-C005).
+		User.migrate()
+
+		// Fixed: was `User.insert:`, frame-data.ebnf v2 requires
+		// constructing the entity and `Database.save(entity)` (DAT-S001).
+		User alice = User()
+		alice.email = "alice@example.com"
+		alice.name = "Alice"
+		Database.save(alice)
 
 		integer count = User.count
 		boolean ok_count = count == 1
@@ -23,21 +37,19 @@ endpoints:
 				email == "alice@example.com"
 		boolean ok_first = user.name == "Alice"
 
-		User.update:
-			set:
-				name = "Alicia"
-			where:
-				email == "alice@example.com"
+		// Fixed: was `User.update:` with set:/where:, frame-data.ebnf v2
+		// requires load-mutate-save via `Database.save(entity)` (DAT-S001).
+		user.name = "Alicia"
+		Database.save(user)
 
 		User updated = User.first:
 			where:
 				email == "alice@example.com"
 		boolean ok_update = updated.name == "Alicia"
 
-		integer deleted = User.delete:
-			where:
-				email == "alice@example.com"
-		boolean ok_delete = deleted == 1
+		// Fixed: was `User.delete:` with where:, frame-data.ebnf v2 requires
+		// `Database.delete(entity)` (DAT-S003); it reports whether a row was removed.
+		boolean ok_delete = Database.delete(updated)
 
 		integer after = User.count
 		boolean ok_gone = after == 0

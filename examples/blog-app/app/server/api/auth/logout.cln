@@ -1,6 +1,6 @@
 // Logout endpoint
 
 endpoints:
-	[user, admin] POST "/api/auth/logout":
+	POST "/api/auth/logout" [user, admin]:
 		auth.session.destroy()
 		return jsonResponse("{\"ok\": true}")

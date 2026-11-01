@@ -1,11 +1,12 @@
 // Header component
-component: name="Header", client="off"
+// Tag: <app-header>
 
-header:
-	nav:
-		a: href="/"
-			"Blog"
-		a: href="/posts"
-			"Posts"
-		a: href="/login"
-			"Login"
+component: tag="app-header"
+	html:
+		<header>
+			<nav>
+				<a href="/">Blog</a>
+				<a href="/posts">Posts</a>
+				<a href="/login">Login</a>
+			</nav>
+		</header>

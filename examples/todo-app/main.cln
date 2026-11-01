@@ -1,6 +1,6 @@
 package: TodoApp
     version: "1.0.0"
 
-    target: web
-        plugins: [frame.data, frame.server]
+    target: server
+        plugins: [frame.ui, frame.data, frame.server]
         entry: app/ui/web/pages/index.html

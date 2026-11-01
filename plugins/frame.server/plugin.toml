@@ -274,7 +274,7 @@ functions = [
   # required for correctness.
 
   # Email - SMTP (server-only; reaches out to an SMTP relay)
-  { name = "_email_configure", params = ["string", "integer", "boolean", "string", "string", "string"], returns = "void", description = "Configure SMTP connection: host, port, secure, username, password, from address. Called once during startup from a mail: config block.", expand_strings = true, hosts = ["server"] },
+  { name = "_email_configure", params = ["string", "i64", "boolean", "string", "string", "string"], returns = "void", description = "Configure SMTP connection: host, port, secure, username, password, from address. Called once during startup from a mail: config block.", expand_strings = true, hosts = ["server"] },
   { name = "_email_send", params = ["string", "string", "string", "string", "string"], returns = "boolean", description = "Send email: to, subject, html body, plain-text body, from override (empty string uses configured default). Returns true on success.", expand_strings = true, hosts = ["server"] },
   { name = "_email_last_error", params = [], returns = "string", description = "Return the error message from the last failed _email_send call; returns empty string when the last send succeeded.", hosts = ["server"] },
 ]
@@ -398,7 +398,7 @@ functions = [
   # File download
   { name = "res.download", signature = "res.download(filename)", description = "Set Content-Disposition: attachment header so the browser downloads the response as a file named filename", maps_to = "_res_download", params = ["string"], returns = "void" },
   # Email helpers
-  { name = "email.send", signature = "email.send(to, subject, html, text)", description = "Send email with HTML and plain-text body; uses configured SMTP server. Returns true on success.", maps_to = "_email_send", params = ["string", "string", "string", "string", "string"], returns = "boolean" },
+  { name = "email.send", signature = "email.send(to, subject, html, text)", description = "Send email with HTML and plain-text body; uses configured SMTP server. Returns true on success.", maps_to = "_email_send", params = ["string", "string", "string", "string", "string"], returns = "boolean", param_defaults = ["", "", "", "", "\"\""] },
   { name = "email.sendFrom", signature = "email.sendFrom(to, subject, html, text, from)", description = "Send email with explicit from address override. Returns true on success.", maps_to = "_email_send", params = ["string", "string", "string", "string", "string"], returns = "boolean" },
   { name = "email.lastError", signature = "email.lastError()", description = "Return error message from the last failed email.send call; empty string when last send succeeded", maps_to = "_email_last_error", params = [], returns = "string" },
 ]
@@ -513,4 +513,4 @@ anti_pattern = "polling the server with repeated GET requests on a timer — use
 example = "patterns/live-feed-realtime.cln"
 
 [build]
-built_with_compiler = "0.33.165"
+built_with_compiler = "0.33.166"

@@ -2,15 +2,15 @@
 
 endpoints:
 	GET "/api/posts":
-		string posts = Post.find:
+		list<Post> posts = Post.find:
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"posts\": " + posts + "}")
+		return json({ok: true, posts: posts})
 
 	GET "/api/posts/:slug":
-		string slug = param("slug")
-		string post = Post.first:
+		string postSlug = param("slug")
+		Post post = Post.first:
 			where:
-				slug = slug
-		if post == "" or post == "null"
+				slug == postSlug
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"post\": " + post + "}")
+		return json({ok: true, post: post})

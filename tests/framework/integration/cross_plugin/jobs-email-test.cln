@@ -1,7 +1,9 @@
 // Integration: jobs + email — enqueue a job that would send email on run.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.jobs
+	frame.server
 
 server:
 	port: 3400
@@ -18,8 +20,10 @@ start:
 
 jobs:
 	SendWelcome:
-		string to = job.args()
-		if email.send(to, "Welcome", "<b>hi</b>", "hi")
+		// Fixed: was a variable named `to`, spec reserves `to` as a keyword
+		// (grammar.ebnf keyword list).
+		string recipient = job.args()
+		if email.send(recipient, "Welcome", "<b>hi</b>", "hi")
 			job.succeed("{\"sent\":true}")
 		else
 			job.fail(email.lastError())

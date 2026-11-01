@@ -1,47 +1,71 @@
 // E2E: blog app — auth roles, posts + comments with author linkage.
 
+// Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
+// reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	author: ["posts.write"]
 	reader: ["posts.read"]
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` / `.insert_id:` /
+// `.update:` / `.delete:` block mutations, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015) and writes through `Database.save(entity)` /
+// `Database.delete(entity)`; the new id is read from `entity.id` (DAT-S001,
+// DAT-S003, DAT-Q014). Tables are created with `Model.migrate()` (DAT-C005).
 data Post:
-	integer id
-	integer authorId
-	string title
-	string body
+	fields:
+		integer id primary generated
+		integer authorId required
+		string title required
+		string body required
 
 data Comment:
-	integer id
-	integer postId
-	string author
-	string body
+	fields:
+		integer id primary generated
+		integer postId required
+		string author required
+		string body required
 
 start:
 	printl("[boot] e2e-blog-app server ready")
 
 endpoints:
 	GET "/test":
-		auth.setSession("{\"user_id\":1,\"role\":\"author\"}")
+		auth.setSession("\{\"user_id\":1,\"role\":\"author\"\}")
 		boolean ok_role = auth.can("posts.write")
 
-		integer pid = Post.insert_id:
-			authorId = auth.userId()
-			title = "hello world"
-			body = "first post"
+		Post.migrate()
+		Comment.migrate()
+
+		Post post = Post()
+		post.authorId = auth.userId()
+		post.title = "hello world"
+		post.body = "first post"
+		Database.save(post)
+		integer pid = post.id
 		boolean ok_post = pid > 0
 
-		Comment.insert:
-			postId = pid
-			author = "reader"
-			body = "great post!"
+		Comment comment = Comment()
+		comment.postId = pid
+		comment.author = "reader"
+		comment.body = "great post!"
+		Database.save(comment)
 
 		list<Comment> comments = Comment.find:
 			where:

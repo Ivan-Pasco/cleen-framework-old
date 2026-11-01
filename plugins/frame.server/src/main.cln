@@ -17,11 +17,15 @@ external:
 	// Statement constructors (typed-emission.md §3.8)
 	integer _stmt_call(integer ctx, string callee, string args_json)
 	integer _stmt_assign(integer ctx, string target, integer expr_handle)
+	// Real let-declaration (the first introduction of a handler local).
+	integer _stmt_var_decl(integer ctx, string name, string type_lp, integer expr_handle_or_0)
 	integer _stmt_if(integer ctx, integer cond_handle, integer then_block_handle, integer else_block_handle)
 	integer _stmt_return(integer ctx, integer expr_handle)
 	integer _stmt_block(integer ctx, string stmts_json)
 	// Expression constructors (typed-emission.md §3.9)
 	integer _expr_string_lit(integer ctx, string value)
+	// User-authored expression fragment parsed by the compiler (§3.16).
+	integer _emit_expr_from_source(integer ctx, string source, integer origin_offset)
 	integer _expr_int_lit(integer ctx, integer value_lo, integer value_hi)
 	integer _expr_bool_lit(integer ctx, integer value)
 	integer _expr_ident(integer ctx, string name)
@@ -746,7 +750,7 @@ functions:
 		string result = ""
 		// boolean __auth_ok = false
 		integer false_expr = _expr_bool_lit(ctx, 0)
-		integer auth_ok_assign = _stmt_assign(ctx, "__auth_ok", false_expr)
+		integer auth_ok_assign = _stmt_var_decl(ctx, "__auth_ok", "boolean", false_expr)
 		result = result + auth_ok_assign.toString()
 
 		// For each role: if _auth_require_role("role") == 1: __auth_ok = true
@@ -911,12 +915,12 @@ functions:
 		string host_str = ""
 		string static_dir = ""
 
-		string mail_host = ""
+		string mail_host = "\"\""
 		string mail_port = "587"
 		string mail_secure = "true"
-		string mail_username = ""
-		string mail_password = ""
-		string mail_from = ""
+		string mail_username = "\"\""
+		string mail_password = "\"\""
+		string mail_from = "\"\""
 		boolean has_mail = false
 
 		string cors_origins = ""
@@ -1102,12 +1106,22 @@ functions:
 
 		// _email_configure when mail: block present
 		if has_mail
-			integer em_host = _expr_string_lit(ctx, mail_host)
+			// resolve_server_config_value yields a Clean expression (a quoted
+			// string or `_env_get("NAME")`), so each value is parsed as one.
+			integer em_host = _emit_expr_from_source(ctx, mail_host, 0)
 			integer em_port = _expr_int_lit(ctx, mail_port.toInteger(), 0)
-			integer em_sec = _expr_bool_lit(ctx, 1)
-			integer em_user = _expr_string_lit(ctx, mail_username)
-			integer em_pass = _expr_string_lit(ctx, mail_password)
-			integer em_from = _expr_string_lit(ctx, mail_from)
+			// `secure: false` selects a plain (non-TLS) SMTP connection; the
+			// default and `secure: true` use TLS.
+			integer secure_bit = 1
+			if mail_secure == "false"
+				secure_bit = 0
+			else if mail_secure != "true"
+				_emit_error(ctx, 2, "FRAME-SERVER-E006", "server: mail: secure must be true or false, got `" + mail_secure + "`", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
+			integer em_sec = _expr_bool_lit(ctx, secure_bit)
+			integer em_user = _emit_expr_from_source(ctx, mail_username, 0)
+			integer em_pass = _emit_expr_from_source(ctx, mail_password, 0)
+			integer em_from = _emit_expr_from_source(ctx, mail_from, 0)
 			integer em_stmt = _stmt_call(ctx, "_email_configure", "[" + em_host.toString() + "," + em_port.toString() + "," + em_sec.toString() + "," + em_user.toString() + "," + em_pass.toString() + "," + em_from.toString() + "]")
 			integer em_err = _emit_statement_into_start(ctx, em_stmt)
 			if em_err != 0
@@ -1163,7 +1177,7 @@ functions:
 
 		// _http_listen_on or _http_listen
 		if host_str.length() > 0
-			integer ls_host = _expr_string_lit(ctx, host_str)
+			integer ls_host = _emit_expr_from_source(ctx, host_str, 0)
 			integer ls_port = _expr_int_lit(ctx, port_str.toInteger(), 0)
 			integer ls_stmt = _stmt_call(ctx, "_http_listen_on", "[" + ls_host.toString() + "," + ls_port.toString() + "]")
 			integer ls_err = _emit_statement_into_start(ctx, ls_stmt)

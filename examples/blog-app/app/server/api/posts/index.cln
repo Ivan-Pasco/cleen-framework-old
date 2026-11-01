@@ -2,29 +2,24 @@
 
 endpoints:
 	GET "/api/posts":
-		string posts = Post.find:
+		list<Post> posts = Post.find:
 			where:
-				published = true
+				published == true
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"posts\": " + posts + "}")
+		return json({ok: true, posts: posts})
 
-	[user, admin, editor] POST "/api/posts":
-		string body = body()
-		any data = json.tryTextToData(body)
+	POST "/api/posts" [user, admin, editor]:
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string title = json.get(data, "title")
-		string content = json.get(data, "content")
-		string slug = json.get(data, "slug")
-		if title == "" or content == "" or slug == ""
+		if data.title == null or data.content == null or data.slug == null
 			return badRequest("Title, content, and slug are required")
-		string session = auth.getCurrentUser()
-		string authorId = json.getField(session, "id")
-		Post.insert:
-			author_id = authorId
-			title = title
-			content = content
-			slug = slug
-			published = false
-			views = 0
+		Post post = Post()
+		post.author_id = auth.userId()
+		post.title = data.title.toString()
+		post.content = data.content.toString()
+		post.slug = data.slug.toString()
+		post.published = false
+		post.views = 0
+		Database.save(post)
 		return jsonResponse("{\"ok\": true}")

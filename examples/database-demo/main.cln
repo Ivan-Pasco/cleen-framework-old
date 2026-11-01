@@ -3,7 +3,5 @@ package: DatabaseDemo
 	description: "Database operations demo"
 
 	target: server
-		plugins: [frame.server, frame.data]
-
-	server:
-		port: 3000
+		plugins: [frame.ui, frame.server, frame.data]
+		entry: app/ui/web/pages/index.html

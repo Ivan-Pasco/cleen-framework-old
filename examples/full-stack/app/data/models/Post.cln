@@ -1,8 +1,13 @@
 // Post model
-data Post
-	integer user_id
-	string title
-	string content
-	boolean published
-	string created_at
-	string updated_at
+data Post:
+	fields:
+		integer id primary generated
+		integer user_id required
+		string title
+		string content
+		boolean published default: false
+		string created_at
+		string updated_at
+
+	relations:
+		author: belongs_to User on user_id

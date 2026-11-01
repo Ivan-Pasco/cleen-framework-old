@@ -2,17 +2,16 @@
 
 endpoints:
 	GET "/api/posts":
-		string posts = Post.find:
+		list<Post> posts = Post.find:
 			where:
-				published = true
+				published == true
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"posts\": " + posts + "}")
+		return json({ok: true, posts: posts})
 
-	[user, admin] POST "/api/posts":
-		string session = auth.getCurrentUser()
-		string body = body()
-		Post.insert:
-			user_id = session
-			content = body
-			published = false
+	POST "/api/posts" [user, admin]:
+		Post post = Post()
+		post.user_id = auth.userId()
+		post.content = body()
+		post.published = false
+		Database.save(post)
 		return jsonResponse("{\"ok\": true, \"message\": \"post created\"}")

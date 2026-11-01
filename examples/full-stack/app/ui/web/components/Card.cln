@@ -1,12 +1,13 @@
 // Card component
-component: name="Card", client="off"
+// Tag: <ui-card title="..." content="...">
 
-props:
-	string title
-	string content
+component: tag="ui-card"
+	inputs:
+		title: string = ""
+		content: string = ""
 
-div: class="card"
-	h3:
-		{title}
-	p:
-		{content}
+	html:
+		<div class="card">
+			<h3>{title}</h3>
+			<p>{content}</p>
+		</div>

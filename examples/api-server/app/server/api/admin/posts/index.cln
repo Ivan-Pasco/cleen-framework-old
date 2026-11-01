@@ -1,7 +1,7 @@
 // Admin posts list endpoint
 
 endpoints:
-	[admin] GET "/api/admin/posts":
-		string posts = Post.find:
+	GET "/api/admin/posts" [admin]:
+		list<Post> posts = Post.find:
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"posts\": " + posts + "}")
+		return json({ok: true, posts: posts})

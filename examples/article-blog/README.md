@@ -76,9 +76,10 @@ data Article
 
 ### Insert
 ```clean
-Author.insert:
-    name = "Elena Marchetti"
-    bio = "Senior Editor"
+Author author = Author()
+author.name = "Elena Marchetti"
+author.bio = "Senior Editor"
+Database.save(author)
 ```
 
 ### Find with conditions
@@ -127,15 +128,12 @@ Modify the `category` field values and update the CSS:
 ### Add New Articles
 Use the Frame Data syntax:
 ```clean
-Article.insert:
-    title = "Your Article Title"
-    slug = "your-article-slug"
-    excerpt = "Brief description..."
-    content = "<p>Full HTML content...</p>"
-    coverImage = "https://..."
-    category = "Design"
-    readTime = 5
-    published = true
-    author = someAuthor
-    publishedAt = now()
+Article article = Article()
+article.title = "Your Article Title"
+article.slug = "your-article-slug"
+article.excerpt = "Brief description..."
+article.content = "<p>Full HTML content...</p>"
+article.category = "Design"
+article.read_time = 5
+Database.save(article)
 ```

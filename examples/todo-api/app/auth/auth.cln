@@ -1,0 +1,18 @@
+// Todo API - Authentication Configuration
+// Session-based authentication with role-based access control.
+
+auth:
+	session:
+		cookie = "todo.sid"
+		sameSite = "Lax"
+		secure = true
+		httpOnly = true
+		path = "/"
+		timeoutMinutes = 60
+
+	jwt:
+		enabled = false
+
+	roles:
+		admin: ["users:read", "users:write", "todos:read", "todos:write", "todos:delete"]
+		user: ["todos:read", "todos:write"]

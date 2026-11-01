@@ -2,28 +2,32 @@
 
 endpoints:
 	GET "/api/posts/:id":
-		string id = param("id")
-		string post = Post.first:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		if post == "" or post == "null"
+				id == postId
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"post\": " + post + "}")
+		return json({ok: true, post: post})
 
-	[user, admin] PUT "/api/posts/:id":
-		string id = param("id")
-		string body = body()
-		Post.update:
-			set:
-				content = body
-				updated_at = body
+	PUT "/api/posts/:id" [user, admin]:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"post updated\", \"id\": \"" + id + "\"}")
+				id == postId
+		onError:
+			return notFound()
+		post.content = body()
+		post.updated_at = time.now().toString()
+		Database.save(post)
+		return jsonResponse("{\"ok\": true, \"message\": \"post updated\", \"id\": " + postId.toString() + "}")
 
-	[user, admin] DELETE "/api/posts/:id":
-		string id = param("id")
-		Post.delete:
+	DELETE "/api/posts/:id" [user, admin]:
+		integer postId = param("id").toInteger()
+		Post post = Post.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"post deleted\", \"id\": \"" + id + "\"}")
+				id == postId
+		onError:
+			return notFound()
+		Database.delete(post)
+		return jsonResponse("{\"ok\": true, \"message\": \"post deleted\", \"id\": " + postId.toString() + "}")

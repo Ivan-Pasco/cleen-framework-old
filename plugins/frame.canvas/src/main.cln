@@ -61,6 +61,9 @@ external:
 	// (prompt f7183604). Handle interop with _emit_statement_into_start.
 	integer _batch_stmtVarDecl(integer ctx, string name, string type_lp, integer expr_handle)
 	integer _batch_stmtBlock(integer ctx, integer stmts_array_handle)
+	integer _batch_stmtIf(integer ctx, integer cond_handle, integer then_array_handle, integer else_array_handle)
+	integer _batch_stmtWhile(integer ctx, integer cond_handle, integer body_array_handle)
+	integer _batch_stmtFor(integer ctx, string iter_var, integer iterable_handle, integer body_array_handle)
 	integer _batch_stmtReturn(integer ctx, integer expr_handle)
 	// ---- Array helpers (§3.14, Am 7, Am 8) ----
 	integer _batch_arrayNew(integer ctx)
@@ -198,6 +201,22 @@ functions:
 
 	integer il(integer ctx, integer n)
 		return _batch_intLit(ctx, n, 0)
+
+	// User-authored expression fragment (a DSL attribute value or state
+	// default) parsed by the compiler (§3.16). The handle is pushed into
+	// batch argument arrays with _batch_arrayPush (§3.14 composition).
+	integer ue(integer ctx, string source)
+		return _emit_expr_from_source(ctx, source, 0)
+
+	// Attribute value of `key` in a canvas command's inline attributes as an
+	// expression handle: the value written after `key=` (a quoted string, a
+	// number, a name or an expression such as `size * 2.0`), or
+	// `default_src` when the attribute is absent.
+	integer av(integer ctx, string ia, string key, string default_src)
+		string src = get_iexpr(ia, key)
+		if src == ""
+			src = default_src
+		return ue(ctx, src)
 
 	integer bl(integer ctx, boolean b)
 		integer bit = 0
@@ -446,10 +465,14 @@ functions:
 		if body.indexOf("\n") == -1
 			return extract_scene_subblock_flat(body.replace("\t", " "), keyword)
 		// Multi-line mode
+		// The sub-block is the lines indented deeper than its header. Lines
+		// keep their indentation so nested statements (loops, branches,
+		// `on layer` blocks) keep their structure.
 		string result = ""
 		integer scan = 0
 		integer len = body.length()
 		boolean in_block = false
+		integer header_ind = 0
 		while scan < len
 			integer nl = body.indexOf("\n", scan)
 			string line = ""
@@ -462,15 +485,14 @@ functions:
 				next_scan = nl + 1
 			string trimmed = line.trim()
 			if in_block
-				if is_scene_subblock_header(trimmed)
-					return result
 				if trimmed.length() > 0
-					result = result + trimmed + "\n"
+					if scene_indent(line) <= header_ind
+						return result
+					result = result + line + "\n"
 			else
-				if trimmed.startsWith(keyword + ":")
+				if trimmed.startsWith(keyword + ":") or trimmed.startsWith(keyword + " ")
 					in_block = true
-				else if trimmed.startsWith(keyword + " ")
-					in_block = true
+					header_ind = scene_indent(line)
 			scan = next_scan
 		return result
 
@@ -749,9 +771,9 @@ functions:
 					string vdefault = scene_var_default(t)
 					if vname.length() > 0
 						// number vname = _canvas_var_get("vname", default_val)
-						integer vn_h = sl(ctx, vname)
-						integer vd_h = sl(ctx, vdefault)
-						integer a = _batch_args(ctx, "[" + vn_h.toString() + "," + vd_h.toString() + "]")
+						integer a = _batch_arrayNew(ctx)
+						_batch_arrayPush(ctx, a, sl(ctx, vname))
+						_batch_arrayPush(ctx, a, ue(ctx, vdefault))
 						integer call_h = _batch_call(ctx, "_canvas_var_get", a)
 						// First introduction inside _frame_callback body — VarDecl (prompt f7183604).
 						integer stmt_h = _batch_stmtVarDecl(ctx, vname, "number", call_h)
@@ -837,9 +859,9 @@ functions:
 					if vname.length() > 0
 						// integer __siN = _canvas_var_set("vname", default_val)
 						string target = "__si" + idx.toString()
-						integer vn_h = sl(ctx, vname)
-						integer vd_h = sl(ctx, vdefault)
-						integer a = _batch_args(ctx, "[" + vn_h.toString() + "," + vd_h.toString() + "]")
+						integer a = _batch_arrayNew(ctx)
+						_batch_arrayPush(ctx, a, sl(ctx, vname))
+						_batch_arrayPush(ctx, a, ue(ctx, vdefault))
 						integer call_h = _batch_call(ctx, "_canvas_var_set", a)
 						// First introduction of __siN in start: — VarDecl (prompt f7183604).
 						integer stmt_h = _batch_stmtVarDecl(ctx, target, "integer", call_h)
@@ -850,54 +872,159 @@ functions:
 			return plugin_error(ctx, "FRAME-CANVAS-E550", "scene_state_init sticky-error tripped")
 		return 0
 
-	// v3 typed — line-oriented body expander. Walks body line by line; canvas.*
-	// lines are dispatched to scene_expand_cmd (typed: returns stmt handle) and
-	// pushed into body_arr. Other lines are emitted via _emit_stmt_from_source.
-	// Handles "on layer" routing (layer_begin/layer_end around groups).
+	// v3 typed — block-aware body expander. Walks the body one statement at a
+	// time; a statement's child block is the following lines indented deeper
+	// than it. canvas.* lines are dispatched to scene_expand_cmd (typed: returns
+	// stmt handle); `on layer "name":` wraps its block in _layer_begin /
+	// _layer_end; `while` / `if` / `else` / `iterate` headers become batch
+	// statements whose bodies are expanded recursively, so drawing commands
+	// inside loops and branches stay inside them. Other statements are
+	// user-authored and go through _emit_stmt_from_source (§3.11).
 	integer scene_expand_lines(integer ctx, integer body_arr, string body)
 		if body.indexOf("\n") == -1 and body.trim().length() > 0
 			return scene_expand_lines_flat(ctx, body_arr, body.replace("\t", " "))
-		integer scan = 0
+		integer pos = 0
 		integer len = body.length()
-		string current_layer = ""
-		while scan < len
-			integer nl = body.indexOf("\n", scan)
-			string line = ""
-			integer next_scan = 0
-			if nl == -1
-				line = body.substring(scan, len)
-				next_scan = len
-			else
-				line = body.substring(scan, nl)
-				next_scan = nl + 1
+		while pos < len
+			integer le = scene_line_end(body, pos)
+			string line = body.substring(pos, le)
 			string t = line.trim()
+			integer ind = scene_indent(line)
+			integer child_end = scene_child_end(body, pos, ind)
+			string child = ""
+			if child_end > le + 1
+				child = body.substring(le + 1, child_end)
+			integer next_pos = le + 1
+			if child_end > next_pos
+				next_pos = child_end
+			// A comment line is not a statement — nothing to emit.
+			if t.startsWith("//")
+				t = ""
 			if t.length() > 0
 				if t.startsWith("on layer ")
-					// Layer routing
-					if current_layer != ""
-						integer le_h = _emit_stmt_from_source(ctx, "_layer_end()", 0)
-						_batch_arrayPush(ctx, body_arr, le_h)
 					integer q1 = t.indexOf("\"")
 					integer q2 = t.indexOf("\"", q1 + 1)
 					if q1 != -1 and q2 != -1
-						current_layer = t.substring(q1 + 1, q2)
-						integer lb_h = _emit_stmt_from_source(ctx, "_layer_begin(\"" + current_layer + "\")", 0)
-						_batch_arrayPush(ctx, body_arr, lb_h)
+						_batch_arrayPush(ctx, body_arr, bcc1(ctx, "_layer_begin", sl(ctx, t.substring(q1 + 1, q2))))
+						scene_expand_lines(ctx, body_arr, child)
+						_batch_arrayPush(ctx, body_arr, _batch_stmtCall(ctx, "_layer_end", _batch_arrayNew(ctx)))
 				else if t.startsWith("canvas.")
 					integer cmd_h = scene_expand_cmd(ctx, t)
-					if cmd_h != 0
-						_batch_arrayPush(ctx, body_arr, cmd_h)
-					else
-						integer fb_h = _emit_stmt_from_source(ctx, t, 0)
-						_batch_arrayPush(ctx, body_arr, fb_h)
+					if cmd_h == 0
+						cmd_h = _emit_stmt_from_source(ctx, t, 0)
+					_batch_arrayPush(ctx, body_arr, cmd_h)
+				else if child.trim().length() == 0
+					_batch_arrayPush(ctx, body_arr, _emit_stmt_from_source(ctx, t, 0))
+				else if t.startsWith("while ")
+					integer w_arr = _batch_arrayNew(ctx)
+					scene_expand_lines(ctx, w_arr, child)
+					_batch_arrayPush(ctx, body_arr, _batch_stmtWhile(ctx, ue(ctx, t.substring(6, t.length()).trim()), w_arr))
+				else if t.startsWith("if ")
+					next_pos = scene_expand_if(ctx, body_arr, body, pos, ind, t.substring(3, t.length()).trim())
+				else if t.startsWith("iterate ") and t.indexOf(" in ") != -1
+					integer in_at = t.indexOf(" in ")
+					integer f_arr = _batch_arrayNew(ctx)
+					scene_expand_lines(ctx, f_arr, child)
+					_batch_arrayPush(ctx, body_arr, _batch_stmtFor(ctx, t.substring(8, in_at).trim(), ue(ctx, t.substring(in_at + 4, t.length()).trim()), f_arr))
 				else
-					integer src_h = _emit_stmt_from_source(ctx, t, 0)
-					_batch_arrayPush(ctx, body_arr, src_h)
-			scan = next_scan
-		if current_layer != ""
-			integer le2_h = _emit_stmt_from_source(ctx, "_layer_end()", 0)
-			_batch_arrayPush(ctx, body_arr, le2_h)
+					// Any other block statement is user-authored as a whole.
+					_batch_arrayPush(ctx, body_arr, _emit_stmt_from_source(ctx, scene_dedent(body.substring(pos, child_end), ind), 0))
+			pos = next_pos
 		return 0
+
+	// The `if` (or `else if`) header line at `pos` (indentation `ind`) with
+	// condition `cond`, plus its optional `else if` / `else` siblings at the
+	// same indentation. Pushes one if-statement into body_arr and returns the
+	// offset after the whole chain.
+	integer scene_expand_if(integer ctx, integer body_arr, string body, integer pos, integer ind, string cond)
+		integer le = scene_line_end(body, pos)
+		integer child_end = scene_child_end(body, pos, ind)
+		integer then_arr = _batch_arrayNew(ctx)
+		if child_end > le + 1
+			scene_expand_lines(ctx, then_arr, body.substring(le + 1, child_end))
+		integer next_pos = le + 1
+		if child_end > next_pos
+			next_pos = child_end
+		integer else_arr = 0
+		integer sib = scene_skip_blank(body, next_pos)
+		if sib < body.length()
+			integer sle = scene_line_end(body, sib)
+			string sline = body.substring(sib, sle)
+			string st = sline.trim()
+			if scene_indent(sline) == ind
+				if st.startsWith("else if ")
+					else_arr = _batch_arrayNew(ctx)
+					next_pos = scene_expand_if(ctx, else_arr, body, sib, ind, st.substring(8, st.length()).trim())
+				else if st == "else"
+					integer else_end = scene_child_end(body, sib, ind)
+					else_arr = _batch_arrayNew(ctx)
+					if else_end > sle + 1
+						scene_expand_lines(ctx, else_arr, body.substring(sle + 1, else_end))
+					next_pos = sle + 1
+					if else_end > next_pos
+						next_pos = else_end
+		_batch_arrayPush(ctx, body_arr, _batch_stmtIf(ctx, ue(ctx, cond), then_arr, else_arr))
+		return next_pos
+
+	// Indentation width (leading tabs / spaces) of a raw line.
+	integer scene_indent(string line)
+		integer i = 0
+		while i < line.length()
+			string c = line.substring(i, i + 1)
+			if c != "\t" and c != " "
+				return i
+			i = i + 1
+		return i
+
+	// End offset (exclusive, at the newline) of the line starting at `pos`.
+	integer scene_line_end(string body, integer pos)
+		integer nl = body.indexOf("\n", pos)
+		if nl == -1
+			return body.length()
+		return nl
+
+	// First offset at or after `pos` that starts a non-blank line.
+	integer scene_skip_blank(string body, integer pos)
+		integer p = pos
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			if body.substring(p, le).trim().length() > 0
+				return p
+			p = le + 1
+		return body.length()
+
+	// Offset just past the child block of the line starting at `pos`: the
+	// following lines indented deeper than `ind` (blank lines in between are
+	// part of the block, trailing blank lines are not).
+	integer scene_child_end(string body, integer pos, integer ind)
+		integer p = scene_line_end(body, pos) + 1
+		integer last = p
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string ln = body.substring(p, le)
+			if ln.trim().length() == 0
+				p = le + 1
+			else if scene_indent(ln) > ind
+				p = le + 1
+				last = p
+			else
+				p = body.length()
+		if last > body.length()
+			return body.length()
+		return last
+
+	// Remove `ind` leading indentation characters from every line of `src`.
+	string scene_dedent(string src, integer ind)
+		string out = ""
+		integer p = 0
+		while p < src.length()
+			integer le = scene_line_end(src, p)
+			string ln = src.substring(p, le)
+			if scene_indent(ln) >= ind
+				ln = ln.substring(ind, ln.length())
+			out = out + ln + "\n"
+			p = le + 1
+		return out
 
 	// v3 typed flat — handles space-joined (no-newline) body format.
 	// Walks tokens dispatching canvas.* via scene_expand_cmd, others via source.
@@ -2118,6 +2245,69 @@ functions:
 			i = i + 1
 		return result
 
+	// Source text of attribute `key` in `ia`: a quoted value keeps its quotes;
+	// an unquoted value runs until the next ` name=` attribute, so it may be
+	// an expression with spaces (`radius=size * 2.0`). Returns "" when the
+	// attribute is absent. `key=` only matches at the start of an attribute
+	// (so `x=` does not match inside `rx=`).
+	string get_iexpr(string ia, string key)
+		string pat = key + "="
+		integer pos = -1
+		integer search_from = 0
+		while search_from <= ia.length() and pos == -1
+			integer at = ia.indexOf(pat, search_from)
+			if at == -1
+				search_from = ia.length() + 1
+			else
+				boolean at_start = at == 0
+				if at > 0
+					string prev_char = ia.substring(at - 1, at)
+					at_start = prev_char == " " or prev_char == "\t"
+				integer after_pos = at + pat.length()
+				boolean is_compare = false
+				if after_pos < ia.length()
+					is_compare = ia.substring(after_pos, after_pos + 1) == "="
+				if at_start and is_compare == false
+					pos = at
+				else
+					search_from = at + 1
+		if pos == -1
+			return ""
+		integer vs = pos + pat.length()
+		if vs >= ia.length()
+			return ""
+		if ia.substring(vs, vs + 1) == "\""
+			integer ve = ia.indexOf("\"", vs + 1)
+			if ve == -1
+				return ""
+			return ia.substring(vs, ve + 1)
+		integer ve2 = ia.length()
+		integer i = vs
+		while i < ia.length()
+			if ia.substring(i, i + 1) == " "
+				if iexpr_attr_starts(ia, i + 1)
+					ve2 = i
+					i = ia.length()
+			i = i + 1
+		return ia.substring(vs, ve2).trim()
+
+	// True when an attribute `name=` (not `name==`) starts at `pos` in `ia`.
+	boolean iexpr_attr_starts(string ia, integer pos)
+		integer i = pos
+		while i < ia.length()
+			string c = ia.substring(i, i + 1)
+			boolean is_name = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_" or (i > pos and c >= "0" and c <= "9")
+			if c == "="
+				if i == pos
+					return false
+				if i + 1 < ia.length()
+					return ia.substring(i + 1, i + 2) != "="
+				return true
+			if is_name == false
+				return false
+			i = i + 1
+		return false
+
 	// v1 verbatim (main.v1.cln:2196) — like get_iattr but preserve outer quotes.
 	string get_iattr_raw(string ia, string key, string default_val)
 		string pat = key + "="
@@ -3248,36 +3438,72 @@ functions:
 	// bcc<N>: build a canvas-command batch_stmt_handle for a scene body (NOT start:).
 	// Named distinctly from sc<N> which targets start: via _emit_statement_into_start.
 	integer bcc1(integer ctx, string callee, integer a1)
-		string args_json = "[" + a1.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc2(integer ctx, string callee, integer a1, integer a2)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc3(integer ctx, string callee, integer a1, integer a2, integer a3)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc4(integer ctx, string callee, integer a1, integer a2, integer a3, integer a4)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "," + a4.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		_batch_arrayPush(ctx, arr, a4)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc5(integer ctx, string callee, integer a1, integer a2, integer a3, integer a4, integer a5)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "," + a4.toString() + "," + a5.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		_batch_arrayPush(ctx, arr, a4)
+		_batch_arrayPush(ctx, arr, a5)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc6(integer ctx, string callee, integer a1, integer a2, integer a3, integer a4, integer a5, integer a6)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "," + a4.toString() + "," + a5.toString() + "," + a6.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		_batch_arrayPush(ctx, arr, a4)
+		_batch_arrayPush(ctx, arr, a5)
+		_batch_arrayPush(ctx, arr, a6)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc7(integer ctx, string callee, integer a1, integer a2, integer a3, integer a4, integer a5, integer a6, integer a7)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "," + a4.toString() + "," + a5.toString() + "," + a6.toString() + "," + a7.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		_batch_arrayPush(ctx, arr, a4)
+		_batch_arrayPush(ctx, arr, a5)
+		_batch_arrayPush(ctx, arr, a6)
+		_batch_arrayPush(ctx, arr, a7)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	integer bcc8(integer ctx, string callee, integer a1, integer a2, integer a3, integer a4, integer a5, integer a6, integer a7, integer a8)
-		string args_json = "[" + a1.toString() + "," + a2.toString() + "," + a3.toString() + "," + a4.toString() + "," + a5.toString() + "," + a6.toString() + "," + a7.toString() + "," + a8.toString() + "]"
-		return _batch_stmtCall(ctx, callee, _batch_args(ctx, args_json))
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, a1)
+		_batch_arrayPush(ctx, arr, a2)
+		_batch_arrayPush(ctx, arr, a3)
+		_batch_arrayPush(ctx, arr, a4)
+		_batch_arrayPush(ctx, arr, a5)
+		_batch_arrayPush(ctx, arr, a6)
+		_batch_arrayPush(ctx, arr, a7)
+		_batch_arrayPush(ctx, arr, a8)
+		return _batch_stmtCall(ctx, callee, arr)
 
 	// scene_expand_cmd — expand one "canvas.cmd attr=val ..." inline line into
 	// a batch_stmt_handle for use in a scene handler body_arr.
@@ -3297,83 +3523,48 @@ functions:
 			cmd = line.substring(dot + 1, sp)
 			ia = line.substring(sp + 1, line.length())
 		integer cv = ident(ctx, "__cv")
+		// Attribute values are user-authored expressions (numbers, names,
+		// quoted strings, arithmetic) — each goes through av() / §3.16.
 
 		if cmd == "clear"
-			string color = get_iattr(ia, "color", "")
-			if color == ""
+			if get_iexpr(ia, "color") == ""
 				return bcc1(ctx, "_canvas_clear", cv)
-			return bcc2(ctx, "_canvas_clear_color", cv, sl(ctx, color))
+			return bcc2(ctx, "_canvas_clear_color", cv, av(ctx, ia, "color", ""))
 
 		if cmd == "circle"
-			string x = get_iattr(ia, "x", "0")
-			string y = get_iattr(ia, "y", "0")
-			string r_a = get_iattr(ia, "radius", "")
-			string r_b = get_iattr(ia, "r", "10")
-			string r = r_a
-			if r_a == ""
-				r = r_b
-			string color = get_iattr(ia, "color", "#000000")
-			string filled = get_iattr(ia, "filled", "true")
-			if filled == "false"
-				return bcc5(ctx, "_canvas_circle_outline", cv, sl(ctx, x), sl(ctx, y), sl(ctx, r), sl(ctx, color))
-			return bcc5(ctx, "_canvas_circle_filled", cv, sl(ctx, x), sl(ctx, y), sl(ctx, r), sl(ctx, color))
+			string r_key = "radius"
+			if get_iexpr(ia, "radius") == ""
+				r_key = "r"
+			string circle_fn = "_canvas_circle_filled"
+			if get_iexpr(ia, "filled") == "false"
+				circle_fn = "_canvas_circle_outline"
+			return bcc5(ctx, circle_fn, cv, av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"), av(ctx, ia, r_key, "10"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "rect"
-			string x = get_iattr(ia, "x", "0")
-			string y = get_iattr(ia, "y", "0")
-			string w = get_iattr(ia, "width", "100")
-			string h = get_iattr(ia, "height", "100")
-			string color = get_iattr(ia, "color", "#000000")
-			string filled = get_iattr(ia, "filled", "true")
-			string corner = get_iattr(ia, "cornerRadius", "")
-			if corner.length() > 0
-				return bcc7(ctx, "_canvas_rect_rounded", cv, sl(ctx, x), sl(ctx, y), sl(ctx, w), sl(ctx, h), sl(ctx, corner), sl(ctx, color))
-			if filled == "false"
-				return bcc6(ctx, "_canvas_rect_outline", cv, sl(ctx, x), sl(ctx, y), sl(ctx, w), sl(ctx, h), sl(ctx, color))
-			return bcc6(ctx, "_canvas_rect_filled", cv, sl(ctx, x), sl(ctx, y), sl(ctx, w), sl(ctx, h), sl(ctx, color))
+			if get_iexpr(ia, "cornerRadius") != ""
+				return bcc7(ctx, "_canvas_rect_rounded", cv, av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"), av(ctx, ia, "width", "100"), av(ctx, ia, "height", "100"), av(ctx, ia, "cornerRadius", "0"), av(ctx, ia, "color", "\"#000000\""))
+			string rect_fn = "_canvas_rect_filled"
+			if get_iexpr(ia, "filled") == "false"
+				rect_fn = "_canvas_rect_outline"
+			return bcc6(ctx, rect_fn, cv, av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"), av(ctx, ia, "width", "100"), av(ctx, ia, "height", "100"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "line"
-			string x1 = get_iattr(ia, "fromX", "0")
-			string y1 = get_iattr(ia, "fromY", "0")
-			string x2 = get_iattr(ia, "toX", "100")
-			string y2 = get_iattr(ia, "toY", "100")
-			string stroke = get_iattr(ia, "stroke", "1")
-			string color = get_iattr(ia, "color", "#000000")
-			return bcc7(ctx, "_canvas_line", cv, sl(ctx, x1), sl(ctx, y1), sl(ctx, x2), sl(ctx, y2), sl(ctx, stroke), sl(ctx, color))
+			return bcc7(ctx, "_canvas_line", cv, av(ctx, ia, "fromX", "0"), av(ctx, ia, "fromY", "0"), av(ctx, ia, "toX", "100"), av(ctx, ia, "toY", "100"), av(ctx, ia, "stroke", "1"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "triangle"
-			string x1 = get_iattr(ia, "x1", "0")
-			string y1 = get_iattr(ia, "y1", "0")
-			string x2 = get_iattr(ia, "x2", "50")
-			string y2 = get_iattr(ia, "y2", "100")
-			string x3 = get_iattr(ia, "x3", "100")
-			string y3 = get_iattr(ia, "y3", "0")
-			string color = get_iattr(ia, "color", "#000000")
-			return bcc8(ctx, "_canvas_triangle_filled", cv, sl(ctx, x1), sl(ctx, y1), sl(ctx, x2), sl(ctx, y2), sl(ctx, x3), sl(ctx, y3), sl(ctx, color))
+			return bcc8(ctx, "_canvas_triangle_filled", cv, av(ctx, ia, "x1", "0"), av(ctx, ia, "y1", "0"), av(ctx, ia, "x2", "50"), av(ctx, ia, "y2", "100"), av(ctx, ia, "x3", "100"), av(ctx, ia, "y3", "0"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "ellipse"
-			string x = get_iattr(ia, "x", "0")
-			string y = get_iattr(ia, "y", "0")
-			string rx_a = get_iattr(ia, "radiusX", "")
-			string rx_b = get_iattr(ia, "rx", "50")
-			string rx = rx_a
-			if rx_a == ""
-				rx = rx_b
-			string ry_a = get_iattr(ia, "radiusY", "")
-			string ry_b = get_iattr(ia, "ry", "25")
-			string ry = ry_a
-			if ry_a == ""
-				ry = ry_b
-			string color = get_iattr(ia, "color", "#000000")
-			return bcc6(ctx, "_canvas_ellipse", cv, sl(ctx, x), sl(ctx, y), sl(ctx, rx), sl(ctx, ry), sl(ctx, color))
+			string rx_key = "radiusX"
+			if get_iexpr(ia, "radiusX") == ""
+				rx_key = "rx"
+			string ry_key = "radiusY"
+			if get_iexpr(ia, "radiusY") == ""
+				ry_key = "ry"
+			return bcc6(ctx, "_canvas_ellipse", cv, av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"), av(ctx, ia, rx_key, "50"), av(ctx, ia, ry_key, "25"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "text"
-			string raw_val = get_iattr_raw(ia, "value", "\"\"")
-			string x = get_iattr(ia, "x", "0")
-			string y = get_iattr(ia, "y", "0")
-			string size = get_iattr(ia, "size", "16")
-			string color = get_iattr(ia, "color", "#000000")
-			return bcc6(ctx, "_canvas_text", cv, sl(ctx, raw_val), sl(ctx, x), sl(ctx, y), sl(ctx, size), sl(ctx, color))
+			return bcc6(ctx, "_canvas_text", cv, av(ctx, ia, "value", "\"\""), av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"), av(ctx, ia, "size", "16"), av(ctx, ia, "color", "\"#000000\""))
 
 		if cmd == "save"
 			return bcc1(ctx, "_canvas_save", cv)
@@ -3382,22 +3573,16 @@ functions:
 			return bcc1(ctx, "_canvas_restore", cv)
 
 		if cmd == "translate"
-			string x = get_iattr(ia, "x", "0")
-			string y = get_iattr(ia, "y", "0")
-			return bcc3(ctx, "_canvas_translate", cv, sl(ctx, x), sl(ctx, y))
+			return bcc3(ctx, "_canvas_translate", cv, av(ctx, ia, "x", "0"), av(ctx, ia, "y", "0"))
 
 		if cmd == "rotate"
-			string angle = get_iattr(ia, "angle", "0")
-			return bcc2(ctx, "_canvas_rotate", cv, sl(ctx, angle))
+			return bcc2(ctx, "_canvas_rotate", cv, av(ctx, ia, "angle", "0"))
 
 		if cmd == "scale"
-			string x = get_iattr(ia, "x", "1")
-			string y = get_iattr(ia, "y", "1")
-			return bcc3(ctx, "_canvas_scale", cv, sl(ctx, x), sl(ctx, y))
+			return bcc3(ctx, "_canvas_scale", cv, av(ctx, ia, "x", "1"), av(ctx, ia, "y", "1"))
 
 		if cmd == "alpha"
-			string value = get_iattr(ia, "value", "1.0")
-			return bcc2(ctx, "_canvas_alpha", cv, sl(ctx, value))
+			return bcc2(ctx, "_canvas_alpha", cv, av(ctx, ia, "value", "1.0"))
 
 		// Unrecognized command — return 0 so caller falls through to source pass-through.
 		return 0

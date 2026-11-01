@@ -1,8 +1,10 @@
 // User model
-data User
-	string email
-	string password_hash
-	string name
-	string role
-	boolean active
-	string created_at
+data User:
+	fields:
+		integer id primary generated
+		string email required unique
+		string password_hash required
+		string name
+		string role default: "user"
+		boolean active default: true
+		string created_at

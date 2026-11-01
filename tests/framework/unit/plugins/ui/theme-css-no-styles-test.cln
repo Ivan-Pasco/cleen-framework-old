@@ -1,0 +1,21 @@
+// Test: frame.ui — no /theme.css auto-link without a styles block
+// (frame-ui-semantics UI-S009). Pages of a project that declares no
+// `styles` block are rendered unchanged.
+
+plugins:
+	frame.ui
+
+start:
+	string doc = renderDoc()
+	if doc.contains("/theme.css") == false and doc.contains("<head><title>Doc</title></head>")
+		printl("PASS: ui-theme-css-no-styles")
+	else
+		printl("FAIL: ui-theme-css-no-styles " + doc)
+
+functions:
+	string renderDoc()
+		html:
+			<html>
+				<head><title>Doc</title></head>
+				<body><p>doc</p></body>
+			</html>

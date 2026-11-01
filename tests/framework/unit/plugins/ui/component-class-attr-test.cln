@@ -1,0 +1,35 @@
+// Test: frame.ui — `class=` on a component tag (frame-ui-semantics UI-C009).
+//
+// `class` on a component tag is a plain HTML attribute, not a component
+// input: it goes on the component's outer HTML element and is merged with
+// the class that element already has. A component whose outer element has
+// no class gets one.
+
+plugins:
+	frame.ui
+
+component: tag="ui-badge"
+	html:
+		<span class="badge">new</span>
+
+component: tag="ui-plain"
+	html:
+		<em>plain</em>
+
+page ClassAttrPage:
+	<div class="wrap">
+		<ui-badge class="big"></ui-badge>
+		<ui-plain class="note"></ui-plain>
+		<ui-badge></ui-badge>
+	</div>
+
+start:
+	ClassAttrPage page = ClassAttrPage()
+	string out = page.render()
+	boolean ok_merged = out.contains("<span class='big badge'>new</span>")
+	boolean ok_added = out.contains("<em class=\"note\">plain</em>")
+	boolean ok_untouched = out.contains("<span class='badge'>new</span>")
+	if ok_merged and ok_added and ok_untouched
+		printl("PASS: ui-component-class-attr")
+	else
+		printl("FAIL: ui-component-class-attr " + out)

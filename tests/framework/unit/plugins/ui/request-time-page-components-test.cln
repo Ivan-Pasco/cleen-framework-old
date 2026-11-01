@@ -1,0 +1,41 @@
+// Test: frame.ui — `.html` pages rendered by the host render components.
+//
+// clean-server renders an `.html` page template (`_ui_render_page`, used by
+// render() / renderWith() and companion routes) and hands every custom tag
+// to the component's render export with the tag's attributes JSON-encoded
+// (bridge-host-classes.md §4.1 `component_tag_render`). Regression: frame.ui
+// emitted no such export, so the tag was passed through unrendered, and the
+// host called exports without the attributes. Attributes become typed inputs
+// and `class` lands on the outer element, exactly as in `html:` blocks. The
+// file declares a component and endpoints together, which also checks that
+// the browser build (frontend.wasm) leaves the endpoint handlers out.
+
+plugins:
+	frame.ui
+	frame.server
+
+server:
+	port: 3400
+
+component: tag="ui-badge"
+	inputs:
+		string label
+		integer count
+
+	html:
+		<span class="badge">{label} x{count.toString()}</span>
+
+endpoints:
+	GET "/test":
+		string path = "/tmp/frame-ui-request-time-components-test.html"
+		boolean written = file.write(path, "<main><ui-badge label=\"new\" count=\"2\" class=\"big\"></ui-badge></main>")
+		string body = _ui_render_page(path, "{}")
+		boolean ok = body.contains("<main><span class='big badge'>new x2</span></main>")
+		if written and ok
+			printl("PASS: ui-request-time-page-components")
+		else
+			printl("FAIL: ui-request-time-page-components " + body)
+		return http.respond(200, "text/html", body)
+
+start:
+	printl("[boot] ui-request-time-page-components ready")

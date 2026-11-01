@@ -2,23 +2,19 @@
 
 endpoints:
 	POST "/api/auth/login":
-		string body = body()
-		any data = json.tryTextToData(body)
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string email = json.get(data, "email")
-		string password = json.get(data, "password")
-		if email == "" or password == ""
+		if data.email == null or data.password == null
 			return badRequest("Email and password are required")
-		string user = User.first:
+		string loginEmail = data.email.toString()
+		string password = data.password.toString()
+		User user = User.first:
 			where:
-				email = email
-		if user == "" or user == "null"
+				email == loginEmail
+		onError:
 			return unauthorized()
-		string storedHash = json.getField(user, "password_hash")
-		if auth.password.verify(password, storedHash) != 1
+		if not auth.verifyPassword(password, user.password_hash)
 			return unauthorized()
-		string userId = json.getField(user, "id")
-		string role = json.getField(user, "role")
-		string token = auth.session.create(userId, role)
+		string token = auth.session.create(user.id, "{\"role\": \"" + user.role + "\"}")
 		return jsonResponse("{\"ok\": true, \"token\": \"" + token + "\"}")

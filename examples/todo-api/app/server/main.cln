@@ -1,0 +1,21 @@
+// Todo API - server entry point
+// Endpoints are discovered from app/server/api/.
+
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
+server:
+	port: 3000
+
+start:
+	User users = User()
+	users.migrate()
+	Todo todos = Todo()
+	todos.migrate()
+	Category categories = Category()
+	categories.migrate()
+	TodoCategory todoCategories = TodoCategory()
+	todoCategories.migrate()
+	printl("Todo API ready on port 3000")

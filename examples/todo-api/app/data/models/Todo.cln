@@ -1,9 +1,22 @@
 // Todo Model
-// Todo item with user relationship
+// Todo item with user relationship.
+// `description` is a reserved keyword (grammar.ebnf §1.2), so the field is
+// named `details` and mapped onto the `description` column.
 
-functions:
-	string getTodoSchema()
-		return "CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT DEFAULT '', completed INTEGER DEFAULT 0, priority INTEGER DEFAULT 0, owner_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME, due_date DATETIME)"
+data Todo:
+	fields:
+		integer id primary generated
+		string title required
+		string details default: "" as "description"
+		integer completed default: 0
+		integer priority default: 0
+		integer owner_id
+		string created_at
+		string updated_at
+		string due_date
 
-start:
-	printl("Todo model loaded")
+	indexes:
+		owner_id
+
+	relations:
+		owner: belongs_to User on owner_id

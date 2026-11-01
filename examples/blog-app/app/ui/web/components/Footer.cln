@@ -1,5 +1,8 @@
 // Footer component
-component: name="Footer", client="off"
+// Tag: <app-footer>
 
-footer:
-	p: "Blog App - Built with Frame Framework"
+component: tag="app-footer"
+	html:
+		<footer>
+			<p>Blog App - Built with Frame Framework</p>
+		</footer>

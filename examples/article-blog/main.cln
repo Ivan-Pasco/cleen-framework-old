@@ -1,6 +1,6 @@
 package: ArticleBlog
 	version: "1.0.0"
 
-	target: web
+	target: server
 		plugins: [frame.ui, frame.server, frame.data]
 		entry: app/ui/web/pages/index.html

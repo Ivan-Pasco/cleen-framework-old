@@ -7,10 +7,13 @@
 plugins:
 	frame.data
 
+// Fixed: was a bare-field `data Widget:` block, frame-data.ebnf v2 requires
+// the `fields:` sub-block (DAT-M015).
 data Widget:
-	integer id
-	string name
-	boolean is_active
+	fields:
+		integer id primary generated
+		string name
+		boolean is_active
 
 start:
-	print("compiled")
+	printl("PASS: 1befe125d2bd")

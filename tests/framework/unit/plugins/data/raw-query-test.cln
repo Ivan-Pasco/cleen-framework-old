@@ -2,25 +2,40 @@
 // Rule A (Quick Reference): raw SQL is justified for COUNT aliases,
 // aggregates, and multi-table joins. This test exercises COUNT.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data Item:` block and `Item.insert:` block
+// mutations, frame-data.ebnf v2 requires the `fields:` sub-block (DAT-M015)
+// and writes through `Database.save(entity)` (DAT-S001).
 data Item:
-	integer id
-	string name
-	integer qty
+	fields:
+		integer id primary generated
+		string name required
+		integer qty required
 
 endpoints:
 	GET "/test":
-		Item.insert:
-			name = "apple"
-			qty = 10
-		Item.insert:
-			name = "banana"
-			qty = 5
-		Item.insert:
-			name = "cherry"
-			qty = 12
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Item.migrate()
+
+		Item apple = Item()
+		apple.name = "apple"
+		apple.qty = 10
+		Database.save(apple)
+		Item banana = Item()
+		banana.name = "banana"
+		banana.qty = 5
+		Database.save(banana)
+		Item cherry = Item()
+		cherry.name = "cherry"
+		cherry.qty = 12
+		Database.save(cherry)
 
 		// Raw query — COUNT alias, ORM-inexpressible.
 		string result = db.query("SELECT COUNT(*) as cnt FROM items WHERE qty > 6", "")

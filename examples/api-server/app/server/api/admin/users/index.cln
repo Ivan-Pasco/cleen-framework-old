@@ -1,7 +1,9 @@
 // Admin users list endpoint
 
 endpoints:
-	[admin] GET "/api/admin/users":
-		string users = User.find:
+	GET "/api/admin/users" [admin]:
+		// Project only public columns so password hashes never leave the server.
+		list<User> users = User.find:
+			select: id, email, name, role, active, created_at
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"users\": " + users + "}")
+		return json({ok: true, users: users})

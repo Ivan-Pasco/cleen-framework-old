@@ -1,0 +1,12 @@
+// Authentication configuration — session cookies and role permissions.
+
+auth:
+	session:
+		cookie = "fullstack.sid"
+		timeoutMinutes = 120
+		httpOnly = true
+		sameSite = "Lax"
+
+	roles:
+		admin: ["*"]
+		user: ["posts.write", "comments.write"]

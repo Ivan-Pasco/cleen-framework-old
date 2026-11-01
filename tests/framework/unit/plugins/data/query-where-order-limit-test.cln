@@ -1,27 +1,43 @@
 // Test: frame.data — find with where, order, limit clauses.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data Post:` block and `Post.insert:` block
+// mutations, frame-data.ebnf v2 requires the `fields:` sub-block (DAT-M015)
+// and writes through `Database.save(entity)` (DAT-S001).
 data Post:
-	integer id
-	string title
-	integer views
+	fields:
+		integer id primary generated
+		string title required
+		integer views required
 
 endpoints:
 	GET "/test":
-		Post.insert:
-			title = "A"
-			views = 5
-		Post.insert:
-			title = "B"
-			views = 100
-		Post.insert:
-			title = "C"
-			views = 50
-		Post.insert:
-			title = "D"
-			views = 3
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Post.migrate()
+
+		Post a = Post()
+		a.title = "A"
+		a.views = 5
+		Database.save(a)
+		Post b = Post()
+		b.title = "B"
+		b.views = 100
+		Database.save(b)
+		Post c = Post()
+		c.title = "C"
+		c.views = 50
+		Database.save(c)
+		Post d = Post()
+		d.title = "D"
+		d.views = 3
+		Database.save(d)
 
 		// Top 2 hot posts (views > 10, ordered desc, limit 2).
 		list<Post> hot = Post.find:

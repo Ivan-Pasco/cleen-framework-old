@@ -15,8 +15,8 @@ blog-demo/
           index.html        # → GET /blog
           [slug].html       # → GET /blog/:slug
       components/               # Custom elements (auto-discovered)
-        Header.cln              # → <app-header>
-        Footer.cln              # → <app-footer>
+        Header.cln              # → <blog-header>
+        Footer.cln              # → <blog-footer>
       public/                   # Static assets
         css/
           style.css
@@ -55,8 +55,8 @@ cleen server run dist/app.wasm --port 3000
 
 | Tag | File |
 |-----|------|
-| `<app-header>` | `app/ui/web/components/Header.cln` |
-| `<app-footer>` | `app/ui/web/components/Footer.cln` |
+| `<blog-header>` | `app/ui/web/components/Header.cln` |
+| `<blog-footer>` | `app/ui/web/components/Footer.cln` |
 
 ## Key Features
 

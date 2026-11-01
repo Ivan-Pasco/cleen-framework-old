@@ -1,32 +1,53 @@
 // Integration: auth + data + server — full request lifecycle.
 
+// Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
+// reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	user: ["notes.write"]
 
+// Fixed: was a bare-field `data Note:` block, frame-data.ebnf v2 requires
+// the `fields:` sub-block (DAT-M015).
 data Note:
-	integer id
-	integer authorId
-	string title
+	fields:
+		integer id primary generated
+		integer authorId required
+		string title required
 
 start:
 	printl("[boot] integration-full-stack server ready")
 
 endpoints:
 	GET "/test":
-		auth.setSession("{\"user_id\":1,\"role\":\"user\"}")
+		auth.setSession("\{\"user_id\":1,\"role\":\"user\"\}")
 		boolean ok_auth = auth.isAuthenticated() and auth.can("notes.write")
 
-		integer nid = Note.insert_id:
-			authorId = auth.userId()
-			title = "my note"
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Note.migrate()
+
+		// Fixed: was `Note.insert_id:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` then reading `entity.id` (DAT-Q014).
+		Note note = Note()
+		note.authorId = auth.userId()
+		note.title = "my note"
+		Database.save(note)
+		integer nid = note.id
 		boolean ok_insert = nid > 0
 
 		Note n = Note.first:

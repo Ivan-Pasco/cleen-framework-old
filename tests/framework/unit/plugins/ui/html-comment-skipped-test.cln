@@ -1,0 +1,24 @@
+// Test: frame.ui — HTML comments in markup are not rendered and are not
+// treated as component tags (`<!-- ... -->` used to become a component
+// named `!` and break the generated render function).
+
+plugins:
+	frame.ui
+
+start:
+	string html_out = renderHero("Clean")
+	boolean ok_text = html_out.contains("Clean")
+	boolean ok_no_comment = not html_out.contains("rendered by")
+
+	if ok_text and ok_no_comment
+		printl("PASS: ui-html-comment-skipped")
+	else
+		printl("FAIL: ui-html-comment-skipped")
+
+functions:
+	string renderHero(string title)
+		html:
+			<div class="hero">
+				<!-- Canvas animation rendered by frame.canvas plugin -->
+				<h1>{title}</h1>
+			</div>

@@ -1,0 +1,10 @@
+// Todo model
+// `description` is a reserved keyword (grammar.ebnf §1.2), so the field is
+// named `details` and mapped onto the `description` column.
+data Todo:
+	fields:
+		integer id primary generated
+		string title required
+		string details default: "" as "description"
+		integer completed default: 0
+		string created_at

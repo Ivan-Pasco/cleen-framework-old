@@ -127,6 +127,7 @@ functions = [
   # API request functions — use 'later result = api.get(url)' to suspend until response arrives
   { name = "api.get", signature = "later result = api.get(url)", description = "GET request. Suspends until response arrives. Returns ApiResponse." },
   { name = "api.post", signature = "later result = api.post(url, body)", description = "POST with JSON body. Returns ApiResponse." },
+  { name = "api.ok", signature = "result.ok", description = "True when the last response status is 200-299 (read through the response of a `later` api call).", maps_to = "_api_ok", params = [], returns = "boolean" },
   { name = "api.put", signature = "later result = api.put(url, body)", description = "PUT with JSON body. Returns ApiResponse." },
   { name = "api.patch", signature = "later result = api.patch(url, body)", description = "PATCH with JSON body. Returns ApiResponse." },
   { name = "api.delete", signature = "later result = api.delete(url)", description = "DELETE request. Returns ApiResponse." },
@@ -284,4 +285,4 @@ functions = [
 ]
 
 [build]
-built_with_compiler = "0.33.165"
+built_with_compiler = "0.33.166"

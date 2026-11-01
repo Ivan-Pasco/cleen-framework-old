@@ -1,5 +1,10 @@
 // E2E: REST API server — JSON-only endpoints with error handling.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 	handle:
@@ -8,33 +13,43 @@ server:
 		_:
 			return json({error: "internal"})
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` / `.insert_id:` /
+// `.update:` / `.delete:` block mutations, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015) and writes through `Database.save(entity)` /
+// `Database.delete(entity)`; the new id is read from `entity.id` (DAT-S001,
+// DAT-S003, DAT-Q014). Tables are created with `Model.migrate()` (DAT-C005).
 data Widget:
-	integer id
-	string sku
-	integer qty
+	fields:
+		integer id primary generated
+		string sku required
+		integer qty required
 
 start:
 	printl("[boot] e2e-api-server server ready")
 
 endpoints:
 	GET "/test":
-		integer id = Widget.insert_id:
-			sku = "W-001"
-			qty = 100
+		Widget.migrate()
+
+		Widget widget = Widget()
+		widget.sku = "W-001"
+		widget.qty = 100
+		Database.save(widget)
+		integer widgetId = widget.id
 
 		Widget w = Widget.first:
 			where:
-				id == id
+				id == widgetId
 
-		Widget.update:
-			set:
-				qty = 90
+		Widget stock = Widget.first:
 			where:
-				id == id
+				id == widgetId
+		stock.qty = 90
+		Database.save(stock)
 
 		Widget updated = Widget.first:
 			where:
-				id == id
+				id == widgetId
 
 		boolean ok = w.sku == "W-001" and updated.qty == 90
 		if ok

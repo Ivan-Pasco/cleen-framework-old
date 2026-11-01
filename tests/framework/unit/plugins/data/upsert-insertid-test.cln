@@ -1,29 +1,52 @@
-// Test: frame.data — Model.insert_id + Model.upsert.
+// Test: frame.data — insert returning the new id + upsert (insert-or-update).
+
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
 
 server:
 	port: 3400
 
+// Fixed: was a bare-field `data User:` block, frame-data.ebnf v2 requires the
+// `fields:` sub-block (DAT-M015).
 data User:
-	integer id
-	string email
-	string name
+	fields:
+		integer id primary generated
+		string email required
+		string name required
 
 endpoints:
 	GET "/test":
-		integer id1 = User.insert_id:
-			email = "alice@example.com"
-			name = "Alice"
+		// Table creation: `Model.migrate()` (DAT-C005).
+		User.migrate()
+
+		// Fixed: was `User.insert_id:`, frame-data.ebnf v2 requires
+		// `Database.save(entity)` then reading `entity.id`, which save mutates
+		// in place (DAT-Q014, DAT-E002).
+		User alice = User()
+		alice.email = "alice@example.com"
+		alice.name = "Alice"
+		Database.save(alice)
+		integer id1 = alice.id
 		boolean ok_id = id1 > 0
 
+		// Fixed: was `User.upsert:` with match:/set:/on_insert:, frame-data.ebnf
+		// v2 requires a `first:` lookup followed by mutate-or-construct and
+		// `Database.save(entity)` inside one transaction (DAT-Q015).
 		// Upsert on same email must UPDATE (not insert a new row).
-		User.upsert:
-			match:
-				email == "alice@example.com"
-			set:
-				name = "Alicia"
-			on_insert:
-				email = "alice@example.com"
-				name = "Alicia"
+		transaction:
+			User existing = User.first:
+				where:
+					email == "alice@example.com"
+			if existing == null
+				User created = User()
+				created.email = "alice@example.com"
+				created.name = "Alicia"
+				Database.save(created)
+			else
+				existing.name = "Alicia"
+				Database.save(existing)
 
 		integer count = User.count
 		boolean ok_dedup = count == 1
@@ -34,14 +57,18 @@ endpoints:
 		boolean ok_updated = row.name == "Alicia"
 
 		// Upsert on new email must INSERT.
-		User.upsert:
-			match:
-				email == "bob@example.com"
-			set:
-				name = "Bob"
-			on_insert:
-				email = "bob@example.com"
-				name = "Bob"
+		transaction:
+			User bobRow = User.first:
+				where:
+					email == "bob@example.com"
+			if bobRow == null
+				User bob = User()
+				bob.email = "bob@example.com"
+				bob.name = "Bob"
+				Database.save(bob)
+			else
+				bobRow.name = "Bob"
+				Database.save(bobRow)
 		integer countAfter = User.count
 		boolean ok_insert = countAfter == 2
 

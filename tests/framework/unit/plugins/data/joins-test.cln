@@ -1,31 +1,48 @@
 // Test: frame.data — multi-table joins (raw query — Rule A).
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.data
+
 server:
 	port: 3400
 
+// Fixed: was bare-field `data` blocks and `Model.insert:` block mutations,
+// frame-data.ebnf v2 requires the `fields:` sub-block (DAT-M015) and writes
+// through `Database.save(entity)` (DAT-S001).
 data Category:
-	integer id
-	string name
+	fields:
+		integer id primary generated
+		string name required
 
 data Product:
-	integer id
-	string title
-	integer categoryId
+	fields:
+		integer id primary generated
+		string title required
+		integer categoryId required
 
 endpoints:
 	GET "/test":
-		Category.insert:
-			name = "electronics"
+		// Table creation: `Model.migrate()` (DAT-C005).
+		Category.migrate()
+		Product.migrate()
+
+		Category electronics = Category()
+		electronics.name = "electronics"
+		Database.save(electronics)
 		Category cat = Category.first:
 			where:
 				name == "electronics"
 
-		Product.insert:
-			title = "phone"
-			categoryId = cat.id
-		Product.insert:
-			title = "laptop"
-			categoryId = cat.id
+		Product phone = Product()
+		phone.title = "phone"
+		phone.categoryId = cat.id
+		Database.save(phone)
+		Product laptop = Product()
+		laptop.title = "laptop"
+		laptop.categoryId = cat.id
+		Database.save(laptop)
 
 		// Multi-table INNER JOIN is ORM-inexpressible today — raw SQL is justified.
 		string joined = db.query("SELECT products.title, categories.name FROM products INNER JOIN categories ON products.category_id = categories.id", "")

@@ -1,6 +1,6 @@
 package: HtmlFirst
 	version: "1.0.0"
 
-	target: web
+	target: server
 		plugins: [frame.ui, frame.server]
 		entry: app/ui/web/pages/index.html

@@ -1,42 +1,45 @@
 // Tasks API
 
 endpoints:
-	[user, admin] GET "/api/tasks":
-		string tasks = Task.find:
+	GET "/api/tasks" [user, admin]:
+		list<Task> tasks = Task.find:
 			order: status asc
-		return jsonResponse("{\"ok\": true, \"tasks\": " + tasks + "}")
+		return json({ok: true, tasks: tasks})
 
-	[user, admin] POST "/api/tasks":
-		string session = auth.getCurrentUser()
-		string body = body()
-		Task.insert:
-			status = "pending"
-			assignee_id = session
-			title = body
+	POST "/api/tasks" [user, admin]:
+		Task task = Task()
+		task.status = "pending"
+		task.assignee_id = auth.userId()
+		task.title = body()
+		Database.save(task)
 		return jsonResponse("{\"ok\": true, \"message\": \"task created\"}")
 
-	[user, admin] GET "/api/tasks/:id":
-		string id = param("id")
-		string task = Task.first:
+	GET "/api/tasks/:id" [user, admin]:
+		integer taskId = param("id").toInteger()
+		Task task = Task.first:
 			where:
-				id = id
-		if task == "" or task == "null"
+				id == taskId
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"task\": " + task + "}")
+		return json({ok: true, task: task})
 
-	[user, admin] PUT "/api/tasks/:id":
-		string id = param("id")
-		string body = body()
-		Task.update:
-			set:
-				status = body
+	PUT "/api/tasks/:id" [user, admin]:
+		integer taskId = param("id").toInteger()
+		Task task = Task.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"task updated\", \"id\": \"" + id + "\"}")
+				id == taskId
+		onError:
+			return notFound()
+		task.status = body()
+		Database.save(task)
+		return jsonResponse("{\"ok\": true, \"message\": \"task updated\", \"id\": " + taskId.toString() + "}")
 
-	[user, admin] DELETE "/api/tasks/:id":
-		string id = param("id")
-		Task.delete:
+	DELETE "/api/tasks/:id" [user, admin]:
+		integer taskId = param("id").toInteger()
+		Task task = Task.first:
 			where:
-				id = id
-		return jsonResponse("{\"ok\": true, \"message\": \"task deleted\", \"id\": \"" + id + "\"}")
+				id == taskId
+		onError:
+			return notFound()
+		Database.delete(task)
+		return jsonResponse("{\"ok\": true, \"message\": \"task deleted\", \"id\": " + taskId.toString() + "}")

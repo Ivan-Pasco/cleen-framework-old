@@ -24,8 +24,12 @@ external:
 	integer _batch_intLit(integer ctx, integer value_lo, integer value_hi)
 	integer _batch_call(integer ctx, string callee, integer args_array_handle)
 	integer _batch_binop(integer ctx, string op, integer lhs_handle, integer rhs_handle)
+	integer _batch_methodCall(integer ctx, integer receiver_handle, string method, integer args_array_handle)
 	// Statement builders (§3.14)
 	integer _batch_stmtAssign(integer ctx, string target, integer expr_handle)
+	// Real let-declaration; required for the first introduction of a local
+	// in a function body (stmtAssign only reassigns a declared variable).
+	integer _batch_stmtVarDecl(integer ctx, string name, string type_lp, integer expr_handle_or_0)
 	integer _batch_stmtIf(integer ctx, integer cond_handle, integer then_array_handle, integer else_array_handle)
 	integer _batch_stmtReturn(integer ctx, integer expr_handle)
 	integer _batch_stmtCall(integer ctx, string callee, integer args_array_handle)
@@ -43,6 +47,16 @@ external:
 	// Declaration emitters (§3.12, §3.5)
 	integer _emit_helpers_batch(integer ctx, integer spec_handle_or_lp, integer flags)
 	integer _emit_statement_into_start(integer ctx, integer stmt_handle)
+	integer _emit_state_block(integer ctx, string fields_json)
+	integer _ctx_had_error(integer ctx)
+	// Type and expression handles for state declarations (§2.3, §3.4)
+	integer _type_string(integer ctx)
+	integer _type_integer(integer ctx)
+	integer _type_boolean(integer ctx)
+	integer _expr_string_lit(integer ctx, string value)
+	integer _expr_int_lit(integer ctx, integer value_lo, integer value_hi)
+	integer _expr_bool_lit(integer ctx, integer value)
+	integer _expr_call(integer ctx, string callee, string args_json)
 	// Amendment 11 (§3.11) — source-string statement emission. Used to build
 	// helper bodies that need `.method()` calls or `+` operator machinery which
 	// the batch expression builder cannot express directly.
@@ -151,57 +165,28 @@ functions:
 			tenant_field = get_config_value(tenant_config, "field", "tenantId")
 			tenant_header = get_config_value(tenant_config, "header", "")
 
-		// ── Emit session config vars ──
-		integer err = emit_string_var(ctx, "__session_cookie", cookie_name)
-		if err != 0
-			return err
-		err = emit_string_var(ctx, "__session_same_site", same_site)
-		if err != 0
-			return err
-		err = emit_bool_var(ctx, "__session_secure", sess_secure)
-		if err != 0
-			return err
-		err = emit_bool_var(ctx, "__session_http_only", sess_http_only)
-		if err != 0
-			return err
-		err = emit_string_var(ctx, "__session_path", session_path)
-		if err != 0
-			return err
-		err = emit_int_var(ctx, "__session_timeout", timeout_mins)
-		if err != 0
-			return err
-
-		// ── Emit JWT config vars ──
-		err = emit_bool_var(ctx, "__jwt_enabled", jwt_enabled)
-		if err != 0
-			return err
-		err = emit_env_get_var(ctx, "__jwt_secret", secret_env)
-		if err != 0
-			return err
-		err = emit_string_var(ctx, "__jwt_alg", alg)
-		if err != 0
-			return err
-		err = emit_int_var(ctx, "__jwt_ttl", jwt_ttl_mins)
-		if err != 0
-			return err
-		err = emit_int_var(ctx, "__jwt_refresh_ttl", jwt_refresh_mins)
-		if err != 0
-			return err
-
-		// ── Emit CSRF config var ──
-		err = emit_bool_var(ctx, "__csrf_enabled", csrf_on)
-		if err != 0
-			return err
-
-		// ── Emit tenant config vars (only when tenant: block present) ──
+		// ── Auth configuration as module state (one state: block per expansion) ──
+		string fields = string_var_field(ctx, "__session_cookie", cookie_name)
+		fields = fields + "," + string_var_field(ctx, "__session_same_site", same_site)
+		fields = fields + "," + bool_var_field(ctx, "__session_secure", sess_secure)
+		fields = fields + "," + bool_var_field(ctx, "__session_http_only", sess_http_only)
+		fields = fields + "," + string_var_field(ctx, "__session_path", session_path)
+		fields = fields + "," + int_var_field(ctx, "__session_timeout", timeout_mins)
+		fields = fields + "," + bool_var_field(ctx, "__jwt_enabled", jwt_enabled)
+		fields = fields + "," + env_var_field(ctx, "__jwt_secret", secret_env)
+		fields = fields + "," + string_var_field(ctx, "__jwt_alg", alg)
+		fields = fields + "," + int_var_field(ctx, "__jwt_ttl", jwt_ttl_mins)
+		fields = fields + "," + int_var_field(ctx, "__jwt_refresh_ttl", jwt_refresh_mins)
+		fields = fields + "," + bool_var_field(ctx, "__csrf_enabled", csrf_on)
 		if tenant_config.length() > 0
-			err = emit_string_var(ctx, "__tenant_field", tenant_field)
-			if err != 0
-				return err
+			fields = fields + "," + string_var_field(ctx, "__tenant_field", tenant_field)
 			if tenant_header.length() > 0
-				err = emit_string_var(ctx, "__tenant_header", tenant_header)
-				if err != 0
-					return err
+				fields = fields + "," + string_var_field(ctx, "__tenant_header", tenant_header)
+		if _ctx_had_error(ctx) != 0
+			return plugin_error(ctx, "FRAME-AUTH-E001", "auth config: building state fields failed")
+		integer err = _emit_state_block(ctx, "[" + fields + "]")
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E001", "auth config: _emit_state_block failed")
 
 		// ── Expand roles sub-block if present ──
 		string roles_config = extract_subblock(body, "roles:")
@@ -217,65 +202,30 @@ functions:
 // ============================================================================
 
 functions:
-	integer emit_string_var(integer ctx, string varname, string value)
-		integer val_expr = _batch_stringLit(ctx, value)
-		if val_expr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_string_var: stringLit failed for " + varname)
-		integer assign_stmt = _batch_stmtAssign(ctx, varname, val_expr)
-		if assign_stmt == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_string_var: stmtAssign failed for " + varname)
-		integer emit_err = _emit_statement_into_start(ctx, assign_stmt)
-		if emit_err != 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_string_var: emit_statement_into_start failed for " + varname)
-		return 0
+	// Auth configuration lives in module state so the emitted helper
+	// functions (session_get, jwt_sign, ...) can read it: a start-scope
+	// assignment would only create a local of the start function. Each
+	// helper returns one field of the `_emit_state_block` JSON array.
+	string state_field(string varname, integer type_handle, integer default_expr)
+		return "{\"name\":\"" + varname + "\",\"type_handle\":" + type_handle.toString() + ",\"default_expr_handle\":" + default_expr.toString() + "}"
 
-	integer emit_bool_var(integer ctx, string varname, boolean value)
+	string string_var_field(integer ctx, string varname, string value)
+		return state_field(varname, _type_string(ctx), _expr_string_lit(ctx, value))
+
+	string bool_var_field(integer ctx, string varname, boolean value)
 		integer bit = 0
 		if value
 			bit = 1
-		integer val_expr = _batch_boolLit(ctx, bit)
-		if val_expr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_bool_var: boolLit failed for " + varname)
-		integer assign_stmt = _batch_stmtAssign(ctx, varname, val_expr)
-		if assign_stmt == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_bool_var: stmtAssign failed for " + varname)
-		integer emit_err = _emit_statement_into_start(ctx, assign_stmt)
-		if emit_err != 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_bool_var: emit_statement_into_start failed for " + varname)
-		return 0
+		return state_field(varname, _type_boolean(ctx), _expr_bool_lit(ctx, bit))
 
-	integer emit_int_var(integer ctx, string varname, integer value)
-		integer val_expr = _batch_intLit(ctx, value, 0)
-		if val_expr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_int_var: intLit failed for " + varname)
-		integer assign_stmt = _batch_stmtAssign(ctx, varname, val_expr)
-		if assign_stmt == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_int_var: stmtAssign failed for " + varname)
-		integer emit_err = _emit_statement_into_start(ctx, assign_stmt)
-		if emit_err != 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_int_var: emit_statement_into_start failed for " + varname)
-		return 0
+	string int_var_field(integer ctx, string varname, integer value)
+		return state_field(varname, _type_integer(ctx), _expr_int_lit(ctx, value, 0))
 
-	integer emit_env_get_var(integer ctx, string varname, string env_var_name)
-		integer env_name_expr = _batch_stringLit(ctx, env_var_name)
-		if env_name_expr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: stringLit failed")
-		integer args_arr = _batch_arrayNew(ctx)
-		if args_arr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: arrayNew failed")
-		integer push_err = _batch_arrayPush(ctx, args_arr, env_name_expr)
-		if push_err != 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: arrayPush failed")
-		integer call_expr = _batch_call(ctx, "_env_get", args_arr)
-		if call_expr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: _batch_call failed")
-		integer assign_stmt = _batch_stmtAssign(ctx, varname, call_expr)
-		if assign_stmt == 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: stmtAssign failed")
-		integer emit_err = _emit_statement_into_start(ctx, assign_stmt)
-		if emit_err != 0
-			return plugin_error(ctx, "FRAME-AUTH-E001", "emit_env_get_var: emit_statement_into_start failed")
-		return 0
+	// The secret is read from the environment when the program starts.
+	string env_var_field(integer ctx, string varname, string env_var_name)
+		integer env_name_expr = _expr_string_lit(ctx, env_var_name)
+		integer call_expr = _expr_call(ctx, "_env_get", "[" + env_name_expr.toString() + "]")
+		return state_field(varname, _type_string(ctx), call_expr)
 
 	integer plugin_error(integer ctx, string code, string message)
 		_emit_error(ctx, 2, code, message, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
@@ -342,6 +292,29 @@ functions:
 		err = _batch_arrayPush(ctx, fns_arr, fn_h)
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush jwt_refresh failed")
+
+		// Internal helpers used by session_create / session_setCookie /
+		// session_destroy (string assembly runs in the generated program).
+		fn_h = build_session_json_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_session_json_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_session_json failed")
+
+		fn_h = build_cookie_header_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_cookie_header_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_cookie_header failed")
+
+		fn_h = build_expire_cookie_header_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_expire_cookie_header_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_expire_cookie_header failed")
 
 		// Internal helper used by jwt_sign (builds payload JSON with jti).
 		fn_h = build_jwt_build_payload_helper(ctx)
@@ -695,9 +668,10 @@ functions:
 	integer add_exprs(integer ctx, integer lhs_h, integer rhs_h)
 		return _batch_binop(ctx, "+", lhs_h, rhs_h)
 
-	// Logical AND: lhs && rhs (both already built handles)
+	// Logical AND: lhs and rhs (both already built handles). The operator
+	// table in typed-emission.md uses the Clean spelling `and`.
 	integer and_exprs(integer ctx, integer lhs_h, integer rhs_h)
-		return _batch_binop(ctx, "&&", lhs_h, rhs_h)
+		return _batch_binop(ctx, "and", lhs_h, rhs_h)
 
 	// Build a one-stmt body array
 	integer body1(integer ctx, integer s1)
@@ -763,7 +737,7 @@ functions:
 		integer rnd_e = call1_int(ctx, "_crypto_random_hex", 32)
 		if rnd_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "sessionId", rnd_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "sessionId", "string", rnd_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -780,7 +754,7 @@ functions:
 		integer add_e = add_exprs(ctx, tn_e, mul_e)
 		if add_e == 0
 			return 0
-		integer s2 = _batch_stmtAssign(ctx, "expiry", add_e)
+		integer s2 = _batch_stmtVarDecl(ctx, "expiry", "integer", add_e)
 		if s2 == 0
 			return 0
 		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
@@ -829,7 +803,7 @@ functions:
 		integer build_json_call = _batch_call(ctx, "__auth_build_session_json", bsj_args)
 		if build_json_call == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "sessionData", build_json_call)
+		integer s3 = _batch_stmtVarDecl(ctx, "sessionData", "string", build_json_call)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
@@ -943,7 +917,7 @@ functions:
 		integer bch_e = call1_ident(ctx, "__auth_build_cookie_header", "sessionId")
 		if bch_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "cookie", bch_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "cookie", "string", bch_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -996,39 +970,15 @@ functions:
 		if body_arr == 0
 			return 0
 
-		// string sessionId = _req_cookie(__session_cookie)
-		integer rc_e = call1_ident(ctx, "_req_cookie", "__session_cookie")
-		if rc_e == 0
-			return 0
-		integer s1 = _batch_stmtAssign(ctx, "sessionId", rc_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// if sessionId == "" { return "" }
-		integer cond1 = eq_ident_str(ctx, "sessionId", "")
-		if cond1 == 0
-			return 0
-		integer ret_es1 = ret_empty_str(ctx)
-		if ret_es1 == 0
-			return 0
-		integer then1 = body1(ctx, ret_es1)
-		if then1 == 0
-			return 0
-		integer if1 = if_no_else(ctx, cond1, then1)
-		if if1 == 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, body_arr, if1)
-		if p2 != 0
-			return 0
-
+		// The host resolves the current session itself — from a session
+		// established earlier in this request (auth.setSession /
+		// session_create) or from the request cookie — so no cookie
+		// pre-check here: it would hide a session created in this request.
 		// string data = _session_get()
 		integer sg_e = call0(ctx, "_session_get")
 		if sg_e == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "data", sg_e)
+		integer s3 = _batch_stmtVarDecl(ctx, "data", "string", sg_e)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
@@ -1056,22 +1006,22 @@ functions:
 		integer jg_e = call2_ident_str(ctx, "_json_get", "data", "expiry")
 		if jg_e == 0
 			return 0
-		integer s5 = _batch_stmtAssign(ctx, "expiry_str", jg_e)
+		integer s5 = _batch_stmtVarDecl(ctx, "expiry_str", "string", jg_e)
 		if s5 == 0
 			return 0
 		integer p5 = _batch_arrayPush(ctx, body_arr, s5)
 		if p5 != 0
 			return 0
 
-		// if expiry_str != "" { integer expiry = parseInt(expiry_str); if _time_now() > expiry { _session_delete(); return "" } }
+		// if expiry_str != "" { integer expiry = expiry_str.toInteger(); if _time_now() > expiry { _session_delete(); return "" } }
 		integer cond3 = ne_ident_str(ctx, "expiry_str", "")
 		if cond3 == 0
 			return 0
 
-		integer expiry_e = call1_ident(ctx, "parseInt", "expiry_str")
+		integer expiry_e = _batch_methodCall(ctx, _batch_ident(ctx, "expiry_str"), "toInteger", 0)
 		if expiry_e == 0
 			return 0
-		integer s_expiry = _batch_stmtAssign(ctx, "expiry", expiry_e)
+		integer s_expiry = _batch_stmtVarDecl(ctx, "expiry", "integer", expiry_e)
 		if s_expiry == 0
 			return 0
 
@@ -1140,7 +1090,7 @@ functions:
 		integer rc_e = call1_ident(ctx, "_req_cookie", "__session_cookie")
 		if rc_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "sessionId", rc_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "sessionId", "string", rc_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1171,7 +1121,7 @@ functions:
 		integer bec_e = call0(ctx, "__auth_build_expire_cookie_header")
 		if bec_e == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "expireCookie", bec_e)
+		integer s3 = _batch_stmtVarDecl(ctx, "expireCookie", "string", bec_e)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
@@ -1228,7 +1178,7 @@ functions:
 		integer iat_e = call0(ctx, "_time_now")
 		if iat_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "iat", iat_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "iat", "integer", iat_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1245,7 +1195,7 @@ functions:
 		integer add_e = add_exprs(ctx, iat_ident, mul_e)
 		if add_e == 0
 			return 0
-		integer s2 = _batch_stmtAssign(ctx, "exp", add_e)
+		integer s2 = _batch_stmtVarDecl(ctx, "exp", "integer", add_e)
 		if s2 == 0
 			return 0
 		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
@@ -1256,7 +1206,7 @@ functions:
 		integer jti_call = call1_int(ctx, "_crypto_random_hex", 16)
 		if jti_call == 0
 			return 0
-		integer s_jti = _batch_stmtAssign(ctx, "jti", jti_call)
+		integer s_jti = _batch_stmtVarDecl(ctx, "jti", "string", jti_call)
 		if s_jti == 0
 			return 0
 		integer p_jti = _batch_arrayPush(ctx, body_arr, s_jti)
@@ -1294,7 +1244,7 @@ functions:
 		integer bpld_call = _batch_call(ctx, "__auth_build_jwt_payload", bpld_args)
 		if bpld_call == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "payload", bpld_call)
+		integer s3 = _batch_stmtVarDecl(ctx, "payload", "string", bpld_call)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
@@ -1444,6 +1394,45 @@ functions:
 
 		return _batch_func(ctx, "jwt_refresh", params, "string", body_arr)
 
+	// __auth_build_session_json(userId, claims, expiry) -> string
+	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + ",\"expiry\":" + expiry.toString() + "}"
+	integer build_session_json_helper(integer ctx)
+		integer params = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "userId", "integer"))
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "claims", "string"))
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "expiry", "integer"))
+		integer ret_h = _emit_stmt_from_source(ctx, "return \"{\\\"userId\\\":\" + userId.toString() + \",\\\"claims\\\":\" + claims + \",\\\"expiry\\\":\" + expiry.toString() + \"}\"", 0)
+		if ret_h == 0 or _ctx_had_error(ctx) != 0
+			return 0
+		return _batch_func2(ctx, "__auth_build_session_json", params, "string", 0, ret_h)
+
+	// __auth_build_cookie_header(sessionId) -> string — the Set-Cookie value
+	// for a new session, built from the auth: session configuration.
+	integer build_cookie_header_helper(integer ctx)
+		integer params = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "sessionId", "string"))
+		string src = "string cookie = __session_cookie + \"=\" + sessionId + \"; Path=\" + __session_path + \"; SameSite=\" + __session_same_site\n"
+		src = src + "if __session_secure\n\tcookie = cookie + \"; Secure\"\n"
+		src = src + "if __session_http_only\n\tcookie = cookie + \"; HttpOnly\"\n"
+		src = src + "return cookie + \"; Max-Age=\" + (__session_timeout * 60).toString()\n"
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if body_h == 0 or _ctx_had_error(ctx) != 0
+			return 0
+		return _batch_func2(ctx, "__auth_build_cookie_header", params, "string", 0, body_h)
+
+	// __auth_build_expire_cookie_header() -> string — the Set-Cookie value that
+	// clears the session cookie.
+	integer build_expire_cookie_header_helper(integer ctx)
+		integer params = _batch_arrayNew(ctx)
+		string src = "string expireCookie = __session_cookie + \"=; Path=\" + __session_path + \"; SameSite=\" + __session_same_site + \"; Max-Age=0\"\n"
+		src = src + "if __session_secure\n\texpireCookie = expireCookie + \"; Secure\"\n"
+		src = src + "if __session_http_only\n\texpireCookie = expireCookie + \"; HttpOnly\"\n"
+		src = src + "return expireCookie\n"
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if body_h == 0 or _ctx_had_error(ctx) != 0
+			return 0
+		return _batch_func2(ctx, "__auth_build_expire_cookie_header", params, "string", 0, body_h)
+
 	// 7b. __auth_build_jwt_payload(iat, exp, jti, claims) -> string
 	//
 	// Emits the Clean helper that assembles the JWT payload JSON. The four inputs
@@ -1549,7 +1538,7 @@ functions:
 		integer sg_e = call0(ctx, "session_get")
 		if sg_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "session", sg_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1577,11 +1566,20 @@ functions:
 		integer jg_e = call2_ident_str(ctx, "_json_get", "session", "claims.role")
 		if jg_e == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "role", jg_e)
+		integer s3 = _batch_stmtVarDecl(ctx, "role", "string", jg_e)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
 		if p3 != 0
+			return 0
+
+		// Sessions made by auth.setSession keep the role at the top level
+		// ({"role": ...}); sessions made by session_create keep it in claims.
+		// if role == "" { role = _json_get(session, "role") }
+		integer cond_r = eq_ident_str(ctx, "role", "")
+		integer top_role = _batch_stmtAssign(ctx, "role", call2_ident_str(ctx, "_json_get", "session", "role"))
+		integer if_r = if_no_else(ctx, cond_r, body1(ctx, top_role))
+		if if_r == 0 or _batch_arrayPush(ctx, body_arr, if_r) != 0
 			return 0
 
 		// return _role_has_permission(role, permission)
@@ -1610,7 +1608,7 @@ functions:
 		integer sg_e = call0(ctx, "session_get")
 		if sg_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "session", sg_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1638,11 +1636,20 @@ functions:
 		integer jg_e = call2_ident_str(ctx, "_json_get", "session", "claims.role")
 		if jg_e == 0
 			return 0
-		integer s3 = _batch_stmtAssign(ctx, "role", jg_e)
+		integer s3 = _batch_stmtVarDecl(ctx, "role", "string", jg_e)
 		if s3 == 0
 			return 0
 		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
 		if p3 != 0
+			return 0
+
+		// Sessions made by auth.setSession keep the role at the top level
+		// ({"role": ...}); sessions made by session_create keep it in claims.
+		// if role == "" { role = _json_get(session, "role") }
+		integer cond_r = eq_ident_str(ctx, "role", "")
+		integer top_role = _batch_stmtAssign(ctx, "role", call2_ident_str(ctx, "_json_get", "session", "role"))
+		integer if_r = if_no_else(ctx, cond_r, body1(ctx, top_role))
+		if if_r == 0 or _batch_arrayPush(ctx, body_arr, if_r) != 0
 			return 0
 
 		// return role == requiredRole
@@ -1670,7 +1677,7 @@ functions:
 		integer sg_e = call0(ctx, "session_get")
 		if sg_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "session", sg_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1743,7 +1750,7 @@ functions:
 		integer rnd_e = call1_int(ctx, "_crypto_random_hex", 32)
 		if rnd_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "token", rnd_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "token", "string", rnd_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1754,7 +1761,7 @@ functions:
 		integer sg_e = call0(ctx, "session_get")
 		if sg_e == 0
 			return 0
-		integer s2 = _batch_stmtAssign(ctx, "session", sg_e)
+		integer s2 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
 		if s2 == 0
 			return 0
 		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
@@ -1833,7 +1840,7 @@ functions:
 		integer sgc_e = call0(ctx, "_session_get_csrf")
 		if sgc_e == 0
 			return 0
-		integer s2 = _batch_stmtAssign(ctx, "expected", sgc_e)
+		integer s2 = _batch_stmtVarDecl(ctx, "expected", "string", sgc_e)
 		if s2 == 0
 			return 0
 		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
@@ -1871,7 +1878,7 @@ functions:
 		integer sg_e = call0(ctx, "session_get")
 		if sg_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "session", sg_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1920,7 +1927,7 @@ functions:
 		integer tgi_e = call0(ctx, "tenant_getId")
 		if tgi_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "tenantId", tgi_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "tenantId", "string", tgi_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -1967,7 +1974,7 @@ functions:
 		integer tgi_e = call0(ctx, "tenant_getId")
 		if tgi_e == 0
 			return 0
-		integer s1 = _batch_stmtAssign(ctx, "myTenantId", tgi_e)
+		integer s1 = _batch_stmtVarDecl(ctx, "myTenantId", "string", tgi_e)
 		if s1 == 0
 			return 0
 		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
@@ -2045,10 +2052,12 @@ functions:
 		json = json + "}"
 
 		// Emit: string __roles_config = "<escaped json>"
-		integer rc_val = _batch_stringLit(ctx, escape_string_literal(json))
+		// stringLit carries the string value itself (an AST literal, not
+		// source text), so the JSON is passed unescaped.
+		integer rc_val = _batch_stringLit(ctx, json)
 		if rc_val == 0
 			return plugin_error(ctx, "FRAME-AUTH-E003", "expand_roles_typed: stringLit for __roles_config failed")
-		integer rc_assign = _batch_stmtAssign(ctx, "__roles_config", rc_val)
+		integer rc_assign = _batch_stmtVarDecl(ctx, "__roles_config", "string", rc_val)
 		if rc_assign == 0
 			return plugin_error(ctx, "FRAME-AUTH-E003", "expand_roles_typed: stmtAssign for __roles_config failed")
 		integer e1 = _emit_statement_into_start(ctx, rc_assign)

@@ -1,12 +1,23 @@
 // Category Model
 // For organizing todos
 
-functions:
-	string getCategorySchema()
-		return "CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT DEFAULT '#3B82F6', owner_id INTEGER)"
+data Category:
+	fields:
+		integer id primary generated
+		string name required
+		string color default: "#3B82F6"
+		integer owner_id
 
-	string getTodoCategorySchema()
-		return "CREATE TABLE IF NOT EXISTS todo_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, todo_id INTEGER NOT NULL, category_id INTEGER NOT NULL)"
+	relations:
+		owner: belongs_to User on owner_id
 
-start:
-	printl("Category model loaded")
+// Junction table linking todos to categories (many-to-many)
+data TodoCategory:
+	table "todo_categories"
+	fields:
+		integer id primary generated
+		integer todo_id required
+		integer category_id required
+
+	indexes:
+		(todo_id, category_id) unique

@@ -1,100 +1,99 @@
 # Clean UI Screens Example
 
-This example demonstrates the **islands architecture** in Clean Framework, where interactive UI components (screens) are embedded within HTML pages.
+This example places screens on an HTML page. A screen is a core `screen Name:`
+block: a view with its own screen-scoped state and functions. frame.ui provides
+the `<screen>` tag that places a screen on a page.
 
 ## Overview
 
-The islands architecture allows you to:
-
-1. **Define screens** - Reusable, stateful UI components with Clean syntax
-2. **Embed in HTML** - Use `<screen>` tags in HTML pages
+1. **Define screens** - `screen Name:` blocks with screen-scoped state and functions
+2. **Place them on a page** - Use `<screen name="Name">` tags in HTML pages
 3. **Choose hydration** - SSR-only, immediate, on-visible, or on-idle hydration
-4. **Pass props** - Override initial state via HTML attributes
 
 ## Project Structure
 
 ```
 screens/
-├── config.cln                    # Framework configuration
+├── main.cln                      # Package manifest (target: server)
 ├── app/
 │   └── ui/
-│       ├── pages/
-│       │   └── index.html    # HTML page with embedded screens
-│       └── screens/
-│           ├── Counter.cln       # Counter screen definition
-│           └── TodoList.cln      # TodoList screen definition
+│       └── web/
+│           ├── pages/
+│           │   └── index.html    # HTML page with embedded screens
+│           └── screens/
+│               ├── Counter.cln   # Counter screen definition
+│               └── TodoList.cln  # TodoList screen definition
 └── README.md
 ```
 
 ## Screen Syntax
 
-Screens are defined using Clean Language with a declarative syntax:
+Screens are `screen Name:` blocks with screen-scoped state and functions.
+`render()` returns the screen markup through an `html:` block, and event
+attributes name the screen function to call (UI-B006):
 
 ```clean
 screen Counter:
-    state:
-        count: integer = 0
-        label: string = "Count"
+	state:
+		integer count = 0
+		string label = "Count"
 
-    render:
-        ui.column gap 16 padding 20:
-            ui.text label + ": " + count.toString()
-            ui.row gap 8:
-                ui.button "-"
-                    onClick:
-                        count = count - 1
-                ui.button "+"
-                    onClick:
-                        count = count + 1
+	functions:
+		string render()
+			html:
+				<div class="counter-container">
+					<p id="counter-display">{label}: {count.toString()}</p>
+					<button onclick="increment">+</button>
+				</div>
+
+		void increment()
+			count = count + 1
+			integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
 ```
 
 ### State Block
 
-Define reactive state variables with types and defaults:
+Screen state is declared inside the screen and lives as long as the screen.
+There is one copy of a screen's state, and only the screen's own functions can
+read or change it (SCOPE005):
 
 ```clean
 state:
-    count: integer = 0
-    name: string = ""
-    active: boolean = true
+	integer count = 0
+	string name = ""
+	boolean active = true
 ```
 
-### Render Block
+### Screen Functions
 
-Build the UI using `ui.*` widgets:
+A screen's functions are scoped under the screen's name, so two screens can
+both declare `render()`. Inside the screen they are called by their plain name;
+from outside they are called as `Screen.function()`:
 
-- `ui.column` - Vertical flex container
-- `ui.row` - Horizontal flex container
-- `ui.text` - Text display (supports expressions)
-- `ui.button` - Clickable button with events
-- `ui.textField` - Text input with binding
+```clean
+start:
+	Counter.increment()
+	string markup = Counter.render()
+```
 
-## Embedding Screens
+## Placing Screens
 
-Use the `<screen>` tag in HTML pages:
+Use the `<screen>` tag in HTML pages. `name` selects the screen and `client`
+selects the hydration mode; the tag has no other attributes:
 
 ```html
-<!-- Basic usage -->
+<!-- Server-rendered only -->
+<screen name="Counter"></screen>
+
+<!-- Immediate hydration -->
 <screen name="Counter" client="on"></screen>
-
-<!-- With prop overrides -->
-<screen name="Counter" client="on" count="10" label="My Counter"></screen>
-
-<!-- SSR only (no client interactivity) -->
-<screen name="Counter" client="off"></screen>
-
-<!-- Lazy hydration (on scroll into view) -->
-<screen name="Counter" client="visible"></screen>
-
-<!-- Idle hydration (when browser is idle) -->
-<screen name="Counter" client="idle"></screen>
 ```
 
 ### Hydration Modes
 
 | Mode | Description |
 |------|-------------|
-| `off` | Server-side render only, no client JavaScript |
+| `off` | Server-side render only (default) |
 | `on` | Immediate hydration on page load |
 | `visible` | Hydrate when element scrolls into viewport |
 | `idle` | Hydrate when browser is idle |
@@ -114,17 +113,13 @@ open http://localhost:3000
 
 ## Generated Output
 
-When the page is rendered, each `<screen>` tag generates:
+Each `<screen name="Counter" client="on">` tag renders as:
 
-1. **Island wrapper** - `<div data-screen="Name" data-client="mode">`
-2. **SSR content** - Pre-rendered HTML from the screen's render function
-3. **Hydration data** - JSON with state and event bindings (if client != "off")
-4. **Runtime script** - Automatically injected when any screen needs hydration
+```html
+<div id='screen-Counter' data-screen='Counter' data-client='on'>
+	<!-- markup returned by Counter.render() -->
+</div>
+```
 
-## Key Features Demonstrated
-
-1. **Multiple instances** - Same screen can be used multiple times with different props
-2. **State isolation** - Each screen instance has its own state
-3. **Progressive enhancement** - SSR content works without JavaScript
-4. **Selective hydration** - Only interactive screens load client code
-5. **Lazy loading** - `visible` and `idle` modes defer hydration
+When any screen on the page uses a `client` mode other than `off`, the page's
+hydration manifest lists it.

@@ -1,0 +1,4 @@
+// Server configuration
+
+server:
+	port: 3000

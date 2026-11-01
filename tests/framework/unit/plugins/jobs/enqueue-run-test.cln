@@ -1,7 +1,9 @@
 // Test: frame.jobs — queue.enqueue registers a job.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.jobs
+	frame.server
 
 server:
 	port: 3400

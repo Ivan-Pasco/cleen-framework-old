@@ -1,13 +1,20 @@
 // Integration: auth guard on route header — [admin] modifier.
 // Runner drives GET /test unauthenticated → guard blocks → boot printed PASS.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 
+// Fixed: was `auth:` settings written as `key: value`, frame-auth.ebnf §1
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	admin: ["*"]

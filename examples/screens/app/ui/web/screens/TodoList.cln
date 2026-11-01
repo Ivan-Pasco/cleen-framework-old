@@ -1,39 +1,37 @@
 // TodoList Screen - Interactive todo list component
-// Demonstrates state with text input and list rendering
+// Demonstrates screen-scoped state with text input and list rendering.
+// Buttons dispatch to the screen's functions by name (UI-B006).
 
-state:
-	string items = ""
-	integer itemCount = 0
+screen TodoList:
+	state:
+		string items = ""
+		integer itemCount = 0
 
-functions:
-	string render()
-		html:
-			<div class="todo-container">
-				<h2 id="todo-title">Todo List ({itemCount.toString()} items)</h2>
-				<div class="todo-input">
-					<input type="text" class="todo-input-field" placeholder="Add new item...">
-					<button class="btn-add">Add</button>
+	functions:
+		string render()
+			html:
+				<div class="todo-container">
+					<h2 id="todo-title">Todo List ({itemCount.toString()} items)</h2>
+					<div class="todo-input">
+						<input type="text" class="todo-input-field" placeholder="Add new item...">
+						<button class="btn-add" onclick="addItem">Add</button>
+					</div>
+					<div class="todo-items" id="todo-list">
+						<pre>{!items}</pre>
+					</div>
+					<button class="btn-clear" onclick="clearAll">Clear All</button>
 				</div>
-				<div class="todo-items" id="todo-list">
-					<pre>{!items}</pre>
-				</div>
-				<button class="btn-clear">Clear All</button>
-			</div>
 
-	addItem()
-		string newItem = ui.eventValue()
-		if newItem != ""
-			items = items + newItem + "\n"
-			itemCount = itemCount + 1
-			integer s = ui.updateElement("#todo-title", "Todo List (" + itemCount.toString() + " items)")
-			s = ui.updateElement("#todo-list", "<pre>" + items + "</pre>")
+		void addItem()
+			string newItem = ui.eventValue()
+			if newItem != ""
+				items = items + newItem + "\n"
+				itemCount = itemCount + 1
+				integer s = ui.updateElement("#todo-title", "Todo List (" + itemCount.toString() + " items)")
+				s = ui.updateElement("#todo-list", "<pre>" + items + "</pre>")
 
-	clearAll()
-		items = ""
-		itemCount = 0
-		integer s = ui.updateElement("#todo-title", "Todo List (0 items)")
-		s = ui.updateElement("#todo-list", "<pre></pre>")
-
-start:
-	integer s = ui.onEvent(".btn-add", "click", addItem)
-	s = ui.onEvent(".btn-clear", "click", clearAll)
+		void clearAll()
+			items = ""
+			itemCount = 0
+			integer s = ui.updateElement("#todo-title", "Todo List (0 items)")
+			s = ui.updateElement("#todo-list", "<pre></pre>")

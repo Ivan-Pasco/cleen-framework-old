@@ -2,24 +2,30 @@
 // User management for administrators
 
 endpoints:
-	[admin] GET "/admin/users":
-		string results = User.find:
+	GET "/admin/users" [admin]:
+		// Project only public columns so password hashes never leave the server.
+		list<User> results = User.find:
+			select: id, email, name, role, created_at
 			order: created_at desc
 
-		return jsonResponse("{\"ok\":true,\"data\":" + results + "}")
+		return json({ok: true, data: results})
 
-	[admin] DELETE "/admin/users/:id":
-		string userId = param("id")
-		if userId == ""
+	DELETE "/admin/users/:id" [admin]:
+		integer userId = param("id").toInteger()
+		if userId <= 0
 			return badRequest("User ID required")
 
-		// Delete user's todos first, then the user
-		Todo.delete:
+		User user = User.first:
 			where:
-				owner_id = userId
+				id == userId
+		onError:
+			return notFound()
 
-		User.delete:
+		// Delete the user's todos first, then the user
+		list<Todo> owned = Todo.find:
 			where:
-				id = userId
+				owner_id == userId
+		Database.deleteAll(owned)
+		Database.delete(user)
 
 		return jsonResponse("{\"ok\":true,\"message\":\"User deleted\"}")

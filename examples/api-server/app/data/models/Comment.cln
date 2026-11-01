@@ -1,6 +1,8 @@
 // Comment model
-data Comment
-	integer post_id
-	integer user_id
-	string content
-	string created_at
+data Comment:
+	fields:
+		integer id primary generated
+		integer post_id
+		integer user_id required
+		string content required
+		string created_at

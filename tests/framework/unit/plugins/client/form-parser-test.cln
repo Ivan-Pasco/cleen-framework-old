@@ -10,6 +10,10 @@
 // module_helpers scaffolding bug (#4c71acb99571). Once that bug is fixed,
 // this test can be migrated to declare `plugins: frame.client` explicitly.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.client
+
 form: post "/api/tasks"
 	title required
 	description optional
@@ -17,3 +21,9 @@ form: post "/api/tasks"
 
 start:
 	printl("PASS: client-form-parser")
+
+// Fixed: the test emitted "created" without defining it; frame-client.ebnf
+// specifies `emit "funcName"` as a call to that named function.
+functions:
+	void created()
+		printl("created")

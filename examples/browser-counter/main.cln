@@ -4,12 +4,6 @@
 plugins:
 	frame.ui
 
-state:
-	integer count = 0
-	integer clicks = 0
-	integer progress = 25
-	boolean darkMode = true
-
 start:
 	integer s = ui.onEvent(".btn-increment", "click", "increment")
 	s = ui.onEvent(".btn-decrement", "click", "decrement")
@@ -17,6 +11,12 @@ start:
 	s = ui.onEvent(".btn-prog-up", "click", "progressUp")
 	s = ui.onEvent(".btn-prog-down", "click", "progressDown")
 	s = ui.onEvent(".btn-theme", "click", "toggleTheme")
+
+state:
+	integer count = 0
+	integer clicks = 0
+	integer progress = 25
+	boolean darkMode = true
 
 functions:
 	updateDisplay()

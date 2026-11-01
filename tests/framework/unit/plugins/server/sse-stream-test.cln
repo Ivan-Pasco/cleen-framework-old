@@ -1,5 +1,9 @@
 // Test: frame.server — Server-Sent Events endpoint (FEED method).
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+
 server:
 	port: 3400
 

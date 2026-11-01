@@ -1,0 +1,44 @@
+// Test: frame.ui — component tags inside `html:` blocks render with their props.
+//
+// Attributes on a component tag are the component's inputs (props). A page
+// already rendered `<my-card label="new">` through the component; an `html:`
+// block — in a function or in another component's template — copied the tag
+// through as raw markup, so the browser showed an empty element and the
+// `label` prop never reached the component.
+
+plugins:
+	frame.ui
+
+component: tag="ui-card"
+	inputs:
+		string label
+
+	html:
+		<div class="card">{label}</div>
+
+component: tag="ui-list"
+	inputs:
+		string title
+
+	html:
+		<ul><ui-card label="fixed"></ui-card><ui-card label="{title}"></ui-card></ul>
+
+start:
+	string fn_out = cardsFromFunction()
+	boolean ok_fn = fn_out == "<section><div class='card'>new</div></section>"
+	boolean ok_nested = fn_out.contains("<ui-card") == false
+	string list_out = listFromFunction()
+	boolean ok_list = list_out == "<ul><div class='card'>fixed</div><div class='card'>from-prop</div></ul>"
+	if ok_fn and ok_nested and ok_list
+		printl("PASS: ui-component-props-html-block")
+	else
+		printl("FAIL: ui-component-props-html-block " + fn_out + " | " + list_out)
+
+functions:
+	string cardsFromFunction()
+		html:
+			<section><ui-card label="new"></ui-card></section>
+
+	string listFromFunction()
+		html:
+			<ui-list title="from-prop"></ui-list>

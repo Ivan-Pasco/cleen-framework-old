@@ -2,14 +2,13 @@
 
 endpoints:
 	GET "/api/comments":
-		string comments = Comment.find:
+		list<Comment> comments = Comment.find:
 			order: created_at desc
-		return jsonResponse("{\"ok\": true, \"comments\": " + comments + "}")
+		return json({ok: true, comments: comments})
 
-	[user, admin] POST "/api/comments":
-		string session = auth.getCurrentUser()
-		string body = body()
-		Comment.insert:
-			user_id = session
-			content = body
+	POST "/api/comments" [user, admin]:
+		Comment comment = Comment()
+		comment.user_id = auth.userId()
+		comment.content = body()
+		Database.save(comment)
 		return jsonResponse("{\"ok\": true, \"message\": \"comment created\"}")

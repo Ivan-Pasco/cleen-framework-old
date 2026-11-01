@@ -2,6 +2,6 @@
 // Loads blog post data by slug from the URL path parameter
 
 functions:
-	any load()
-		string slug = _req_param("slug")
+	any load(Request request)
+		string slug = request.params.slug
 		return { slug: slug }

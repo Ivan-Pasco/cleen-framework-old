@@ -1,6 +1,11 @@
 // Test: frame.auth — JWT refresh single-use rotation + replay rejection.
 // Requires server context (auth.jwt.refresh reads the configured secret).
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 

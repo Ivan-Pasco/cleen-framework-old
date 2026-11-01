@@ -1,21 +1,25 @@
 // User profile endpoints
 
 endpoints:
-	[user] GET "/api/profile":
-		string session = auth.getCurrentUser()
-		string user = User.first:
+	GET "/api/profile" [user, admin]:
+		integer userId = auth.userId()
+		User user = User.first:
 			where:
-				id = session
-		if user == "" or user == "null"
+				id == userId
+		onError:
 			return notFound()
-		return jsonResponse("{\"ok\": true, \"user\": " + user + "}")
+		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, role: user.role}})
 
-	[user] PUT "/api/profile":
-		string session = auth.getCurrentUser()
-		string body = body()
-		User.update:
-			set:
-				name = body
+	PUT "/api/profile" [user, admin]:
+		integer userId = auth.userId()
+		any data = json.tryTextToData(body())
+		if data == null
+			return badRequest("Invalid JSON")
+		User user = User.first:
 			where:
-				id = session
+				id == userId
+		onError:
+			return notFound()
+		user.name = data.name.toString()
+		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"profile updated\"}")

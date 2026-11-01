@@ -1,14 +1,17 @@
 // Users API
+// Fixed: was `User.insert:`, frame-data.ebnf v2 requires constructing the
+// entity and `Database.save(entity)` (DAT-S001). Query results are typed
+// lists/records (DAT-Q001) and are serialized with json.dataToText.
 
 endpoints:
 	GET "/api/users":
-		string users = User.find:
+		list<User> users = User.find:
 			order: name asc
-		return jsonResponse("{\"ok\": true, \"users\": " + users + "}")
+		return jsonResponse("\{\"ok\": true, \"users\": " + json.dataToText(users) + "\}")
 
 	POST "/api/users":
-		string body = body()
-		User.insert:
-			active = true
-			name = body
-		return jsonResponse("{\"ok\": true, \"message\": \"user created\"}")
+		User user = User()
+		user.name = body()
+		user.active = true
+		Database.save(user)
+		return jsonResponse("\{\"ok\": true, \"message\": \"user created\", \"id\": " + user.id.toString() + "\}")

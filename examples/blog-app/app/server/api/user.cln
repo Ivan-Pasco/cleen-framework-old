@@ -1,6 +1,6 @@
 // User lookup endpoint
 
 endpoints:
-	[user, admin] GET "/api/user":
+	GET "/api/user" [user, admin]:
 		string session = auth.getCurrentUser()
 		return jsonResponse("{\"ok\": true, \"user\": " + session + "}")

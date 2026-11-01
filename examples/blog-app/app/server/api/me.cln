@@ -1,14 +1,23 @@
 // Current user profile endpoints
 
 endpoints:
-	[user, admin] GET "/api/me":
+	GET "/api/me" [user, admin]:
 		string session = auth.getCurrentUser()
 		return jsonResponse("{\"ok\": true, \"user\": " + session + "}")
 
-	[user, admin] PUT "/api/me":
-		string body = body()
-		any data = json.tryTextToData(body)
+	PUT "/api/me" [user, admin]:
+		any data = json.tryTextToData(body())
 		if data == null
 			return badRequest("Invalid JSON")
-		string session = auth.getCurrentUser()
-		return jsonResponse("{\"ok\": true, \"user\": " + session + "}")
+		integer userId = auth.userId()
+		User user = User.first:
+			where:
+				id == userId
+		onError:
+			return notFound()
+		if data.name != null
+			user.name = data.name.toString()
+		if data.bio != null
+			user.bio = data.bio.toString()
+		Database.save(user)
+		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, bio: user.bio, role: user.role}})

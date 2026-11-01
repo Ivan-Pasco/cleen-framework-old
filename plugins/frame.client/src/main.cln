@@ -63,7 +63,13 @@ external:
 	// Expression constructors
 	integer _expr_string_lit(integer ctx, string value)
 	integer _expr_ident(integer ctx, string name)
+	// receiver.method(args) — a method call on an expression handle.
+	integer _expr_method_call(integer ctx, integer recv_handle, string method, string args_json)
 	integer _expr_call(integer ctx, string callee, string args_json)
+	// §3.11 — parse a Clean statement into a stmt handle. Used only for the
+	// fixed `later __res = api.<method>(...)` request statement (see
+	// build_later_request); the op set has no later_assignment constructor.
+	integer _emit_stmt_from_source(integer ctx, string source, integer origin_offset)
 	integer _expr_field(integer ctx, integer receiver_handle, string field_name)
 	// _expr_binop is the LP-string variant in the compiler; _expr_binop_op is
 	// the numeric-op-code sibling. We use the numeric variant since callers
@@ -432,6 +438,35 @@ functions:
 		integer h = _stmt_block(ctx, stmts_json)
 		return h
 
+	// Build the awaited request statement of a generated submit()/<name>()
+	// handler: `later __res = api.<method>(__url[, __body])`.
+	//
+	// Spec: grammar.ebnf §4.9 later_assignment; frame-client.ebnf §2/§3 — the
+	// handler stays in the submitting/pending state while it awaits the
+	// response. The compiler splits the handler at the `later` statement and
+	// runs every statement after it in a continuation once the response
+	// arrives; inside that continuation `__res.ok` / `__res.json(path)` read
+	// the response.
+	//
+	// The typed-emission op set has no later_assignment constructor, so the
+	// statement is parsed from a fixed plugin-authored source string. Nothing
+	// user-authored is concatenated into it: the URL and body are bound to the
+	// `__url` / `__body` locals with typed expressions beforehand, and the
+	// method is chosen from the five fixed spellings.
+	// Returns 0 when `method` is not a recognised HTTP method.
+	integer build_later_request(integer ctx, string method)
+		if method == "get"
+			return _emit_stmt_from_source(ctx, "later __res = api.get(__url)", 0)
+		if method == "delete"
+			return _emit_stmt_from_source(ctx, "later __res = api.delete(__url)", 0)
+		if method == "post"
+			return _emit_stmt_from_source(ctx, "later __res = api.post(__url, __body)", 0)
+		if method == "put"
+			return _emit_stmt_from_source(ctx, "later __res = api.put(__url, __body)", 0)
+		if method == "patch"
+			return _emit_stmt_from_source(ctx, "later __res = api.patch(__url, __body)", 0)
+		return 0
+
 	// Encode a single integer into a JSON array string "[N]".
 	string json_array1(integer a)
 		return "[" + a.toString() + "]"
@@ -694,7 +729,8 @@ functions:
 //   state: { <field>: string = "<default>", ..., submitting: boolean = false,
 //             formError: string = "", formSuccess: string = "" }
 //   functions: { void submit() { guard; guards; submitting=true; formError=""; formSuccess="";
-//                  [body = ...;] later __res = api.<method>(url[, body]);
+//                  __url = ...; [__body = ...;] later __res = api.<method>(__url[, __body]);
+//                  -- continuation (runs when the response arrives): --
 //                  if __res.ok { [clears;] formSuccess="Saved"; [emit()] }
 //                  else { formError=__res.json("error"); if formError=="" formError="Request failed" }
 //                  submitting=false } }
@@ -905,7 +941,7 @@ functions:
 			string freq_req = get_field(entry_req, 1)
 			if fn_req.length() > 0 and freq_req == "true"
 				// trim_call = fieldN.trim()
-				integer trim_call = _expr_call(ctx, fn_req + ".trim", "[]")
+				integer trim_call = _expr_method_call(ctx, _expr_ident(ctx, fn_req), "trim", "[]")
 				if trim_call == 0
 					_emit_error(ctx, 2, "FRAME-CLIENT-E047", "failed to build .trim() for " + fn_req, "{\"source\":\"plugin\"}")
 					return 1
@@ -988,10 +1024,16 @@ functions:
 			_emit_error(ctx, 2, "FRAME-CLIENT-E061", "failed to build URL expr for form:", "{\"source\":\"plugin\"}")
 			return 1
 
+		// __url is a handler-scope local read by the `later` request statement.
+		integer url_decl = _stmt_var_decl(ctx, "__url", "string", url_expr)
+		if url_decl == 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E093", "failed to build __url var-decl for form:", "{\"source\":\"plugin\"}")
+			return 1
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + url_decl.toString() + "]"
+
 		// Determine if method sends a body
 		boolean has_body = method != "get" and method != "delete"
 
-		integer api_call = 0
 		if has_body
 			// Build JSON body string: __body = "{\"field\":\"" + field + "\", ...}"
 			// For typed emission we build the concatenation chain via binop "+".
@@ -1011,25 +1053,13 @@ functions:
 				return 1
 			body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + body_assign.toString() + "]"
 
-			integer body_ident = _expr_ident(ctx, "__body")
-			if body_ident == 0
-				_emit_error(ctx, 2, "FRAME-CLIENT-E064", "failed to build __body ident", "{\"source\":\"plugin\"}")
-				return 1
-			api_call = _expr_call(ctx, "api." + method, json_array2(url_expr, body_ident))
-		else
-			api_call = _expr_call(ctx, "api." + method, json_array1(url_expr))
-
-		if api_call == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E065", "failed to build api." + method + " call", "{\"source\":\"plugin\"}")
+		// later __res = api.<method>(__url[, __body]) — every statement after
+		// this one runs once the response has arrived.
+		integer res_later = build_later_request(ctx, method)
+		if res_later == 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E066", "failed to build later api." + method + " request for form:", "{\"source\":\"plugin\"}")
 			return 1
-
-		// __res is a first-introduction of a handler-scope local — use
-		// _stmt_var_decl. See prompt #f7183604.
-		integer res_assign = _stmt_var_decl(ctx, "__res", "any", api_call)
-		if res_assign == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E066", "failed to build __res var-decl", "{\"source\":\"plugin\"}")
-			return 1
-		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_assign.toString() + "]"
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_later.toString() + "]"
 
 		// Build if __res.ok { ... } else { formError = __res.json("error"); if formError=="" formError="Request failed" }
 		integer res_ok_ident = _expr_ident(ctx, "__res")
@@ -1117,7 +1147,7 @@ functions:
 		if err_key_lit == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E076", "failed to build error key literal", "{\"source\":\"plugin\"}")
 			return 1
-		integer json_err_call = _expr_call(ctx, "__res.json", json_array1(err_key_lit))
+		integer json_err_call = _expr_method_call(ctx, res_ident_else, "json", json_array1(err_key_lit))
 		if json_err_call == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E077", "failed to build __res.json(error) call", "{\"source\":\"plugin\"}")
 			return 1
@@ -1276,7 +1306,8 @@ functions:
 //             <name>Error: string = "" }
 //   functions: { void <name>() { if <name>Pending { return }
 //                  <name>Pending = true; <name>Success = false; <name>Error = "";
-//                  [body = ...;] later __res = api.<method>(url[, body]);
+//                  __url = ...; [__body = ...;] later __res = api.<method>(__url[, __body]);
+//                  -- continuation (runs when the response arrives): --
 //                  if __res.ok { <name>Success = true; [emit_success()] }
 //                  else { <name>Error = __res.json("error"); if <name>Error=="" <name>Error="Request failed"; [emit_error()] }
 //                  <name>Pending = false } }
@@ -1286,6 +1317,27 @@ functions:
 		string name = parse_send_name(attributes)
 		string method = parse_send_method(attributes)
 		string url = parse_send_url(attributes)
+
+		// The compiler folds the same-line header (`deleteUser delete "/x"`)
+		// into the first line of `body`, as it does for form: — read the
+		// header from there when `attributes` does not carry it.
+		if name.length() == 0 or method.length() == 0 or url.length() == 0
+			integer first_nl_s = body.indexOf("\n")
+			string first_line_s = body
+			if first_nl_s != -1
+				first_line_s = body.substring(0, first_nl_s)
+			first_line_s = first_line_s.trim()
+			string name_from_body = parse_send_name(first_line_s)
+			string method_from_body = parse_send_method(first_line_s)
+			string url_from_body = parse_send_url(first_line_s)
+			if name_from_body.length() > 0 and method_from_body.length() > 0 and url_from_body.length() > 0
+				name = name_from_body
+				method = method_from_body
+				url = url_from_body
+				if first_nl_s == -1
+					body = ""
+				else
+					body = body.substring(first_nl_s + 1, body.length())
 
 		if name.length() == 0 or method.length() == 0 or url.length() == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E100", "send: requires name method url (e.g. send: deleteUser delete /api/users/id)", "{\"source\":\"plugin\"}")
@@ -1438,8 +1490,14 @@ functions:
 			_emit_error(ctx, 2, "FRAME-CLIENT-E118", "failed to build URL expr for send:", "{\"source\":\"plugin\"}")
 			return 1
 
+		// __url is a handler-scope local read by the `later` request statement.
+		integer url_decl_s = _stmt_var_decl(ctx, "__url", "string", url_expr)
+		if url_decl_s == 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E149", "failed to build __url var-decl for send:", "{\"source\":\"plugin\"}")
+			return 1
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + url_decl_s.toString() + "]"
+
 		boolean has_body_s = method != "get" and method != "delete"
-		integer api_call_s = 0
 		if has_body_s
 			integer body_expr_s = 0
 			if with_fields.length() > 0
@@ -1455,24 +1513,14 @@ functions:
 				_emit_error(ctx, 2, "FRAME-CLIENT-E120", "failed to build __body var-decl for send:", "{\"source\":\"plugin\"}")
 				return 1
 			body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + body_assign_s.toString() + "]"
-			integer body_ident_s = _expr_ident(ctx, "__body")
-			if body_ident_s == 0
-				_emit_error(ctx, 2, "FRAME-CLIENT-E121", "failed to build __body ident for send:", "{\"source\":\"plugin\"}")
-				return 1
-			api_call_s = _expr_call(ctx, "api." + method, json_array2(url_expr, body_ident_s))
-		else
-			api_call_s = _expr_call(ctx, "api." + method, json_array1(url_expr))
 
-		if api_call_s == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E122", "failed to build api call for send:", "{\"source\":\"plugin\"}")
+		// later __res = api.<method>(__url[, __body]) — every statement after
+		// this one runs once the response has arrived.
+		integer res_later_s = build_later_request(ctx, method)
+		if res_later_s == 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E123", "failed to build later api." + method + " request for send:", "{\"source\":\"plugin\"}")
 			return 1
-
-		// First-introduction of __res in send handler — var-decl. See #f7183604.
-		integer res_assign_s = _stmt_var_decl(ctx, "__res", "any", api_call_s)
-		if res_assign_s == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E123", "failed to build __res assign for send:", "{\"source\":\"plugin\"}")
-			return 1
-		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_assign_s.toString() + "]"
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_later_s.toString() + "]"
 
 		// if __res.ok { <name>Success = true; [emit_success()] } else { ... }
 		integer res_ok_ident_s = _expr_ident(ctx, "__res")
@@ -1516,7 +1564,7 @@ functions:
 		if err_key_lit_s == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E131", "failed to build error key literal", "{\"source\":\"plugin\"}")
 			return 1
-		integer json_err_call_s = _expr_call(ctx, "__res.json", json_array1(err_key_lit_s))
+		integer json_err_call_s = _expr_method_call(ctx, res_ident_else_s, "json", json_array1(err_key_lit_s))
 		if json_err_call_s == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E132", "failed to build __res.json(error) call", "{\"source\":\"plugin\"}")
 			return 1

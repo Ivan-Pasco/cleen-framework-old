@@ -1,45 +1,32 @@
 // Todo Endpoints
-// CRUD operations for todo items
+// CRUD operations for todo items, scoped to the signed-in owner
 
 endpoints:
-	[user, admin] GET "/todos":
-		string session = auth.getCurrentUser()
-		any sessionData = json.tryTextToData(session)
-		any userIdField = sessionData.userId
-		string userId = userIdField.toString()
+	GET "/todos" [user, admin]:
+		integer userId = auth.userId()
 
-		string results = Todo.find:
+		list<Todo> results = Todo.find:
 			where:
-				owner_id = userId
+				owner_id == userId
 			order: created_at desc
 
-		return jsonResponse("{\"ok\":true,\"data\":" + results + "}")
+		return json({ok: true, data: results})
 
-	[user, admin] GET "/todos/:id":
-		string todoId = param("id")
-		string session = auth.getCurrentUser()
-		any sessionData = json.tryTextToData(session)
-		any userIdField = sessionData.userId
-		string userId = userIdField.toString()
+	GET "/todos/:id" [user, admin]:
+		integer todoId = param("id").toInteger()
+		integer userId = auth.userId()
 
-		string todo = Todo.first:
+		Todo item = Todo.first:
 			where:
-				id = todoId
-				owner_id = userId
-
-		if todo == null
+				id == todoId
+				owner_id == userId
+		onError:
 			return notFound()
 
-		return jsonResponse("{\"ok\":true,\"data\":" + todo + "}")
+		return json({ok: true, data: item})
 
-	[user, admin] POST "/todos":
-		string session = auth.getCurrentUser()
-		any sessionData = json.tryTextToData(session)
-		any userIdField = sessionData.userId
-		string userId = userIdField.toString()
-
-		string body = body()
-		any bodyData = json.tryTextToData(body)
+	POST "/todos" [user, admin]:
+		any bodyData = json.tryTextToData(body())
 		if bodyData == null
 			return badRequest("Invalid JSON")
 
@@ -47,67 +34,54 @@ endpoints:
 		if titleField == null
 			return badRequest("Title is required")
 
-		string title = titleField.toString()
-		string desc = ""
-		integer priority = 0
+		Todo item = Todo()
+		item.title = titleField.toString()
+		item.details = ""
+		item.priority = 0
+		item.owner_id = auth.userId()
 
-		any descField = bodyData.description
+		any descField = json.get(bodyData, "description")
 		if descField != null
-			desc = descField.toString()
+			item.details = descField.toString()
 
 		any prioField = bodyData.priority
 		if prioField != null
-			priority = prioField.toInteger()
+			item.priority = prioField.toInteger()
 
-		integer newId = Todo.insert:
-			title = title
-			description = desc
-			priority = priority
-			owner_id = userId
+		Database.save(item)
 
-		return jsonResponse("{\"ok\":true,\"id\":" + newId.toString() + "}")
+		return jsonResponse("{\"ok\":true,\"id\":" + item.id.toString() + "}")
 
-	[user, admin] DELETE "/todos/:id":
-		string todoId = param("id")
-		string session = auth.getCurrentUser()
-		any sessionData = json.tryTextToData(session)
-		any userIdField = sessionData.userId
-		string userId = userIdField.toString()
+	DELETE "/todos/:id" [user, admin]:
+		integer todoId = param("id").toInteger()
+		integer userId = auth.userId()
 
-		Todo.delete:
+		Todo item = Todo.first:
 			where:
-				id = todoId
-				owner_id = userId
+				id == todoId
+				owner_id == userId
+		onError:
+			return notFound()
+
+		Database.delete(item)
 
 		return jsonResponse("{\"ok\":true}")
 
-	[user, admin] PATCH "/todos/:id/toggle":
-		string todoId = param("id")
-		string session = auth.getCurrentUser()
-		any sessionData = json.tryTextToData(session)
-		any userIdField = sessionData.userId
-		string userId = userIdField.toString()
+	PATCH "/todos/:id/toggle" [user, admin]:
+		integer todoId = param("id").toInteger()
+		integer userId = auth.userId()
 
-		string todo = Todo.first:
+		Todo item = Todo.first:
 			where:
-				id = todoId
-				owner_id = userId
-
-		if todo == null
+				id == todoId
+				owner_id == userId
+		onError:
 			return notFound()
 
-		any todoData = json.tryTextToData(todo)
-		any completedField = todoData.completed
-		integer currentCompleted = completedField.toInteger()
-		integer newCompleted = 1
-		if currentCompleted == 1
-			newCompleted = 0
-
-		Todo.update:
-			set:
-				completed = newCompleted
-			where:
-				id = todoId
-				owner_id = userId
+		if item.completed == 1
+			item.completed = 0
+		else
+			item.completed = 1
+		Database.save(item)
 
 		return jsonResponse("{\"ok\":true}")

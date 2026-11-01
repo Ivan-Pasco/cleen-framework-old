@@ -1,7 +1,9 @@
 // Test: frame.jobs — schedule.cron registers a cron entry.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.jobs
+	frame.server
 
 server:
 	port: 3400
@@ -15,7 +17,10 @@ jobs:
 
 endpoints:
 	GET "/test":
-		string sid = schedule.cron("0 3 * * *", "NightlyReport", "{}")
+		// Fixed: was schedule.cron(cronExpr, jobName, argsJson), spec requires
+		// schedule.cron(scheduleName, cronExpr, handlerName)
+		// (function-registry.toml `_schedule_cron`, HOST_BRIDGE.md).
+		string sid = schedule.cron("nightly-report", "0 3 * * *", "nightlyReport")
 		boolean ok_sid = sid.length() > 0
 		boolean ok_cancel = schedule.cancel(sid)
 		if ok_sid and ok_cancel
@@ -23,3 +28,7 @@ endpoints:
 		else
 			printl("FAIL: jobs-scheduled-cron")
 		return json({ok: true})
+
+functions:
+	void nightlyReport()
+		printl("nightly report")

@@ -1,0 +1,41 @@
+// Test: frame.ui — component tag attributes convert to the declared input type.
+//
+// `count="3"`, `ratio="1.5"` and `open="true"` set an integer, a number and a
+// boolean input. Regression: every literal attribute was assigned as a string,
+// so a component with a non-string input failed to compile (SEM001).
+// `{expr}` values keep their expression type.
+
+plugins:
+	frame.ui
+
+component: tag="ui-meter"
+	inputs:
+		string label
+		integer count
+		number ratio
+		boolean open
+		string userName
+
+	html:
+		<p>{label}:{(count + 1).toString()}:{(ratio > 1.0).toString()}:{open.toString()}:{userName}</p>
+
+page MeterPage:
+	<div>
+		<ui-meter label="cups" count="3" ratio="1.5" open="true" user-name="ann" id="ignored"></ui-meter>
+	</div>
+
+start:
+	MeterPage page = MeterPage()
+	string page_out = page.render()
+	string block_out = meterInBlock()
+	boolean ok_page = page_out == "<div><p>cups:4:true:true:ann</p></div>"
+	boolean ok_block = block_out == "<p>dots:8:false:false:</p>"
+	if ok_page and ok_block
+		printl("PASS: ui-component-typed-props")
+	else
+		printl("FAIL: ui-component-typed-props " + page_out + " / " + block_out)
+
+functions:
+	string meterInBlock()
+		html:
+			<ui-meter label="dots" count="{7}" ratio="0.5" open="false"></ui-meter>

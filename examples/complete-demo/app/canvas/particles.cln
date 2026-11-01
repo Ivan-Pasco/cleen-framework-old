@@ -1,7 +1,11 @@
 // Particle animation - frame.canvas plugin
-// Location: app/canvas/ — processed automatically by frame.canvas
+// Browser module: build with `cln compile app/canvas/particles.cln`.
+// It draws into the page's <canvas id="particles"> element.
 
-canvasScene: width=800 height=400 fps=60 background="#0d1117"
+plugins:
+	frame.canvas
+
+canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
 
 	state:
 		number frameCount = 0.0

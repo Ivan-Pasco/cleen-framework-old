@@ -1,9 +1,11 @@
 // Post model
-data Post
-	integer user_id
-	string title
-	string content
-	string slug
-	boolean published
-	string created_at
-	string updated_at
+data Post:
+	fields:
+		integer id primary generated
+		integer user_id required
+		string title
+		string content
+		string slug
+		boolean published default: false
+		string created_at
+		string updated_at

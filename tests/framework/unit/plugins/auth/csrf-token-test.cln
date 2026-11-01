@@ -1,5 +1,10 @@
 // Test: frame.auth — CSRF token generate + validate + reject invalid.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 

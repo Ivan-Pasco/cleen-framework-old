@@ -7,6 +7,7 @@ Tests the Clean Framework HTTP routing system.
 ```
 app/
 └── server/
+    ├── main.cln                  → server entry (port 3000)
     └── api/
         ├── hello.cln             → GET /api/hello
         └── users/

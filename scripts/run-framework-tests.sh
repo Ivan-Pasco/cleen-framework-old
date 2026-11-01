@@ -18,6 +18,14 @@ FRAMEWORK_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_DIR="$FRAMEWORK_DIR/tests/framework"
 OUTPUT_DIR="$TEST_DIR/output"
 COMPILER="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+
+# Test database: SQLite :memory: per server process (tests/CONVENTIONS.md —
+# the framework default for tests). Override with DATABASE_URL.
+export DATABASE_URL="${DATABASE_URL:-sqlite::memory:}"
+# JWT signing secret for auth tests. frame-auth reads it from the environment
+# (`secret = env.get("JWT_SECRET")`, AUTH-C004), so each run gets a fresh
+# random value instead of a secret committed to source.
+export JWT_SECRET="${JWT_SECRET:-$(openssl rand -hex 32)}"
 SERVER="${CLEEN_SERVER:-$HOME/Documents/Dev/Clean Language/clean-server/target/release/clean-server}"
 
 # Counters
@@ -139,6 +147,25 @@ compile_test() {
     fi
 }
 
+# Poll a server log until it matches a pattern, the server exits, or 15 s pass.
+wait_for_log() {
+    local log_file="$1"
+    local pid="$2"
+    local pattern="$3"
+    local waited=0
+    while [ $waited -lt 150 ]; do
+        if [ -f "$log_file" ] && grep -qE "$pattern" "$log_file"; then
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
 # Run a single compiled test using clean-server.
 #
 # Two shapes are supported (per system-documents/testing/TEST_STRATEGY.md §3):
@@ -179,16 +206,28 @@ run_test() {
     "$SERVER" "$wasm_file" --port $test_port > "$server_log" 2>&1 &
     local server_pid=$!
 
-    # Wait for server to initialize (it runs start() on load)
-    sleep 1
+    # Wait for server to initialize (it runs start() on load). start() may do
+    # slow work (password hashing, ...), so wait until the server is listening,
+    # a PASS:/FAIL: verdict is printed, or the process exits — up to 15 s.
+    wait_for_log "$server_log" "$server_pid" 'Server listening|PASS:|FAIL:'
 
     # If the source declares an endpoint at "/test", drive it. This is how
     # server-shaped tests (auth session, role guards, endpoint routing, ...)
     # get their handler bodies executed.
     if [ -n "$source_file" ] && [ -f "$source_file" ] && \
-       grep -qE '(GET|POST|PUT|PATCH|DELETE)[[:space:]]+"/test"' "$source_file"; then
-        curl -sS -o /dev/null "http://127.0.0.1:$test_port/test" 2>/dev/null || true
-        sleep 0.3
+       grep -qE '(GET|POST|PUT|PATCH|DELETE|FEED)[[:space:]]+"/test"' "$source_file"; then
+        # FEED (server-sent events) is a GET whose response may stay open.
+        curl -sS --max-time 5 -o /dev/null "http://127.0.0.1:$test_port/test" 2>/dev/null || true
+        wait_for_log "$server_log" "$server_pid" 'PASS:|FAIL:'
+    elif [ -n "$source_file" ] && [ -f "$source_file" ] && \
+         grep -qE 'LIVE[[:space:]]+"/test"' "$source_file"; then
+        # WebSocket endpoint: open the connection with an upgrade handshake so
+        # the LIVE handler runs.
+        curl -sS --http1.1 --max-time 2 -o /dev/null \
+            -H "Connection: Upgrade" -H "Upgrade: websocket" \
+            -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+            "http://127.0.0.1:$test_port/test" 2>/dev/null || true
+        wait_for_log "$server_log" "$server_pid" 'PASS:|FAIL:'
     fi
 
     # Check if server is still running (it may have exited after start())

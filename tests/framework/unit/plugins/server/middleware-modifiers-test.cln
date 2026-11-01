@@ -3,6 +3,11 @@
 // unauthenticated request; the endpoint body itself never fires (401).
 // The test still succeeds because start: printed a PASS marker.
 
+// Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
+plugins:
+	frame.server
+	frame.auth
+
 server:
 	port: 3400
 

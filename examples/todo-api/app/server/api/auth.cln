@@ -3,8 +3,7 @@
 
 endpoints:
 	POST "/auth/register":
-		string body = body()
-		any bodyData = json.tryTextToData(body)
+		any bodyData = json.tryTextToData(body())
 		if bodyData == null
 			return badRequest("Invalid JSON")
 
@@ -17,25 +16,19 @@ endpoints:
 		if passwordField == null
 			return badRequest("Password required")
 
-		string email = emailField.toString()
-		string password = passwordField.toString()
-		string name = ""
+		User user = User()
+		user.email = emailField.toString()
+		user.password_hash = auth.hashPassword(passwordField.toString())
+		user.name = ""
 		if nameField != null
-			name = nameField.toString()
+			user.name = nameField.toString()
+		user.role = "user"
+		Database.save(user)
 
-		string hashedPassword = auth.password.hash(password)
-
-		integer newId = User.insert:
-			email = email
-			password_hash = hashedPassword
-			name = name
-			role = "user"
-
-		return jsonResponse("{\"ok\":true,\"message\":\"User registered\",\"id\":" + newId.toString() + "}")
+		return jsonResponse("{\"ok\":true,\"message\":\"User registered\",\"id\":" + user.id.toString() + "}")
 
 	POST "/auth/login":
-		string body = body()
-		any bodyData = json.tryTextToData(body)
+		any bodyData = json.tryTextToData(body())
 		if bodyData == null
 			return badRequest("Invalid JSON")
 
@@ -47,38 +40,26 @@ endpoints:
 		if passwordField == null
 			return badRequest("Password required")
 
-		string email = emailField.toString()
+		string loginEmail = emailField.toString()
 		string password = passwordField.toString()
 
-		string userJson = User.first:
+		User user = User.first:
 			where:
-				email = email
-
-		if userJson == null
+				email == loginEmail
+		onError:
 			return unauthorized()
 
-		any userData = json.tryTextToData(userJson)
-		if userData == null
+		if not auth.verifyPassword(password, user.password_hash)
 			return unauthorized()
 
-		any hashField = userData.password_hash
-		string storedHash = hashField.toString()
-		if auth.password.verify(password, storedHash) == 0
-			return unauthorized()
+		auth.session.create(user.id, "{\"role\":\"" + user.role + "\"}")
 
-		any idField = userData.id
-		any roleField = userData.role
-		string userId = idField.toString()
-		string userRole = roleField.toString()
+		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, role: user.role}})
 
-		auth.session.create(userId, userRole)
-
-		return jsonResponse("{\"ok\":true,\"user\":" + userJson + "}")
-
-	[user, admin] POST "/auth/logout":
+	POST "/auth/logout" [user, admin]:
 		auth.session.destroy()
 		return jsonResponse("{\"ok\":true,\"message\":\"Logged out\"}")
 
-	[user, admin] GET "/auth/me":
+	GET "/auth/me" [user, admin]:
 		string session = auth.getCurrentUser()
 		return jsonResponse("{\"ok\":true,\"user\":" + session + "}")
