@@ -11,10 +11,12 @@ plugins:
 server:
 	port: 3400
 
+// Fixed: session fields used `key: value`; frame-auth.ebnf session_field
+// requires `key = value` (session_cookie_field, session_timeout_field).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 roles:
 	admin: ["*"]

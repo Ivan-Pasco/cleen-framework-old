@@ -1,0 +1,318 @@
+// Test: frame.server — an endpoints: block with more than 100 routes.
+// Grammar: frame-server.ebnf §2 endpoints_block = "endpoints" ":" { route_declaration } —
+// no limit on the number of routes. Before the fix the expansion stopped
+// after 100 routes, silently dropping the rest (GET "/test" is route 101).
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	GET "/filler/0":
+		return json({n: 0})
+
+	GET "/filler/1":
+		return json({n: 1})
+
+	GET "/filler/2":
+		return json({n: 2})
+
+	GET "/filler/3":
+		return json({n: 3})
+
+	GET "/filler/4":
+		return json({n: 4})
+
+	GET "/filler/5":
+		return json({n: 5})
+
+	GET "/filler/6":
+		return json({n: 6})
+
+	GET "/filler/7":
+		return json({n: 7})
+
+	GET "/filler/8":
+		return json({n: 8})
+
+	GET "/filler/9":
+		return json({n: 9})
+
+	GET "/filler/10":
+		return json({n: 10})
+
+	GET "/filler/11":
+		return json({n: 11})
+
+	GET "/filler/12":
+		return json({n: 12})
+
+	GET "/filler/13":
+		return json({n: 13})
+
+	GET "/filler/14":
+		return json({n: 14})
+
+	GET "/filler/15":
+		return json({n: 15})
+
+	GET "/filler/16":
+		return json({n: 16})
+
+	GET "/filler/17":
+		return json({n: 17})
+
+	GET "/filler/18":
+		return json({n: 18})
+
+	GET "/filler/19":
+		return json({n: 19})
+
+	GET "/filler/20":
+		return json({n: 20})
+
+	GET "/filler/21":
+		return json({n: 21})
+
+	GET "/filler/22":
+		return json({n: 22})
+
+	GET "/filler/23":
+		return json({n: 23})
+
+	GET "/filler/24":
+		return json({n: 24})
+
+	GET "/filler/25":
+		return json({n: 25})
+
+	GET "/filler/26":
+		return json({n: 26})
+
+	GET "/filler/27":
+		return json({n: 27})
+
+	GET "/filler/28":
+		return json({n: 28})
+
+	GET "/filler/29":
+		return json({n: 29})
+
+	GET "/filler/30":
+		return json({n: 30})
+
+	GET "/filler/31":
+		return json({n: 31})
+
+	GET "/filler/32":
+		return json({n: 32})
+
+	GET "/filler/33":
+		return json({n: 33})
+
+	GET "/filler/34":
+		return json({n: 34})
+
+	GET "/filler/35":
+		return json({n: 35})
+
+	GET "/filler/36":
+		return json({n: 36})
+
+	GET "/filler/37":
+		return json({n: 37})
+
+	GET "/filler/38":
+		return json({n: 38})
+
+	GET "/filler/39":
+		return json({n: 39})
+
+	GET "/filler/40":
+		return json({n: 40})
+
+	GET "/filler/41":
+		return json({n: 41})
+
+	GET "/filler/42":
+		return json({n: 42})
+
+	GET "/filler/43":
+		return json({n: 43})
+
+	GET "/filler/44":
+		return json({n: 44})
+
+	GET "/filler/45":
+		return json({n: 45})
+
+	GET "/filler/46":
+		return json({n: 46})
+
+	GET "/filler/47":
+		return json({n: 47})
+
+	GET "/filler/48":
+		return json({n: 48})
+
+	GET "/filler/49":
+		return json({n: 49})
+
+	GET "/filler/50":
+		return json({n: 50})
+
+	GET "/filler/51":
+		return json({n: 51})
+
+	GET "/filler/52":
+		return json({n: 52})
+
+	GET "/filler/53":
+		return json({n: 53})
+
+	GET "/filler/54":
+		return json({n: 54})
+
+	GET "/filler/55":
+		return json({n: 55})
+
+	GET "/filler/56":
+		return json({n: 56})
+
+	GET "/filler/57":
+		return json({n: 57})
+
+	GET "/filler/58":
+		return json({n: 58})
+
+	GET "/filler/59":
+		return json({n: 59})
+
+	GET "/filler/60":
+		return json({n: 60})
+
+	GET "/filler/61":
+		return json({n: 61})
+
+	GET "/filler/62":
+		return json({n: 62})
+
+	GET "/filler/63":
+		return json({n: 63})
+
+	GET "/filler/64":
+		return json({n: 64})
+
+	GET "/filler/65":
+		return json({n: 65})
+
+	GET "/filler/66":
+		return json({n: 66})
+
+	GET "/filler/67":
+		return json({n: 67})
+
+	GET "/filler/68":
+		return json({n: 68})
+
+	GET "/filler/69":
+		return json({n: 69})
+
+	GET "/filler/70":
+		return json({n: 70})
+
+	GET "/filler/71":
+		return json({n: 71})
+
+	GET "/filler/72":
+		return json({n: 72})
+
+	GET "/filler/73":
+		return json({n: 73})
+
+	GET "/filler/74":
+		return json({n: 74})
+
+	GET "/filler/75":
+		return json({n: 75})
+
+	GET "/filler/76":
+		return json({n: 76})
+
+	GET "/filler/77":
+		return json({n: 77})
+
+	GET "/filler/78":
+		return json({n: 78})
+
+	GET "/filler/79":
+		return json({n: 79})
+
+	GET "/filler/80":
+		return json({n: 80})
+
+	GET "/filler/81":
+		return json({n: 81})
+
+	GET "/filler/82":
+		return json({n: 82})
+
+	GET "/filler/83":
+		return json({n: 83})
+
+	GET "/filler/84":
+		return json({n: 84})
+
+	GET "/filler/85":
+		return json({n: 85})
+
+	GET "/filler/86":
+		return json({n: 86})
+
+	GET "/filler/87":
+		return json({n: 87})
+
+	GET "/filler/88":
+		return json({n: 88})
+
+	GET "/filler/89":
+		return json({n: 89})
+
+	GET "/filler/90":
+		return json({n: 90})
+
+	GET "/filler/91":
+		return json({n: 91})
+
+	GET "/filler/92":
+		return json({n: 92})
+
+	GET "/filler/93":
+		return json({n: 93})
+
+	GET "/filler/94":
+		return json({n: 94})
+
+	GET "/filler/95":
+		return json({n: 95})
+
+	GET "/filler/96":
+		return json({n: 96})
+
+	GET "/filler/97":
+		return json({n: 97})
+
+	GET "/filler/98":
+		return json({n: 98})
+
+	GET "/filler/99":
+		return json({n: 99})
+
+	GET "/test":
+		printl("PASS: server-many-routes")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-many-routes server ready")

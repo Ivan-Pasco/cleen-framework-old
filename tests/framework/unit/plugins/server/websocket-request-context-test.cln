@@ -1,0 +1,29 @@
+// Test: frame.server — LIVE (WebSocket) onConnect handler request context.
+// Grammar: frame-server.ebnf §3a — the route body of a LIVE endpoint is the
+// onConnect handler; live.onMessage: / live.onClose: are sub-blocks.
+// Contract: plugin-contract.md §3.6 — `_http_ws_route` registers the
+// onConnect handler (registers_handler_at_arg), so `req.*` is valid there.
+//
+// Before the fix `req.query` in the onConnect body failed CONC002, and a
+// live.onClose: block holding only comments failed to parse.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	LIVE "/test":
+		string path = req.path()
+		if path == "/test"
+			printl("PASS: server-websocket-request-context")
+		else
+			printl("FAIL: server-websocket-request-context (req.path() = " + path + ")")
+		live.onMessage:
+			live.send(live.clientId(), live.message())
+		live.onClose:
+			// Nothing to clean up: rooms are not used by this endpoint.
+
+start:
+	printl("[boot] server-websocket-request-context server ready")

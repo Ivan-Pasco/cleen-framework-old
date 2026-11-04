@@ -12,10 +12,8 @@ name: Nightly Canaries (Layer 2 — browser)
 #   - `schedule:` (03:17 UTC) — nightly failure emails were the loudest
 #     signal source. Run on demand when browser host bridge or the
 #     canary runner is being changed.
-#   - `push:` on runner-related paths — race condition against the
-#     Release Frame Framework workflow: this job queried the latest tag
-#     from the GitHub API before release assets finished uploading,
-#     causing 404s on frame-plugins-<ver>.tar.gz.
+#   - `push:` on runner-related paths — it raced the Release workflow for
+#     the plugin bundle. Plugins now come from the checkout instead.
 
 on:
   workflow_dispatch:
@@ -50,21 +48,16 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install cleen (Clean Language version manager)
-        run: |
-          curl -fsSL https://github.com/Ivan-Pasco/clean-language-manager-old/releases/latest/download/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.cleen/bin" >> "$GITHUB_PATH"
+      - name: Put the old toolchain on PATH
+        # run_canaries.mjs spawns `cln`; on this runner the only cln is the
+        # old-toolchain binary installed below into ~/.cleen/bin.
+        run: echo "$HOME/.cleen/bin" >> "$GITHUB_PATH"
 
       - name: Install latest Clean Language compiler
         run: |
           set -euo pipefail
           # The old compiler lives at Ivan-Pasco/clean-language-compiler-old (the
-          # original name now belongs to the new Clean Language project),
-          # and older `cleen install` releases do not follow
-          # the 301 redirect on asset downloads. Bypass cleen entirely and
-          # place the binary where `cleen use` expects it, so downstream
-          # `cleen frame install` still works.
+          # original name now belongs to the new Clean Language project).
           tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler-old/releases/latest | jq -r '.tag_name')"
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Failed to resolve latest compiler tag from GitHub API"
@@ -81,20 +74,8 @@ jobs:
           echo "$ver" > "$HOME/.cleen/.active-version"
           cln --version
 
-      - name: Install latest Frame plugins
-        run: |
-          set -euo pipefail
-          # cleen frame install requires cleen to know about the compiler via
-          # its own state. Download the frame plugin bundle directly and
-          # extract into ~/.cleen/plugins/.
-          frame_tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/cleen-framework-old/releases/latest | jq -r '.tag_name')"
-          frame_ver="${frame_tag#v}"
-          echo "Installing Frame plugins $frame_ver (from $frame_tag)"
-          mkdir -p "$HOME/.cleen/plugins"
-          curl -fsSL -o /tmp/frame-plugins.tar.gz \
-            "https://github.com/Ivan-Pasco/cleen-framework-old/releases/download/$frame_tag/frame-plugins-$frame_ver.tar.gz"
-          tar -xzf /tmp/frame-plugins.tar.gz -C "$HOME/.cleen/plugins"
-          ls "$HOME/.cleen/plugins/"
+      - name: Install Frame plugins from this checkout
+        run: ./scripts/install-plugins.sh
 
       - name: Install runner dependencies
         working-directory: plugins/frame.ui/scripts

@@ -1,0 +1,16 @@
+// Companion data loader for dashboard.html (frame.ui page companion).
+// frame.ui registers GET /dashboard and renders the page with this data.
+
+functions:
+	any load(Request request)
+		list<User> users = User.find:
+			order: id desc
+			limit: 50
+		list<any> rows = []
+		integer active = 0
+		for u in users
+			rows.add({ id: u.id, username: u.username, email: u.email, active: u.is_active })
+			if u.is_active
+				active = active + 1
+		integer total = users.length()
+		return { totalUsers: total, activeUsers: active, hasUsers: total > 0, noUsers: total == 0, users: rows }

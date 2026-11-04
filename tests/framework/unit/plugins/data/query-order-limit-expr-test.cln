@@ -1,0 +1,57 @@
+// Test: frame.data — order:/limit:/offset: with camelCase columns and
+// expressions.
+// Spec: frame-data.ebnf §5.2 (`order: <identifier> [asc|desc]`, ascending
+// by default — DAT-D003), §5.3 and DAT-Q007 (limit:/offset: take
+// expressions).
+// Regression: `order: viewCount` (no direction) was read as a variable
+// named viewCount, and `limit: n` put the text "n" into the SQL.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Post:
+	fields:
+		integer id primary generated
+		string title required
+		integer viewCount required
+
+endpoints:
+	GET "/test":
+		Post.migrate()
+		Post a = Post()
+		a.title = "A"
+		a.viewCount = 30
+		Database.save(a)
+		Post b = Post()
+		b.title = "B"
+		b.viewCount = 10
+		Database.save(b)
+		Post c = Post()
+		c.title = "C"
+		c.viewCount = 20
+		Database.save(c)
+
+		list<Post> asc = Post.find:
+			order: viewCount
+		boolean ok_order = asc.length() == 3 and asc[0].title == "B" and asc[2].title == "A"
+
+		integer pageSize = 1
+		integer page = 2
+		list<Post> second = Post.find:
+			order: viewCount desc
+			limit: pageSize
+			offset: (page - 1) * pageSize
+		boolean ok_limit = second.length() == 1 and second[0].title == "C"
+
+		if ok_order and ok_limit
+			printl("PASS: data-query-order-limit-expr")
+		else
+			printl("FAIL: data-query-order-limit-expr order=" + ok_order.toString() + " limit=" + ok_limit.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-query-order-limit-expr server ready")

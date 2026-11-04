@@ -80,6 +80,7 @@ class CanvasBridge {
     this.keysJustPressed = new Set();
     this.keysJustReleased = new Set();
     this.lastKey = '';
+    this.eventKey = '';      // key of the keydown/keyup being dispatched
     this.textInput = '';
 
     // Touch
@@ -110,6 +111,7 @@ class CanvasBridge {
     this.cameraShakeIntensity = 0;
     this.cameraShakeDuration = 0;
     this.cameraShakeStart = 0;
+    this.cameraShakeEasing = 0;
 
     // ========================================================================
     // GRADIENT STATE
@@ -187,6 +189,7 @@ class CanvasBridge {
     // ========================================================================
     this.memory = null;
     this.wasmInstance = null;
+    this.allocate = null;
 
     // Initialize audio context on first user interaction
     this._initAudioOnInteraction();
@@ -197,6 +200,9 @@ class CanvasBridge {
   // ==========================================================================
 
   _initAudioOnInteraction() {
+    // No DOM (worker, headless test harness): there is no user interaction
+    // to unlock audio with, so the context stays lazily uncreated.
+    if (typeof document === 'undefined') return;
     const initAudio = () => {
       if (!this.audioContext) {
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -231,8 +237,16 @@ class CanvasBridge {
   writeString(str, ptr) {
     if (!this.memory) return 0;
     const bytes = new TextEncoder().encode(str || '');
+    if (ptr === undefined && this.allocate) {
+      // Length-prefixed string on the module heap.
+      const result = this.allocate(4 + bytes.length);
+      new DataView(this.memory.buffer).setUint32(result, bytes.length, true);
+      new Uint8Array(this.memory.buffer, result + 4, bytes.length).set(bytes);
+      return result;
+    }
     if (ptr === undefined) {
-      // Length-prefixed allocation in the bridge's return-string region.
+      // Length-prefixed allocation in the bridge's return-string region
+      // (standalone use without a loader-provided allocator).
       if (this._returnHeapPtr + bytes.length + 8 >= this._returnHeapMax) {
         // wrap around — return strings are short-lived; Clean reads them
         // immediately after the call.
@@ -326,6 +340,7 @@ class CanvasBridge {
       }
       self.keysDown.add(key);
       self.lastKey = key;
+      self.eventKey = key;
 
       // Capture text input for printable characters
       if (key.length === 1) {
@@ -345,6 +360,7 @@ class CanvasBridge {
       const key = e.key;
       self.keysDown.delete(key);
       self.keysJustReleased.add(key);
+      self.eventKey = key;
 
       const handler = self.keyUpHandlers.get(canvasId);
       if (handler) self._callExport(handler, canvasId);
@@ -468,8 +484,22 @@ class CanvasBridge {
       elastic_in: 13, elastic_out: 14, elastic_in_out: 15, in_out_elastic: 15,
       bounce_in: 16, bounce_out: 17, bounce_in_out: 18, in_out_bounce: 18,
       back_in: 19, back_out: 20, back_in_out: 21,
+      // Spec names (frame-canvas.ebnf §28).
+      easeInCubic: 1, easeOutCubic: 2, easeInOutCubic: 3,
+      easeInQuad: 4, easeOutQuad: 5, easeInOutQuad: 6,
+      easeInSine: 7, easeOutSine: 8, easeInOutSine: 9,
+      easeInExpo: 10, easeOutExpo: 11, easeInOutExpo: 12,
+      easeInElastic: 13, easeOutElastic: 14, easeInOutElastic: 15,
+      easeInBounce: 16, easeOutBounce: 17, easeInOutBounce: 18,
+      easeInBack: 19, easeOutBack: 20, easeInOutBack: 21,
     };
     return t[name] != null ? t[name] : 0;
+  }
+
+  // True when `name` is a built-in easing or a registered customEase.
+  _isKnownEase(name) {
+    if (!name || name === 'linear' || this.customEases.has(name)) return true;
+    return this._easeNameToId(name) !== 0;
   }
 
   _evalEaseId(id, t) {
@@ -619,7 +649,10 @@ class CanvasBridge {
           if (v.orient) this.canvasVars.set(v.varName + '_angle', pt.angle);
           value = eased;
         } else {
-          value = v.from + (v.to - v.from) * eased;
+          // A NaN `from` means the tween omitted from= (CVS-A009): start
+          // from the variable's value at play time, captured in _tween_play.
+          const from = Number.isNaN(v.from) ? v.start : v.from;
+          value = from + (v.to - from) * eased;
         }
         this.canvasVars.set(v.varName, value);
         if (!v.done) allDone = false;
@@ -635,10 +668,11 @@ class CanvasBridge {
         for (const step of tl.config.steps) {
           if (!step._fired && tl.time >= (step.at || 0)) {
             step._fired = true;
-            if (step.set && step.var != null) this.canvasVars.set(step.var, step.set);
+            if (step.set !== undefined && step.var != null) this.canvasVars.set(step.var, step.set);
+            if (step.animate) this._animateVar(step.animate);
             if (step.play) {
               const target = this.namedTweens.get(step.play);
-              if (target) { target.state = 'playing'; target.elapsed = 0; target.vars.forEach(x => x.done = false); }
+              if (target) { target.state = 'playing'; target.elapsed = 0; target.vars.forEach(x => { x.done = false; x.start = this.canvasVars.has(x.varName) ? this.canvasVars.get(x.varName) : 0; }); }
             }
           }
         }
@@ -657,8 +691,24 @@ class CanvasBridge {
         clip.current++;
         if (clip.current > clip.frameEnd) {
           if (clip.loop) clip.current = clip.frameStart;
-          else { clip.current = clip.frameEnd; clip.elapsed = 0; break; }
+          else { clip.current = clip.frameEnd; clip.elapsed = 0; clip.finished = true; break; }
         }
+      }
+    }
+
+    // ---- AnimState onComplete transitions (CVS-A004) ----
+    // config.clips maps a state to the animSprite clip it plays;
+    // config.onComplete maps a state to the state entered when that
+    // non-looping clip finishes.
+    for (const [, fsm] of this.namedAnimStates) {
+      if (fsm.state !== 'running' || !fsm.config.onComplete) continue;
+      const next = fsm.config.onComplete[fsm.current];
+      if (!next) continue;
+      const clip = this.namedAnimSprites.get(this._animStateClip(fsm));
+      if (clip && clip.finished) {
+        fsm.current = next;
+        const nextClip = this.namedAnimSprites.get(this._animStateClip(fsm));
+        if (nextClip) { nextClip.current = nextClip.frameStart; nextClip.elapsed = 0; nextClip.finished = false; }
       }
     }
 
@@ -671,7 +721,25 @@ class CanvasBridge {
           const p = em.particles[j];
           p.life -= dt;
           if (p.life <= 0) { em.particles.splice(j, 1); continue; }
-          p.vy += (sys.config.gravity || 0) * dt;
+          const cfg = sys.config;
+          p.vx += (cfg.windX || 0) * dt;
+          p.vy += ((cfg.gravity || 0) + (cfg.windY || 0)) * dt;
+          if (cfg.attractorStrength) {
+            // Pull toward (attractorX, attractorY); negative strength repels (CVS-P010).
+            const ax = (cfg.attractorX || 0) - p.x;
+            const ay = (cfg.attractorY || 0) - p.y;
+            const d = Math.hypot(ax, ay) || 1;
+            p.vx += (ax / d) * cfg.attractorStrength * dt;
+            p.vy += (ay / d) * cfg.attractorStrength * dt;
+          }
+          if (cfg.turbulenceStrength) {
+            // Random jitter; turbulenceScale (default 1) widens or narrows it.
+            const k = cfg.turbulenceStrength * (cfg.turbulenceScale || 1) * dt;
+            p.vx += (Math.random() - 0.5) * 2 * k;
+            p.vy += (Math.random() - 0.5) * 2 * k;
+          }
+          // drag is a per-frame velocity multiplier (CVS-P009).
+          if (sys.config.drag != null) { p.vx *= sys.config.drag; p.vy *= sys.config.drag; }
           p.x += p.vx * dt;
           p.y += p.vy * dt;
         }
@@ -689,25 +757,104 @@ class CanvasBridge {
     }
   }
 
+  // Inline animation of one variable (`animate v [from=] to= duration= ...`):
+  // an anonymous tween keyed by the variable, so a new animate replaces it.
+  // `from` omitted starts at the variable's current value.
+  _animateVar({ varName, from, to, duration, ease, delay, repeat, yoyo }) {
+    if (!this.canvasVars) this.canvasVars = new Map();
+    const start = from != null ? from : (this.canvasVars.has(varName) ? this.canvasVars.get(varName) : 0);
+    this.namedTweens.set('__inline__' + varName, {
+      state: 'playing', elapsed: 0,
+      vars: [{
+        varName, from: start, start, to, duration: duration || 0,
+        ease: ease || 'linear',
+        repeat: repeat | 0, yoyo: !!yoyo, delay: delay || 0,
+        pathName: null, orient: 0, done: false,
+      }],
+    });
+  }
+
+  // Clip played by an animState's current state: the state's
+  // `play animSprite "clip"` line, else a clip named like the state.
+  _animStateClip(fsm) {
+    const clips = fsm.config && fsm.config.clips;
+    return (clips && clips[fsm.current]) || fsm.current || '';
+  }
+
+  // Particle config keys (built by the plugin from a `particles` block):
+  // lifeMin/lifeMax, speedMin/speedMax, angleMin/angleMax (degrees,
+  // 0 = right, -90 = up), sizeMin/sizeMax, color, shape, rate, burst,
+  // gravity, drag, windX/windY, attractorX/attractorY/attractorStrength,
+  // turbulenceStrength/turbulenceScale,
+  // alphaStart/alphaEnd, sizeStart/sizeEnd (multipliers).
   _spawnParticle(x, y, cfg) {
-    const speedMin = cfg.speedMin != null ? cfg.speedMin : 50;
-    const speedMax = cfg.speedMax != null ? cfg.speedMax : 150;
-    const lifeMin = cfg.lifeMin != null ? cfg.lifeMin : 0.5;
-    const lifeMax = cfg.lifeMax != null ? cfg.lifeMax : 1.5;
-    const speed = speedMin + Math.random() * (speedMax - speedMin);
-    const angle = (cfg.angleMin != null ? cfg.angleMin : 0)
-      + Math.random() * ((cfg.angleMax != null ? cfg.angleMax : Math.PI * 2)
-                         - (cfg.angleMin != null ? cfg.angleMin : 0));
+    const pick = (min, max, dflt) => {
+      const lo = cfg[min] != null ? cfg[min] : dflt[0];
+      const hi = cfg[max] != null ? cfg[max] : (cfg[min] != null ? lo : dflt[1]);
+      return lo + Math.random() * (hi - lo);
+    };
+    const speed = pick('speedMin', 'speedMax', [50, 150]);
+    const angle = pick('angleMin', 'angleMax', [0, 360]) * Math.PI / 180;
+    const life = pick('lifeMin', 'lifeMax', [0.5, 1.5]);
     return {
       x, y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      life: lifeMin + Math.random() * (lifeMax - lifeMin),
-      maxLife: lifeMin + Math.random() * (lifeMax - lifeMin),
-      size: (cfg.sizeMin != null ? cfg.sizeMin : 2)
-        + Math.random() * ((cfg.sizeMax != null ? cfg.sizeMax : 5) - (cfg.sizeMin != null ? cfg.sizeMin : 2)),
+      life,
+      maxLife: life,
+      size: pick('sizeMin', 'sizeMax', [2, 5]),
       color: cfg.color || '#fff',
     };
+  }
+
+  // `canvas.image src=` names an `image` asset (CVS-D009); a src that is
+  // not a declared asset is loaded as a path and cached.
+  _resolveImage(src) {
+    if (this.namedImages && this.namedImages.has(src)) return this.namedImages.get(src);
+    if (!this.imageCache) this.imageCache = new Map();
+    let img = this.imageCache.get(src);
+    if (!img) {
+      img = new Image();
+      img.src = src;
+      this.imageCache.set(src, img);
+    }
+    return img;
+  }
+
+  // Width/height omitted by the DSL arrive as 0: draw at the natural size.
+  _imageSize(img, width, height) {
+    return [width > 0 ? width : img.naturalWidth, height > 0 ? height : img.naturalHeight];
+  }
+
+  // Render every live particle onto the canvas after the frame's draw:.
+  _drawParticles(canvasId) {
+    const entry = this.canvases.get(canvasId);
+    if (!entry) return;
+    const ctx = entry.ctx;
+    for (const [, sys] of this.namedParticles) {
+      const cfg = sys.config;
+      const a0 = cfg.alphaStart != null ? cfg.alphaStart : 1;
+      const a1 = cfg.alphaEnd != null ? cfg.alphaEnd : 1;
+      const s0 = cfg.sizeStart != null ? cfg.sizeStart : 1;
+      const s1 = cfg.sizeEnd != null ? cfg.sizeEnd : 1;
+      for (const em of sys.emitters) {
+        for (const p of em.particles) {
+          const k = p.maxLife > 0 ? 1 - p.life / p.maxLife : 1;
+          const size = p.size * (s0 + (s1 - s0) * k);
+          ctx.save();
+          ctx.globalAlpha *= Math.max(0, Math.min(1, a0 + (a1 - a0) * k));
+          ctx.fillStyle = p.color;
+          if (cfg.shape === 'rect') {
+            ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+          } else {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+      }
+    }
   }
 
   _buildCanvasGradient(ctx, gradName) {
@@ -807,13 +954,18 @@ class CanvasBridge {
         // CANVAS LIFECYCLE
         // ====================================================================
 
-        _canvas_init(width, height) {
+        _canvas_init(width, height, elementIdPtr, elementIdLen) {
           const id = self.nextCanvasId++;
-          const canvas = document.createElement('canvas');
+          // CVS-I001: the scene id names the page's <canvas id="..."> element.
+          // Bind to it when present; otherwise create the element with that id.
+          const elementId = self.readString(elementIdPtr, elementIdLen);
+          const existing = elementId ? document.getElementById(elementId) : null;
+          const isCanvas = existing && existing.tagName === 'CANVAS';
+          const canvas = isCanvas ? existing : document.createElement('canvas');
           canvas.width = width;
           canvas.height = height;
-          canvas.id = `clean-canvas-${id}`;
-          canvas.style.display = 'block';
+          canvas.id = elementId || `clean-canvas-${id}`;
+          if (!isCanvas) canvas.style.display = 'block';
 
           const ctx = canvas.getContext('2d');
 
@@ -826,8 +978,10 @@ class CanvasBridge {
 
           self.setupInputHandlers(id, canvas);
 
-          const container = document.getElementById('canvas-container') || document.body;
-          container.appendChild(canvas);
+          if (!isCanvas) {
+            const container = document.getElementById('canvas-container') || document.body;
+            container.appendChild(canvas);
+          }
 
           console.log(`[CanvasBridge] Canvas ${id} created: ${width}x${height}`);
           return id;
@@ -931,18 +1085,6 @@ class CanvasBridge {
           return 0;
         },
 
-        _canvas_rect_rounded_filled(canvasId, x, y, width, height, radius, colorPtr, colorLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          const ctx = entry.ctx;
-          ctx.beginPath();
-          ctx.roundRect(x, y, width, height, radius);
-          ctx.fillStyle = color;
-          ctx.fill();
-          return 0;
-        },
-
         _canvas_line(canvasId, x1, y1, x2, y2, strokeWidth, colorPtr, colorLen) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
@@ -1011,64 +1153,6 @@ class CanvasBridge {
           return 0;
         },
 
-        _canvas_polygon(canvasId, pointsPtr, colorPtr, colorLen) {
-          // Points are stored as pairs of f64 in WASM memory
-          // Format: [x1, y1, x2, y2, ..., 0, 0] (terminated by 0,0)
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          const ctx = entry.ctx;
-
-          const view = new Float64Array(self.memory.buffer, pointsPtr);
-          ctx.beginPath();
-          let i = 0;
-          let first = true;
-          while (i < view.length - 1) {
-            const x = view[i];
-            const y = view[i + 1];
-            if (x === 0 && y === 0 && !first) break;
-            if (first) {
-              ctx.moveTo(x, y);
-              first = false;
-            } else {
-              ctx.lineTo(x, y);
-            }
-            i += 2;
-          }
-          ctx.closePath();
-          ctx.strokeStyle = color;
-          ctx.stroke();
-          return 0;
-        },
-
-        _canvas_polygon_filled(canvasId, pointsPtr, colorPtr, colorLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          const ctx = entry.ctx;
-
-          const view = new Float64Array(self.memory.buffer, pointsPtr);
-          ctx.beginPath();
-          let i = 0;
-          let first = true;
-          while (i < view.length - 1) {
-            const x = view[i];
-            const y = view[i + 1];
-            if (x === 0 && y === 0 && !first) break;
-            if (first) {
-              ctx.moveTo(x, y);
-              first = false;
-            } else {
-              ctx.lineTo(x, y);
-            }
-            i += 2;
-          }
-          ctx.closePath();
-          ctx.fillStyle = color;
-          ctx.fill();
-          return 0;
-        },
-
         // ====================================================================
         // TEXT RENDERING
         // ====================================================================
@@ -1085,56 +1169,26 @@ class CanvasBridge {
           return 0;
         },
 
-        _canvas_text_number(canvasId, number, x, y, size, colorPtr, colorLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          const ctx = entry.ctx;
-          ctx.font = `${size}px sans-serif`;
-          ctx.fillStyle = color;
-          ctx.fillText(number.toString(), x, y);
-          return 0;
-        },
-
-        _canvas_text_font(canvasId, textPtr, textLen, x, y, size, colorPtr, colorLen, fontPtr, fontLen) {
+        // Registry params: canvas_id, text, font, x, y, color, align, baseline.
+        // `font` is a CSS font shorthand ("24px pixel") — the DSL folds the
+        // size= attribute into it; a bare family name draws at 16px.
+        _canvas_text_font(canvasId, textPtr, textLen, fontPtr, fontLen, x, y, colorPtr, colorLen, alignPtr, alignLen, baselinePtr, baselineLen) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
           const text = self.readString(textPtr, textLen);
-          const color = self.readString(colorPtr, colorLen);
           const font = self.readString(fontPtr, fontLen);
-          const ctx = entry.ctx;
-          ctx.font = `${size}px ${font}`;
-          ctx.fillStyle = color;
-          ctx.fillText(text, x, y);
-          return 0;
-        },
-
-        _canvas_text_align(canvasId, alignPtr, alignLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
+          const color = self.readString(colorPtr, colorLen);
           const align = self.readString(alignPtr, alignLen);
-          entry.ctx.textAlign = align;
-          return 0;
-        },
-
-        _canvas_text_baseline(canvasId, baselinePtr, baselineLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
           const baseline = self.readString(baselinePtr, baselineLen);
-          entry.ctx.textBaseline = baseline;
-          return 0;
-        },
-
-        _canvas_measure_text(canvasId, textPtr, textLen, fontSize) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return 0;
-          const text = self.readString(textPtr, textLen);
           const ctx = entry.ctx;
-          const prevFont = ctx.font;
-          ctx.font = `${fontSize}px sans-serif`;
-          const width = ctx.measureText(text).width;
-          ctx.font = prevFont;
-          return width;
+          ctx.save();
+          ctx.font = /\d(px|pt|em|rem)\b/.test(font) ? font : `16px ${font || 'sans-serif'}`;
+          ctx.fillStyle = color || '#000';
+          ctx.textAlign = align || 'start';
+          ctx.textBaseline = baseline || 'alphabetic';
+          ctx.fillText(text, x, y);
+          ctx.restore();
+          return 0;
         },
 
         // ====================================================================
@@ -1144,21 +1198,15 @@ class CanvasBridge {
         _canvas_image(canvasId, srcPtr, srcLen, x, y, width, height) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
-          const src = self.readString(srcPtr, srcLen);
-
-          let img = self.imageCache.get(src);
-          if (!img) {
-            img = new Image();
-            img.src = src;
-            self.imageCache.set(src, img);
-          }
-
-          if (img.complete) {
-            entry.ctx.drawImage(img, x, y, width, height);
+          const img = self._resolveImage(self.readString(srcPtr, srcLen));
+          const draw = () => {
+            const [w, h] = self._imageSize(img, width, height);
+            entry.ctx.drawImage(img, x, y, w, h);
+          };
+          if (img.complete && img.naturalWidth > 0) {
+            draw();
           } else {
-            img.onload = () => {
-              entry.ctx.drawImage(img, x, y, width, height);
-            };
+            img.addEventListener('load', draw, { once: true });
           }
           return 0;
         },
@@ -1488,7 +1536,7 @@ class CanvasBridge {
         // TEXT (aligned + measure)
         // ====================================================================
 
-        _canvas_text_aligned(canvasId, textPtr, textLen, x, y, size, colorPtr, colorLen, baselinePtr, baselineLen, alignPtr, alignLen) {
+        _canvas_text_aligned(canvasId, textPtr, textLen, x, y, size, colorPtr, colorLen, alignPtr, alignLen, baselinePtr, baselineLen) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
           const text = self.readString(textPtr, textLen);
@@ -1567,7 +1615,8 @@ class CanvasBridge {
           // Length-prefixed string return: writeString with no destination
           // pointer allocates from the bridge's string buffer and returns the
           // length-prefix pointer the WASM module reads.
-          return self.writeString(self.lastKey || '');
+          // The key of the event being dispatched (keydown or keyup).
+          return self.writeString(self.eventKey || '');
         },
 
         // ====================================================================
@@ -1592,22 +1641,14 @@ class CanvasBridge {
         _canvas_image_opacity(canvasId, srcPtr, srcLen, x, y, width, height, alpha) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
-          const src = self.readString(srcPtr, srcLen);
-
-          // Reuse the image cache from _canvas_image (lazy-load and draw on
-          // ready). Save/restore wraps the alpha change so following draws
-          // aren't affected.
-          if (!self.imageCache) self.imageCache = new Map();
-          let img = self.imageCache.get(src);
-          if (!img) {
-            img = new Image();
-            img.src = src;
-            self.imageCache.set(src, img);
-          }
+          // Save/restore wraps the alpha change so following draws aren't
+          // affected.
+          const img = self._resolveImage(self.readString(srcPtr, srcLen));
           const draw = () => {
+            const [w, h] = self._imageSize(img, width, height);
             entry.ctx.save();
             entry.ctx.globalAlpha *= alpha;
-            entry.ctx.drawImage(img, x, y, width, height);
+            entry.ctx.drawImage(img, x, y, w, h);
             entry.ctx.restore();
           };
           if (img.complete && img.naturalWidth > 0) {
@@ -1686,6 +1727,7 @@ class CanvasBridge {
             if (self.wasmInstance && self.wasmInstance.exports._frame_callback) {
               try {
                 self.wasmInstance.exports._frame_callback(canvasId);
+                self._drawParticles(canvasId);
               } catch (err) {
                 console.error('[CanvasBridge] Frame callback error:', err);
               }
@@ -1857,7 +1899,8 @@ class CanvasBridge {
         },
 
         _audio_music_stop(namePtr, nameLen) {
-          const name = self.readString(namePtr, nameLen);
+          // An omitted track name targets the current track.
+          const name = self.readString(namePtr, nameLen) || self.currentMusicName || '';
           const entry = self.namedMusic.get(name);
           if (!entry || !entry.element) return -1;
           entry.element.pause();
@@ -1867,7 +1910,8 @@ class CanvasBridge {
         },
 
         _audio_music_pause(namePtr, nameLen) {
-          const name = self.readString(namePtr, nameLen);
+          // An omitted track name targets the current track.
+          const name = self.readString(namePtr, nameLen) || self.currentMusicName || '';
           const entry = self.namedMusic.get(name);
           if (!entry || !entry.element) return -1;
           entry.element.pause();
@@ -1875,7 +1919,8 @@ class CanvasBridge {
         },
 
         _audio_music_resume(namePtr, nameLen) {
-          const name = self.readString(namePtr, nameLen);
+          // An omitted track name targets the current track.
+          const name = self.readString(namePtr, nameLen) || self.currentMusicName || '';
           const entry = self.namedMusic.get(name);
           if (!entry || !entry.element) return -1;
           entry.element.play().catch(() => {});
@@ -1883,7 +1928,8 @@ class CanvasBridge {
         },
 
         _audio_music_set_volume(namePtr, nameLen, volume) {
-          const name = self.readString(namePtr, nameLen);
+          // An omitted track name targets the current track.
+          const name = self.readString(namePtr, nameLen) || self.currentMusicName || '';
           const entry = self.namedMusic.get(name);
           if (!entry || !entry.element) return -1;
           self.musicVolumes.set(name, volume);
@@ -1892,7 +1938,8 @@ class CanvasBridge {
         },
 
         _audio_music_fade_out(namePtr, nameLen, duration) {
-          const name = self.readString(namePtr, nameLen);
+          // An omitted track name targets the current track.
+          const name = self.readString(namePtr, nameLen) || self.currentMusicName || '';
           const entry = self.namedMusic.get(name);
           if (!entry || !entry.element) return -1;
 
@@ -2039,10 +2086,23 @@ class CanvasBridge {
           return id;
         },
 
-        _sprite_draw(canvasId, sheetId, frameIndex, x, y) {
+        _sprite_draw(canvasId, namePtr, nameLen, frameIndex, x, y, w, h) {
           const entry = self.canvases.get(canvasId);
-          const sheet = self.spriteSheets.get(sheetId);
-          if (!entry || !sheet || !sheet.loaded) return -1;
+          if (!entry) return -1;
+          const name = self.readString(namePtr, nameLen);
+          const sheet = self.namedSprites.get(name);
+          if (!sheet && self.namedImages && self.namedImages.has(name)) {
+            // Static form: `canvas.sprite "name"` on a plain `image` asset.
+            const img = self.namedImages.get(name);
+            if (!img.complete || img.naturalWidth === 0) return -1;
+            const [iw, ih] = self._imageSize(img, w, h);
+            entry.ctx.drawImage(img, x, y, iw, ih);
+            return 0;
+          }
+          if (!sheet || !sheet.loaded) return -1;
+          // Width/height omitted by the DSL arrive as 0: use the frame size.
+          if (!(w > 0)) w = sheet.frameWidth;
+          if (!(h > 0)) h = sheet.frameHeight;
 
           const col = frameIndex % sheet.framesPerRow;
           const row = Math.floor(frameIndex / sheet.framesPerRow);
@@ -2052,76 +2112,8 @@ class CanvasBridge {
           entry.ctx.drawImage(
             sheet.image,
             sx, sy, sheet.frameWidth, sheet.frameHeight,
-            x, y, sheet.frameWidth, sheet.frameHeight
+            x, y, w, h
           );
-          return 0;
-        },
-
-        _sprite_draw_scaled(canvasId, sheetId, frameIndex, x, y, scaleX, scaleY) {
-          const entry = self.canvases.get(canvasId);
-          const sheet = self.spriteSheets.get(sheetId);
-          if (!entry || !sheet || !sheet.loaded) return -1;
-
-          const col = frameIndex % sheet.framesPerRow;
-          const row = Math.floor(frameIndex / sheet.framesPerRow);
-          const sx = col * sheet.frameWidth;
-          const sy = row * sheet.frameHeight;
-          const dw = sheet.frameWidth * scaleX;
-          const dh = sheet.frameHeight * scaleY;
-
-          entry.ctx.drawImage(
-            sheet.image,
-            sx, sy, sheet.frameWidth, sheet.frameHeight,
-            x, y, dw, dh
-          );
-          return 0;
-        },
-
-        _sprite_draw_rotated(canvasId, sheetId, frameIndex, x, y, angle) {
-          const entry = self.canvases.get(canvasId);
-          const sheet = self.spriteSheets.get(sheetId);
-          if (!entry || !sheet || !sheet.loaded) return -1;
-
-          const col = frameIndex % sheet.framesPerRow;
-          const row = Math.floor(frameIndex / sheet.framesPerRow);
-          const sx = col * sheet.frameWidth;
-          const sy = row * sheet.frameHeight;
-
-          const ctx = entry.ctx;
-          ctx.save();
-          ctx.translate(x + sheet.frameWidth / 2, y + sheet.frameHeight / 2);
-          ctx.rotate(angle * Math.PI / 180);
-          ctx.drawImage(
-            sheet.image,
-            sx, sy, sheet.frameWidth, sheet.frameHeight,
-            -sheet.frameWidth / 2, -sheet.frameHeight / 2, sheet.frameWidth, sheet.frameHeight
-          );
-          ctx.restore();
-          return 0;
-        },
-
-        _sprite_draw_transformed(canvasId, sheetId, frameIndex, x, y, scaleX, scaleY, angle) {
-          const entry = self.canvases.get(canvasId);
-          const sheet = self.spriteSheets.get(sheetId);
-          if (!entry || !sheet || !sheet.loaded) return -1;
-
-          const col = frameIndex % sheet.framesPerRow;
-          const row = Math.floor(frameIndex / sheet.framesPerRow);
-          const sx = col * sheet.frameWidth;
-          const sy = row * sheet.frameHeight;
-          const dw = sheet.frameWidth * scaleX;
-          const dh = sheet.frameHeight * scaleY;
-
-          const ctx = entry.ctx;
-          ctx.save();
-          ctx.translate(x + dw / 2, y + dh / 2);
-          ctx.rotate(angle * Math.PI / 180);
-          ctx.drawImage(
-            sheet.image,
-            sx, sy, sheet.frameWidth, sheet.frameHeight,
-            -dw / 2, -dh / 2, dw, dh
-          );
-          ctx.restore();
           return 0;
         },
 
@@ -2164,10 +2156,6 @@ class CanvasBridge {
           return self.mouseButtonsJustReleased[button] || false;
         },
 
-        _input_mouse_wheel_x() {
-          return self.mouseWheelX;
-        },
-
         _input_mouse_wheel_y() {
           return self.mouseWheelY;
         },
@@ -2196,11 +2184,6 @@ class CanvasBridge {
           return 0;
         },
 
-        _input_get_text_input() {
-          // Would need to write to WASM memory - return 0 for now
-          return 0;
-        },
-
         // ====================================================================
         // INPUT - TOUCH
         // ====================================================================
@@ -2217,18 +2200,6 @@ class CanvasBridge {
           return self.touches[index] ? self.touches[index].y : 0;
         },
 
-        _input_touch_id(index) {
-          return self.touches[index] ? self.touches[index].id : -1;
-        },
-
-        _input_touch_started() {
-          return self.touchStarted;
-        },
-
-        _input_touch_ended() {
-          return self.touchEnded;
-        },
-
         // ====================================================================
         // INPUT - GAMEPAD
         // ====================================================================
@@ -2241,11 +2212,6 @@ class CanvasBridge {
         _input_gamepad_button(gamepadIndex, buttonIndex) {
           const gp = self.gamepads.get(gamepadIndex);
           return gp && gp.buttons[buttonIndex] ? true : false;
-        },
-
-        _input_gamepad_button_just_pressed(gamepadIndex, buttonIndex) {
-          const jp = self.gamepadButtonsJustPressed.get(gamepadIndex);
-          return jp && jp[buttonIndex] ? true : false;
         },
 
         _input_gamepad_axis(gamepadIndex, axisIndex) {
@@ -2271,29 +2237,6 @@ class CanvasBridge {
         _input_gamepad_right_stick_y(gamepadIndex) {
           const gp = self.gamepads.get(gamepadIndex);
           return gp ? (gp.axes[3] || 0) : 0;
-        },
-
-        _input_gamepad_left_trigger(gamepadIndex) {
-          const gp = self.gamepads.get(gamepadIndex);
-          return gp && gp.buttons[6] ? gp.buttons[6].value || (gp.buttons[6] ? 1 : 0) : 0;
-        },
-
-        _input_gamepad_right_trigger(gamepadIndex) {
-          const gp = self.gamepads.get(gamepadIndex);
-          return gp && gp.buttons[7] ? gp.buttons[7].value || (gp.buttons[7] ? 1 : 0) : 0;
-        },
-
-        _input_gamepad_vibrate(gamepadIndex, intensity, duration) {
-          const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-          const gp = gamepads[gamepadIndex];
-          if (gp && gp.vibrationActuator) {
-            gp.vibrationActuator.playEffect('dual-rumble', {
-              duration: duration * 1000,
-              strongMagnitude: intensity,
-              weakMagnitude: intensity
-            }).catch(() => { });
-          }
-          return 0;
         },
 
         // ====================================================================
@@ -2329,64 +2272,6 @@ class CanvasBridge {
           return (dx * dx + dy * dy <= cr * cr) ? 1 : 0;
         },
 
-        _collision_line_line(x1, y1, x2, y2, x3, y3, x4, y4) {
-          const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
-          if (Math.abs(denom) < 0.0001) return 0;
-
-          const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
-          const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
-
-          return (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) ? 1 : 0;
-        },
-
-        _collision_line_circle(x1, y1, x2, y2, cx, cy, r) {
-          const dx = x2 - x1;
-          const dy = y2 - y1;
-          const fx = x1 - cx;
-          const fy = y1 - cy;
-
-          const a = dx * dx + dy * dy;
-          const b = 2 * (fx * dx + fy * dy);
-          const c = fx * fx + fy * fy - r * r;
-
-          let discriminant = b * b - 4 * a * c;
-          if (discriminant < 0) return 0;
-
-          discriminant = Math.sqrt(discriminant);
-          const t1 = (-b - discriminant) / (2 * a);
-          const t2 = (-b + discriminant) / (2 * a);
-
-          return ((t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1)) ? 1 : 0;
-        },
-
-        _collision_line_rect(x1, y1, x2, y2, rx, ry, rw, rh) {
-          // Check all 4 edges
-          const left = self.env._collision_line_line(x1, y1, x2, y2, rx, ry, rx, ry + rh);
-          const right = self.env._collision_line_line(x1, y1, x2, y2, rx + rw, ry, rx + rw, ry + rh);
-          const top = self.env._collision_line_line(x1, y1, x2, y2, rx, ry, rx + rw, ry);
-          const bottom = self.env._collision_line_line(x1, y1, x2, y2, rx, ry + rh, rx + rw, ry + rh);
-          return (left || right || top || bottom) ? 1 : 0;
-        },
-
-        _collision_circle_circle_overlap(x1, y1, r1, x2, y2, r2) {
-          const dx = x2 - x1;
-          const dy = y2 - y1;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          return (r1 + r2) - dist;
-        },
-
-        _collision_rect_rect_overlap_x(x1, y1, w1, h1, x2, y2, w2, h2) {
-          const overlapLeft = (x1 + w1) - x2;
-          const overlapRight = (x2 + w2) - x1;
-          return Math.min(overlapLeft, overlapRight);
-        },
-
-        _collision_rect_rect_overlap_y(x1, y1, w1, h1, x2, y2, w2, h2) {
-          const overlapTop = (y1 + h1) - y2;
-          const overlapBottom = (y2 + h2) - y1;
-          return Math.min(overlapTop, overlapBottom);
-        },
-
         _collision_ray_circle(ox, oy, dx, dy, cx, cy, r) {
           const fx = ox - cx;
           const fy = oy - cy;
@@ -2404,34 +2289,6 @@ class CanvasBridge {
 
           if (t1 >= 0) return t1;
           if (t2 >= 0) return t2;
-          return -1;
-        },
-
-        _collision_raycast_rect(ox, oy, dx, dy, rx, ry, rw, rh) {
-          let tmin = -Infinity;
-          let tmax = Infinity;
-
-          if (dx !== 0) {
-            const t1 = (rx - ox) / dx;
-            const t2 = (rx + rw - ox) / dx;
-            tmin = Math.max(tmin, Math.min(t1, t2));
-            tmax = Math.min(tmax, Math.max(t1, t2));
-          } else if (ox < rx || ox > rx + rw) {
-            return -1;
-          }
-
-          if (dy !== 0) {
-            const t1 = (ry - oy) / dy;
-            const t2 = (ry + rh - oy) / dy;
-            tmin = Math.max(tmin, Math.min(t1, t2));
-            tmax = Math.min(tmax, Math.max(t1, t2));
-          } else if (oy < ry || oy > ry + rh) {
-            return -1;
-          }
-
-          if (tmax >= tmin && tmax >= 0) {
-            return tmin >= 0 ? tmin : tmax;
-          }
           return -1;
         },
 
@@ -2535,11 +2392,6 @@ class CanvasBridge {
           return self.assetsLoaded >= self.assetsTotal;
         },
 
-        _asset_is_loaded(assetId) {
-          const asset = self.assets.get(assetId);
-          return asset ? asset.loaded : false;
-        },
-
         _asset_get(pathPtr, pathLen) {
           const path = self.readString(pathPtr, pathLen);
           for (const [id, asset] of self.assets) {
@@ -2550,14 +2402,6 @@ class CanvasBridge {
 
         _asset_unload(assetId) {
           self.assets.delete(assetId);
-          return 0;
-        },
-
-        _asset_unload_all() {
-          self.assets.clear();
-          self.assetQueue = [];
-          self.assetsLoaded = 0;
-          self.assetsTotal = 0;
           return 0;
         },
 
@@ -2605,7 +2449,7 @@ class CanvasBridge {
           if (self.cameraShakeDuration > 0) {
             const elapsed = (performance.now() - self.cameraShakeStart) / 1000;
             if (elapsed < self.cameraShakeDuration) {
-              const decay = 1 - elapsed / self.cameraShakeDuration;
+              const decay = 1 - self._evalEaseId(self.cameraShakeEasing | 0, elapsed / self.cameraShakeDuration);
               shakeX = (Math.random() - 0.5) * 2 * self.cameraShakeIntensity * decay;
               shakeY = (Math.random() - 0.5) * 2 * self.cameraShakeIntensity * decay;
             }
@@ -2647,183 +2491,11 @@ class CanvasBridge {
           return (screenY - entry.height / 2) / self.cameraZoom + self.cameraY;
         },
 
-        _camera_world_to_screen_x(worldX) {
-          const entry = self.canvases.values().next().value;
-          if (!entry) return worldX;
-          return (worldX - self.cameraX) * self.cameraZoom + entry.width / 2;
-        },
-
-        _camera_world_to_screen_y(worldY) {
-          const entry = self.canvases.values().next().value;
-          if (!entry) return worldY;
-          return (worldY - self.cameraY) * self.cameraZoom + entry.height / 2;
-        },
-
-        _camera_shake(intensity, duration) {
+        _camera_shake(intensity, duration, easingId) {
           self.cameraShakeIntensity = intensity;
           self.cameraShakeDuration = duration;
+          self.cameraShakeEasing = easingId;
           self.cameraShakeStart = performance.now();
-          return 0;
-        },
-
-        // ====================================================================
-        // GRADIENTS
-        // ====================================================================
-
-        _gradient_create_linear(x1, y1, x2, y2) {
-          const id = self.nextGradientId++;
-          self.gradients.set(id, {
-            type: 'linear',
-            x1, y1, x2, y2,
-            stops: []
-          });
-          return id;
-        },
-
-        _gradient_create_radial(cx, cy, innerRadius, outerRadius) {
-          const id = self.nextGradientId++;
-          self.gradients.set(id, {
-            type: 'radial',
-            cx, cy, innerRadius, outerRadius,
-            stops: []
-          });
-          return id;
-        },
-
-        _gradient_add_stop(gradientId, offset, colorPtr, colorLen) {
-          const gradient = self.gradients.get(gradientId);
-          if (!gradient) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          gradient.stops.push({ offset, color });
-          return 0;
-        },
-
-        _canvas_set_fill_gradient(canvasId, gradientId) {
-          const entry = self.canvases.get(canvasId);
-          const gradientDef = self.gradients.get(gradientId);
-          if (!entry || !gradientDef) return -1;
-
-          const ctx = entry.ctx;
-          let gradient;
-
-          if (gradientDef.type === 'linear') {
-            gradient = ctx.createLinearGradient(gradientDef.x1, gradientDef.y1, gradientDef.x2, gradientDef.y2);
-          } else {
-            gradient = ctx.createRadialGradient(
-              gradientDef.cx, gradientDef.cy, gradientDef.innerRadius,
-              gradientDef.cx, gradientDef.cy, gradientDef.outerRadius
-            );
-          }
-
-          for (const stop of gradientDef.stops) {
-            gradient.addColorStop(stop.offset, stop.color);
-          }
-
-          ctx.fillStyle = gradient;
-          return 0;
-        },
-
-        _canvas_set_stroke_gradient(canvasId, gradientId) {
-          const entry = self.canvases.get(canvasId);
-          const gradientDef = self.gradients.get(gradientId);
-          if (!entry || !gradientDef) return -1;
-
-          const ctx = entry.ctx;
-          let gradient;
-
-          if (gradientDef.type === 'linear') {
-            gradient = ctx.createLinearGradient(gradientDef.x1, gradientDef.y1, gradientDef.x2, gradientDef.y2);
-          } else {
-            gradient = ctx.createRadialGradient(
-              gradientDef.cx, gradientDef.cy, gradientDef.innerRadius,
-              gradientDef.cx, gradientDef.cy, gradientDef.outerRadius
-            );
-          }
-
-          for (const stop of gradientDef.stops) {
-            gradient.addColorStop(stop.offset, stop.color);
-          }
-
-          ctx.strokeStyle = gradient;
-          return 0;
-        },
-
-        // ====================================================================
-        // PATHS
-        // ====================================================================
-
-        _path_begin(canvasId) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.beginPath();
-          return 0;
-        },
-
-        _path_move_to(canvasId, x, y) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.moveTo(x, y);
-          return 0;
-        },
-
-        _path_line_to(canvasId, x, y) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.lineTo(x, y);
-          return 0;
-        },
-
-        _path_quadratic_to(canvasId, cpx, cpy, x, y) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.quadraticCurveTo(cpx, cpy, x, y);
-          return 0;
-        },
-
-        _path_bezier_to(canvasId, cp1x, cp1y, cp2x, cp2y, x, y) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y);
-          return 0;
-        },
-
-        _path_arc(canvasId, x, y, radius, startAngle, endAngle) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.arc(x, y, radius, startAngle * Math.PI / 180, endAngle * Math.PI / 180);
-          return 0;
-        },
-
-        _path_arc_to(canvasId, x1, y1, x2, y2, radius) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.arcTo(x1, y1, x2, y2, radius);
-          return 0;
-        },
-
-        _path_close(canvasId) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          entry.ctx.closePath();
-          return 0;
-        },
-
-        _path_fill(canvasId, colorPtr, colorLen) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          entry.ctx.fillStyle = color;
-          entry.ctx.fill();
-          return 0;
-        },
-
-        _path_stroke(canvasId, colorPtr, colorLen, lineWidth) {
-          const entry = self.canvases.get(canvasId);
-          if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          entry.ctx.strokeStyle = color;
-          entry.ctx.lineWidth = lineWidth;
-          entry.ctx.stroke();
           return 0;
         },
 
@@ -3303,8 +2975,11 @@ class CanvasBridge {
             self.namedTweens.set(name, { state: 'stopped', elapsed: 0, vars: [] });
           }
           const tw = self.namedTweens.get(name);
+          if (!self._isKnownEase(ease)) {
+            console.error(`[CanvasBridge] tween "${name}": unknown easing "${ease}" (frame-canvas.ebnf §28)`);
+          }
           tw.vars.push({
-            varName, from, to, duration, ease,
+            varName, from, start: 0, to, duration, ease,
             repeat: repeat | 0, yoyo: !!yoyo, delay,
             pathName: pathName || null, orient: 0, done: false,
           });
@@ -3317,7 +2992,10 @@ class CanvasBridge {
           if (!tw) return -1;
           tw.state = 'playing';
           tw.elapsed = 0;
-          tw.vars.forEach(v => v.done = false);
+          tw.vars.forEach(v => {
+            v.done = false;
+            v.start = self.canvasVars && self.canvasVars.has(v.varName) ? self.canvasVars.get(v.varName) : 0;
+          });
           return 0;
         },
 
@@ -3350,18 +3028,9 @@ class CanvasBridge {
           // Inline animate: drives a single var from its current value to
           // target over duration seconds using easingId. Creates an anonymous
           // tween keyed by var name so re-calling replaces it.
-          const varName = self.readString(varPtr, varLen);
-          const key = '__inline__' + varName;
-          const from = self.canvasVars && self.canvasVars.has(varName)
-            ? self.canvasVars.get(varName) : 0;
-          self.namedTweens.set(key, {
-            state: 'playing', elapsed: 0,
-            vars: [{
-              varName, from, to: target, duration,
-              ease: self._easeIdToName(easingId),
-              repeat: 0, yoyo: false, delay: 0,
-              pathName: null, orient: 0, done: false,
-            }],
+          self._animateVar({
+            varName: self.readString(varPtr, varLen),
+            to: target, duration, ease: self._easeIdToName(easingId),
           });
           return 0;
         },
@@ -3469,7 +3138,12 @@ class CanvasBridge {
           const stateName = self.readString(statePtr, stateLen);
           const fsm = self.namedAnimStates.get(name);
           if (!fsm) return -1;
-          fsm.current = stateName;
+          if (fsm.current !== stateName) {
+            fsm.current = stateName;
+            // Entering a state restarts the clip it plays.
+            const clip = self.namedAnimSprites.get(self._animStateClip(fsm));
+            if (clip) { clip.current = clip.frameStart; clip.elapsed = 0; clip.finished = false; }
+          }
           return 0;
         },
 
@@ -3503,6 +3177,7 @@ class CanvasBridge {
           if (!clip) return -1;
           clip.current = clip.frameStart;
           clip.elapsed = 0;
+          clip.finished = false;
           return 0;
         },
 
@@ -3567,7 +3242,7 @@ class CanvasBridge {
           const name = self.readString(namePtr, nameLen);
           const sys = self.namedParticles.get(name);
           if (!sys) return -1;
-          const count = sys.config.burst != null ? sys.config.burst : 20;
+          const count = sys.config.burst ? sys.config.burst : 20;
           const em = { x, y, continuous: false, emitAccum: 0, particles: [] };
           for (let i = 0; i < count; i++) em.particles.push(self._spawnParticle(x, y, sys.config));
           sys.emitters.push(em);
@@ -3736,6 +3411,9 @@ class CanvasBridge {
           const name = self.readString(namePtr, nameLen);
           const sheet = self.namedSprites.get(name);
           if (!sheet || !sheet.loaded) return -1;
+          // Width/height omitted by the DSL arrive as 0: use the frame size.
+          if (!(w > 0)) w = sheet.frameWidth;
+          if (!(h > 0)) h = sheet.frameHeight;
           const col = frameIndex % sheet.framesPerRow;
           const row = Math.floor(frameIndex / sheet.framesPerRow);
           const ctx = entry.ctx;
@@ -3758,6 +3436,9 @@ class CanvasBridge {
           const name = self.readString(namePtr, nameLen);
           const sheet = self.namedSprites.get(name);
           if (!sheet || !sheet.loaded) return -1;
+          // Width/height omitted by the DSL arrive as 0: use the frame size.
+          if (!(w > 0)) w = sheet.frameWidth;
+          if (!(h > 0)) h = sheet.frameHeight;
           const tint = self.readString(tintPtr, tintLen);
           const col = frameIndex % sheet.framesPerRow;
           const row = Math.floor(frameIndex / sheet.framesPerRow);
@@ -3788,8 +3469,7 @@ class CanvasBridge {
           const fsm = self.namedAnimStates.get(fsmName);
           // Use the FSM's current state name to look up an animsprite clip
           // with the same name. Renders the clip's current frame from sheet.
-          const clipName = fsm && fsm.current ? fsm.current : '';
-          const clip = self.namedAnimSprites.get(clipName);
+          const clip = fsm ? self.namedAnimSprites.get(self._animStateClip(fsm)) : null;
           const frameIndex = clip ? clip.current : 0;
           const col = frameIndex % sheet.framesPerRow;
           const row = Math.floor(frameIndex / sheet.framesPerRow);
@@ -3800,35 +3480,6 @@ class CanvasBridge {
           );
           return 0;
         },
-
-        // ====================================================================
-        // LEGACY COMPATIBILITY
-        // ====================================================================
-
-        _canvas_on_pointer(canvasId, handlerIdx) {
-          // Legacy - not used with new input system
-          return 0;
-        },
-
-        _canvas_on_key(canvasId, handlerIdx) {
-          // Legacy - not used with new input system
-          return 0;
-        },
-
-        _canvas_pointer_x() {
-          return self.mouseX;
-        },
-
-        _canvas_pointer_y() {
-          return self.mouseY;
-        },
-
-        // Physics helpers (legacy, can be removed)
-        _physics_update() { return 0; },
-        _physics_get_x() { return 0; },
-        _physics_get_y() { return 0; },
-        _physics_get_vel_x() { return 0; },
-        _physics_get_vel_y() { return 0; }
       }
     };
   }
@@ -3837,8 +3488,14 @@ class CanvasBridge {
   // WASM INSTANCE SETUP
   // ==========================================================================
 
-  setWasmInstance(instance) {
+  // `allocate(size)` hands out module-heap memory for string returns; a
+  // module that defines its own memory is read through that memory.
+  setWasmInstance(instance, allocate) {
     this.wasmInstance = instance;
+    if (instance && instance.exports && instance.exports.memory instanceof WebAssembly.Memory) {
+      this.memory = instance.exports.memory;
+    }
+    if (typeof allocate === 'function') this.allocate = allocate;
   }
 
   // ==========================================================================

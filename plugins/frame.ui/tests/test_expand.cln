@@ -1,180 +1,124 @@
-// Tests for frame.ui plugin
-// Fixed: functions were declared at top level — spec (grammar.ebnf) requires functions: block
-// Fixed: added type declarations and void return types — spec requires explicit types
+// Tests for the frame.ui plugin's source generators (plugin-internal).
+// scripts/test-plugins.sh combines this file with src/main.cln, so the
+// functions below call the plugin's own string-level helpers directly: the
+// Clean source each block expands to, and the assemble path helpers.
 
 start:
-	test_component_expansion()
-	test_component_with_state()
-	test_component_with_hydration()
-	test_layout_expansion()
-	test_page_expansion()
-	test_page_with_layout()
-	test_component_validation_missing_name()
-	test_component_validation_missing_render()
-	test_component_validation_invalid_client()
-	test_page_validation_missing_path()
-	test_unknown_block_passthrough()
-	test_html_block_default()
-	test_html_block_with_var()
-	test_html_block_raw_interpolation()
-	test_html_block_doctype_no_spurious_close()
-	test_html_block_no_fusion_emits_per_tag_concats()
-	test_html_block_interpolations_emitted_inline()
-	test_hydration_collect_screens()
-	test_hydration_default_mode_off()
-	test_hydration_entries_to_json()
-	test_hydration_entries_dedup()
-	test_hydration_manifest_module_shape()
+	test_html_block_returns_markup()
+	test_html_block_var_mode()
+	test_html_block_doctype()
+	test_text_interpolation_escaped_and_raw()
+	test_attribute_values()
+	test_structural_directives()
+	test_page_mode_events_and_forms()
+	test_component_tag()
+	test_state_prefix()
+	test_page_companion_calls()
+	test_styles_block_css()
+	test_assemble_paths()
+	test_hydration_screens()
+	test_validate_block()
 
 functions:
-	void test_component_expansion()
-		string body = "props:\n\tstring label\n\nrender()\n\treturn \"<button>\" + label + \"</button>\""
-		string result = expand_block("component", "{\"name\": \"Button\"}", body)
-		assert(result.contains("class Button"))
-		assert(result.contains("render() -> string"))
-		assert(result.contains("renderSSR()"))
+	// html: without var= builds __html and returns it (UI-P004).
+	void test_html_block_returns_markup()
+		string src = expand_html_block("\{\}", "<p>hi</p>")
+		assert(src.startsWith("string __html = \"\"\n"))
+		assert(src.contains("__html = __html + \"<p>\"\n"))
+		assert(src.contains("__html = __html + \"hi\"\n"))
+		assert(src.endsWith("return __html + \"\"\n"))
 
-	void test_component_with_state()
-		string body = "state:\n\tinteger count = 0\n\nrender()\n\treturn count.toString()"
-		string result = expand_block("component", "{\"name\": \"Counter\"}", body)
-		assert(result.contains("_count"))
-		assert(result.contains("count() -> integer"))
-		assert(result.contains("setCount"))
+	// html: var="name" assigns to the variable and does not return (UI-P005).
+	void test_html_block_var_mode()
+		string src = expand_html_block("\{\"var\":\"card\"\}", "<b>x</b>")
+		assert(src.startsWith("string card = \"\"\n"))
+		assert(src.contains("card = card + \"<b>\"\n"))
+		assert(src.contains("return") == false)
 
-	void test_component_with_hydration()
-		string body = "render()\n\treturn \"<div></div>\""
-		string result = expand_block("component", "{\"name\": \"Widget\", \"client\": \"visible\"}", body)
-		assert(result.contains("_hydration_mode = \"visible\""))
-		assert(result.contains("class Widget"))
+	// <!DOCTYPE html> is copied as written, with no closing tag.
+	void test_html_block_doctype()
+		string src = expand_html_block("\{\}", "<!DOCTYPE html><html><body>x</body></html>")
+		assert(src.contains("__html = __html + \"<!DOCTYPE html>\"\n"))
+		assert(src.contains("</!DOCTYPE") == false)
 
-	void test_layout_expansion()
-		string result = expand_block("layout", "{\"name\": \"MainLayout\"}", "return \"<html>\" + _slot() + \"</html>\"")
-		assert(result.contains("class MainLayout"))
-		assert(result.contains("_slot_content"))
-		assert(result.contains("slot(content: string)"))
+	// {expr} is escaped (UI-P006), {!expr} is raw (UI-P007), \{ is a brace.
+	void test_text_interpolation_escaped_and_raw()
+		assert(text_expr("Hi \{name\}!", false) == "\"Hi \" + _html_escape((name).toString()) + \"!\"")
+		assert(text_expr("\{!body\}", false) == "\"\" + body + \"\"")
+		assert(text_expr("\{x\}", true) == "\"\" + _html_escape(data.x) + \"\"")
+		assert(text_expr("a \\\{b\\\}", false) == "\"a \\\{b\\\}\"")
 
-	void test_page_expansion()
-		string result = expand_block("page", "{\"name\": \"HomePage\", \"path\": \"/\", \"title\": \"Home\"}", "return \"<h1>Home</h1>\"")
-		assert(result.contains("class HomePage"))
-		assert(result.contains("_path = \"/\""))
-		assert(result.contains("_title = \"Home\""))
-		assert(result.contains("renderPage()"))
+	// Attribute values: quotes are escaped, {expr} closes and reopens the literal.
+	void test_attribute_values()
+		assert(html_attributes("a href=\"\{url\}\"", false) == "href='\" + _html_escape((url).toString()) + \"'")
+		assert(html_attributes("p title=\"Don't\"", false) == "title='Don&#39;t'")
+		assert(html_attributes("p data-x='say \"hi\"'", false) == "data-x='say &quot;hi&quot;'")
+		assert(html_attributes("input disabled class=\"c\"", false) == "disabled class='c'")
 
-	void test_page_with_layout()
-		string result = expand_block("page", "{\"name\": \"AboutPage\", \"path\": \"/about\", \"layout\": \"MainLayout\"}", "return \"<h1>About</h1>\"")
-		assert(result.contains("MainLayout().slot(html).render()"))
+	// cl-if / cl-else / cl-iterate / cl-show nest the whole element (UI-B001..B004).
+	void test_structural_directives()
+		string if_src = html_to_stmts("<p cl-if=\"ok\">a</p><p cl-else>b</p>", "h", false, "\{\}", false)
+		assert(if_src == "if ok\n\th = h + \"<p>\"\n\th = h + \"a\"\n\th = h + \"</p>\"\nelse\n\th = h + \"<p>\"\n\th = h + \"b\"\n\th = h + \"</p>\"\n")
+		string it_src = html_to_stmts("<li cl-iterate=\"x in xs\">\{x\}</li>", "h", false, "\{\}", false)
+		assert(it_src.startsWith("iterate x in xs\n\th = h + \"<li>\"\n"))
+		string show_src = html_to_stmts("<p cl-show=\"ok\" style=\"color:red\">a</p>", "h", false, "\{\}", false)
+		assert(show_src.contains("else\n\th = h + \"<p style='display:none;color:red'>\"\n"))
 
-	void test_component_validation_missing_name()
-		string result = validate_block("component", "{}", "render()\n\treturn \"\"")
-		assert(result.contains("name attribute is required"))
+	// Page mode: events become data-on-* markers, only non-GET forms get CSRF (UI-B011).
+	void test_page_mode_events_and_forms()
+		assert(html_attributes("button onclick.stop=\"save\"", true) == "data-on-click='save' data-on-click-stop='true'")
+		string get_form = html_to_stmts("<form action=\"/s\"></form>", "html", true, "\{\}", false)
+		assert(get_form.contains("csrf_generate") == false)
+		string post_form = html_to_stmts("<form method=\"post\"></form>", "html", true, "\{\}", false)
+		assert(post_form.contains("csrf_generate()"))
 
-	void test_component_validation_missing_render()
-		string result = validate_block("component", "{\"name\": \"Test\"}", "props:\n\tstring x")
-		assert(result.contains("render() block is required"))
+	// A component tag builds the component and passes its attributes (UI-C010).
+	void test_component_tag()
+		string src = html_to_stmts("<user-card user-name=\"ann\" count=\"\{n\}\"></user-card>", "h", false, "\{\}", false)
+		assert(src.contains("\tUserCard _comp = UserCard()\n"))
+		assert(src.contains("\t_comp.setInput(\"user-name\", \"ann\")\n"))
+		assert(src.contains("\t_comp.count = n\n"))
+		assert(src.contains("\th = h + _comp.render()\n"))
+		string with_flag = html_to_stmts("<user-card hidden label=\"a\"></user-card>", "h", false, "\{\}", false)
+		assert(with_flag.contains("\t_comp.setInput(\"label\", \"a\")\n"))
+		assert(with_flag.contains("hidden") == false)
 
-	void test_component_validation_invalid_client()
-		string result = validate_block("component", "{\"name\": \"Test\", \"client\": \"invalid\"}", "render()\n\treturn \"\"")
-		assert(result.contains("client must be one of"))
+	// `state.` is dropped from code, not from template text.
+	void test_state_prefix()
+		assert(remove_state_dot("state.count + estate.x") == "count + estate.x")
+		assert(template_strip_state("<p title=\"\{state.a\}\">Real estate. \{state.b\}</p>") == "<p title=\"\{a\}\">Real estate. \{b\}</p>")
 
-	void test_page_validation_missing_path()
-		string result = validate_block("page", "{\"name\": \"Test\"}", "")
-		assert(result.contains("path attribute is required"))
+	// An HTML entry page calls its companion through the names assemble gives
+	// them: <module>_load(any) / <module>_guard(any).
+	void test_page_companion_calls()
+		string body = page_render_body("", "html = html + \"x\"\n", "\{\"has_guard\":true,\"has_load\":true,\"module_name\":\"pages_index\"\}")
+		assert(body.contains("any guard_result = pages_index_guard(null)\n"))
+		assert(body.contains("any data = pages_index_load(null)\n"))
+		assert(body.endsWith("return html\n"))
 
-	void test_unknown_block_passthrough()
-		string result = expand_block("unknown", "{}", "original body")
-		assert(result == "original body")
+	// styles <Name>: → CSS custom properties on :root plus global rules.
+	void test_styles_block_css()
+		string css = styles_block_to_css("Theme", "variables:\n\tcolor-primary: \"#123\"\nglobal:\n\t\"body \{ margin: 0; \}\"\n")
+		assert(css.contains(":root \{\n\t--color-primary: #123;\n\}\n"))
+		assert(css.contains("body \{ margin: 0; \}\n"))
+		assert(styles_block_to_css("Theme", "colors:\n").startsWith("!"))
 
-	// html: block tests
+	// File path → URL / module / template path (UI-R001..R003).
+	void test_assemble_paths()
+		assert(derive_url_path("app/ui/web/pages/index.cln") == "/")
+		assert(derive_url_path("app/ui/web/pages/blog/[slug].cln") == "/blog/:slug")
+		assert(derive_url_path("app/ui/web/pages/blog/index.cln") == "/blog")
+		assert(derive_module_name("app/ui/web/pages/my-page.cln") == "pages_my_page")
+		assert(derive_html_path("app/ui/web/pages/about.cln") == "app/ui/web/pages/about.html")
 
-	void test_html_block_default()
-		string result = expand_block("html", "{}", "<p>{message}</p>")
-		assert(result.contains("string __html = \"\""))
-		assert(result.contains("return __html"))
-		assert(result.contains("_html_escape(message)"))
+	// <screen name="X" client="..."> entries; client defaults to off.
+	void test_hydration_screens()
+		string entries = collect_screens_from_html("<screen name=\"Counter\" client=\"on\"></screen><screen name=\"List\"></screen><screen name=\"Counter\"></screen>")
+		assert(entries == "Counter=on\nList=off\nCounter=off\n")
+		assert(entries_to_screens_json(entries) == "\{\"Counter\":\"on\",\"List\":\"off\"\}")
 
-	void test_html_block_with_var()
-		string result = expand_block("html", "{\"var\": \"header\"}", "<nav><a href=\"/\">{brand}</a></nav>")
-		assert(result.contains("string header = \"\""))
-		assert(result.contains("header = header +"))
-		assert(result.contains("_html_escape(brand)"))
-		// Named var mode must NOT generate return
-		assert(result.contains("return") == false)
-		// Must not contain __html — replaced with var name
-		assert(result.contains("__html") == false)
-
-	void test_html_block_raw_interpolation()
-		string result = expand_block("html", "{}", "<div>{!raw_content}</div>")
-		assert(result.contains("raw_content"))
-		// Raw interpolation must NOT use _html_escape
-		assert(result.contains("_html_escape(raw_content)") == false)
-
-	// SSR001: <!DOCTYPE html> must not produce a spurious </!DOCTYPE> closing tag
-	void test_html_block_doctype_no_spurious_close()
-		string result = expand_block("html", "{}", "<!DOCTYPE html><html><body><p>hello</p></body></html>")
-		// DOCTYPE must appear exactly once as a raw literal
-		assert(result.contains("\"<!DOCTYPE html>\""))
-		// Must NOT contain any closing tag for DOCTYPE
-		assert(result.contains("</!DOCTYPE>") == false)
-
-	// Fusion of consecutive pure-literal concat lines is currently disabled
-	// (FRAME-UI-V2.12.23-FUSE-LITERAL-CONCATS-OOB-TRAP). The plugin emits
-	// one concat per element/text node. The durable fix for the underlying
-	// allocator pressure is COMPILER-MEM-ALLOC-NO-GROW upstream.
-	void test_html_block_no_fusion_emits_per_tag_concats()
-		string result = expand_block("html", "{}", "<article><header><h3>title</h3></header></article>")
-		// Per-tag concats are present.
-		assert(result.contains("__html = __html + \"<article>\""))
-		assert(result.contains("__html = __html + \"<header>\""))
-		assert(result.contains("__html = __html + \"<h3>\""))
-		// No fused single-line concat covering the whole template.
-		assert(result.contains("__html = __html + \"<article><header><h3>title</h3></header></article>\"") == false)
-
-	// Interpolation lines must remain intact and emit _html_escape(...) for
-	// the interpolated expression, regardless of fusion state.
-	void test_html_block_interpolations_emitted_inline()
-		string result = expand_block("html", "{}", "<article><header><h3>{title}</h3></header></article>")
-		// Interpolation line uses _html_escape on the expression.
-		assert(result.contains("_html_escape(title)"))
-		// Surrounding tag concats stay un-fused (one per element).
-		assert(result.contains("__html = __html + \"<article>\""))
-		assert(result.contains("__html = __html + \"</article>\""))
-
-	// Hydration manifest tests (spec 05_frame_ui.md §14.1)
-	void test_hydration_collect_screens()
-		string html = "<page><screen name=\"Counter\" client=\"on\"/><screen name=\"Timer\" client=\"visible\"/></page>"
-		string entries = collect_screens_from_html(html)
-		assert(entries.contains("Counter=on"))
-		assert(entries.contains("Timer=visible"))
-
-	void test_hydration_default_mode_off()
-		// Screens without client attribute default to "off" (rendered, not hydrated)
-		string html = "<screen name=\"Static\"/>"
-		string entries = collect_screens_from_html(html)
-		assert(entries.contains("Static=off"))
-
-	void test_hydration_entries_to_json()
-		string entries = "Counter=on\nTimer=visible\n"
-		string json = entries_to_screens_json(entries)
-		assert(json.contains("\"Counter\":\"on\""))
-		assert(json.contains("\"Timer\":\"visible\""))
-		assert(json.startsWith("{"))
-		assert(json.endsWith("}"))
-
-	void test_hydration_entries_dedup()
-		// Same screen name appearing twice should only produce one entry
-		string entries = "Counter=on\nCounter=on\n"
-		string json = entries_to_screens_json(entries)
-		// Should contain exactly one Counter entry (no comma between duplicates)
-		assert(json.contains("\"Counter\":\"on\""))
-		assert(json.contains(",") == false)
-
-	void test_hydration_manifest_module_shape()
-		// The injected virtual file must declare _ui_hydration_manifest() as a
-		// function returning the screens JSON. Runtime calls this at startup.
-		string screens_json = "{\"Counter\":\"on\"}"
-		string module = build_hydration_manifest_module(screens_json)
-		assert(module.contains("functions:"))
-		assert(module.contains("string _ui_hydration_manifest()"))
-		assert(module.contains("\\\"screens\\\""))
-		assert(module.contains("Counter"))
-
+	void test_validate_block()
+		assert(validate_block("page", "\{\}", "") == "page: a class name (`page Name:`) is required")
+		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "") == "")
+		assert(validate_block("component", "\{\"tag\":\"x-y\"\}", "html:\n\t<p>x</p>") == "")
+		assert(validate_block("component", "\{\"model_name\":\"X\",\"client\":\"sometimes\"\}", "html:") == "component: client must be one of off, on, visible, idle, only")

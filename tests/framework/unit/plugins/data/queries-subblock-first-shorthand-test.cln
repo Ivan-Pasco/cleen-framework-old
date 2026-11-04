@@ -34,9 +34,14 @@ start:
 // Fixed: was `Page.data.bySlug(...)` on the data class itself, frame-data.ebnf
 // v2.1.1 dispatches `.data.<method>` through an entity whose link field is
 // named exactly `data` and typed with the data class (DAT-A006, DAT-A007).
+// Fixed: the entity declared only the link field; DAT-P004 requires every
+// `fields:` entry of the data class on the entity (FRAME-DATA-E026 at lint).
 class PageEntity
 	public:
 		Page data
+		integer id
+		string slug
+		boolean is_active
 
 endpoints:
 	GET "/test":

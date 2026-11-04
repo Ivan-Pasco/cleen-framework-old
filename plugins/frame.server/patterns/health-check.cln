@@ -22,10 +22,7 @@ endpoints:
 		boolean db_ok = true
 		string db_error = ""
 
-		string result = db.query:
-			SELECT 1
-			[]
-
+		string result = db.query("SELECT 1", "[]")
 		if result == ""
 			db_ok = false
 			db_error = "database unreachable"

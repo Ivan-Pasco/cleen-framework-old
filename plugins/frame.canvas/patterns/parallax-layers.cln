@@ -39,7 +39,7 @@ canvasScene: width=800 height=500 fps=60
 		number ground_mult = 1.00   // moves at full player speed
 
 	onFrame: param="dt"
-		if input.keyDown("ArrowRight")
+		if input.keyDown("ArrowRight") == 1
 			scrollX = scrollX + playerSpeed * dt
 
 		// Each layer scrolls at its own rate — use modulo to tile seamlessly
@@ -71,4 +71,4 @@ canvasScene: width=800 height=500 fps=60
 			canvas.image src="player" x=playerX y=330 width=48 height=64
 
 		on layer "hud":
-			canvas.text "Distance: {scrollX.toInteger()}m" x=10 y=20 size=14 color="white"
+			canvas.text value="Distance: {scrollX.toInteger()}m" x=10 y=20 size=14 color="white"

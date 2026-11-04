@@ -2,33 +2,16 @@
 resolver = "2"
 members = []
 
-# NOTE: All Rust crates have been replaced with Clean Language plugins:
-# - frame-cli      -> replaced by `cleen` (external package manager)
-# - frame-server   -> replaced by `clean-server` (separate repo, installed via `cleen server install`)
-# - frame-runtime  -> replaced by `clean-server` (separate repo)
-# - host-bridge    -> moved to `clean-server` repo
-# - frame-data     -> replaced by `frame.data` plugin
-# - frame-ui       -> replaced by `frame.ui` plugin
-# - frame-auth     -> replaced by `frame.auth` plugin
-# - frame-plugins  -> deleted (old Rust plugin system)
-# - frame-compiler-plugins -> deleted (replaced by Clean plugins)
-#
-# See plugins/ directory for the new Clean Language plugin sources:
-#   - plugins/frame.data/      - ORM and database DSL
-#   - plugins/frame.server/ - HTTP server and API endpoints
-#   - plugins/frame.auth/       - Authentication and authorization
-#   - plugins/frame.ui/         - UI components and SSR rendering
-#   - plugins/frame.canvas/     - Canvas graphics and games
-#
-# See https://github.com/Ivan-Pasco/clean-server-old for the server runtime.
+# The framework has no Rust crates: every component is a Clean Language
+# plugin under plugins/ (source in src/main.cln, compiled to plugin.wasm).
+# This manifest only carries the framework release version, which the
+# release tags (vX.Y.Z) follow. The server runtime lives in
+# https://github.com/Ivan-Pasco/clean-server-old.
 
 [workspace.package]
 version = "2.12.201"
 edition = "2021"
 authors = ["Ivan Pasco"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/clean-language/frame"
-homepage = "https://cleanlanguage.org"
-
-# No workspace dependencies needed - all Rust crates have been migrated to Clean Language plugins.
-# The plugins are compiled to WASM by the Clean Language compiler.
+license = "MIT"
+repository = "https://github.com/Ivan-Pasco/cleen-framework-old"
+homepage = "https://www.cleanlanguage.dev"

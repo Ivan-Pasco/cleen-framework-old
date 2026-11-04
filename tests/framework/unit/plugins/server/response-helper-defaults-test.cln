@@ -1,0 +1,55 @@
+// Test: frame.server — response helper argument forms.
+// Grammar: frame-server.ebnf §4 — not_found_response `notFound([expression])`,
+// bad_request_response `badRequest([expression])`, redirect_response
+// `redirect(expression [, integer_literal])`.
+// Semantic: frame-server-semantics.md SRV-I002 — error envelope
+// {"ok":false,"err":{"code":...,"message":...}} must be valid JSON, so
+// message text is JSON-escaped (quotes, backslashes, newlines, tabs).
+//
+// Before the fix `notFound("…")`, `badRequest()` and `redirect(url, status)`
+// were arity errors (FUNC002) and newlines reached the envelope unescaped.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+
+		string nf = notFound("order 7 is gone")
+		if nf.contains("\"code\":\"NOT_FOUND\"") == false or nf.contains("order 7 is gone") == false
+			printl("FAIL: server-response-helper-defaults (notFound(message): " + nf + ")")
+			failures = failures + 1
+
+		string nf_default = notFound()
+		if nf_default.contains("Resource not found") == false
+			printl("FAIL: server-response-helper-defaults (notFound(): " + nf_default + ")")
+			failures = failures + 1
+
+		string br_default = badRequest()
+		if br_default.contains("\"code\":\"VALIDATION_ERROR\"") == false
+			printl("FAIL: server-response-helper-defaults (badRequest(): " + br_default + ")")
+			failures = failures + 1
+
+		string br = badRequest("line one\nline \"two\"\tend")
+		if br.contains("\n") or br.contains("\t")
+			printl("FAIL: server-response-helper-defaults (control characters not escaped: " + br + ")")
+			failures = failures + 1
+		if br.contains("line one\\nline \\\"two\\\"\\tend") == false
+			printl("FAIL: server-response-helper-defaults (escaped message missing: " + br + ")")
+			failures = failures + 1
+
+		redirect("/elsewhere", 301)
+		redirect("/elsewhere")
+
+		if failures == 0
+			printl("PASS: server-response-helper-defaults")
+		else
+			printl("FAIL: server-response-helper-defaults")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-response-helper-defaults server ready")

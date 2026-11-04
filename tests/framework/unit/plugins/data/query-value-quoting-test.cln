@@ -1,0 +1,65 @@
+// Test: frame.data — values containing quotes reach the database intact.
+// Spec: stdlib-reference §9 (params are a JSON array), frame-data.ebnf §5.1
+// (where: right-hand side is any expression).
+// Regression: a string field holding `"` broke the INSERT params JSON (the
+// row stored 0), and a where: value holding `'` broke the generated SQL.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Person:
+	fields:
+		integer id primary generated
+		string name required
+		string note
+
+endpoints:
+	GET "/test":
+		Person.migrate()
+		Person a = Person()
+		a.name = "O'Brien"
+		a.note = "say \"hi\" \\ done"
+		Database.save(a)
+		Person b = Person()
+		b.name = "Smith"
+		b.note = "plain"
+		Database.save(b)
+
+		string who = "O'Brien"
+		Person byVar = Person.first:
+			where:
+				name == who
+		boolean ok_var = byVar != null and byVar.note == "say \"hi\" \\ done"
+
+		Person byLit = Person.first:
+			where:
+				name == "O'Brien"
+		boolean ok_lit = byLit != null and byLit.id == a.id
+
+		// A value that would end the SQL string early must stay a value.
+		string attack = "x' OR '1'='1"
+		integer leaked = Person.count:
+			where:
+				name == attack
+		boolean ok_inject = leaked == 0
+
+		// Update path keeps the quotes too.
+		byVar.note = "it's \"fine\""
+		Database.save(byVar)
+		Person again = Person.findOrFail:
+			where:
+				id == a.id
+		boolean ok_update = again.note == "it's \"fine\""
+
+		if ok_var and ok_lit and ok_inject and ok_update
+			printl("PASS: data-query-value-quoting")
+		else
+			printl("FAIL: data-query-value-quoting var=" + ok_var.toString() + " lit=" + ok_lit.toString() + " inject=" + ok_inject.toString() + " update=" + ok_update.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-query-value-quoting server ready")

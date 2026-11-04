@@ -1,36 +1,30 @@
 # HTML Simple Example
 
-A simple example demonstrating HTML page serving with Clean Framework.
+Two static HTML pages built with frame.ui.
 
 ## Project Structure
 
 ```
-app/
-└── ui/
-    ├── pages/
-    │   ├── index.html    → GET /
-    │   └── about.html    → GET /about
-    └── public/
-        └── css/
-            └── style.css
+html-simple/
+├── main.cln                  # Package manifest (target: web, plugins: frame.ui)
+├── app/ui/web/pages/
+│   ├── index.html            # /
+│   └── about.html            # /about
+└── public/css/style.css
 ```
 
-## Running
+## Build and Run
+
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Scan the project
-frame scan
-
-# Build
-frame build
-
-# Run
-frame serve
+cd examples/html-simple
+~/.cleen/bin/cln compile main.cln -o html-simple.wasm --plugins
+~/.cleen/bin/clean-server html-simple.wasm --port 3000
 ```
 
-## Routes
+Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
 
-| Route | Description |
-|-------|-------------|
-| `/` | Home page |
-| `/about` | About page |
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh html-simple` from the framework root.

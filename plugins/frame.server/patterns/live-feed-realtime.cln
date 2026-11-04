@@ -19,26 +19,28 @@ plugins:
 
 // ── LIVE endpoint — two-way WebSocket (chat room) ────────────────────────────────────────
 //
-// live.onMessage fires once per incoming message from the connected client.
-// live.onClose fires when the client disconnects (clean or network drop).
-// live.roomBroadcast delivers the message to every client currently in the room.
-// Room membership is implicit: include the room key in every message payload so the
-// server can route it. Rooms are ephemeral — no persistence needed for stateless chat.
+// The route body is the onConnect handler — the upgrade request is in scope, so
+// req.* works there; the three handlers share no local variables. live.onMessage: runs once per incoming message
+// (live.message()); live.onClose: runs when the client disconnects (clean or
+// network drop). live.roomBroadcast delivers a message to every client in a room.
 //
 // [member] guard: only authenticated users may connect.
 
 endpoints:
 	LIVE "/chat/:room" [member]:
-		live.onMessage: (msg)
-			string room_name = _json_get(msg, "room")
-			string from_user = _json_get(msg, "from")
-			string text = _json_get(msg, "text")
-			// Broadcast to all clients in this room, including the sender
-			string __reply = "{\"from\":\"" + from_user + "\",\"text\":\"" + text + "\",\"room\":\"" + room_name + "\"}"
-			live.roomBroadcast(room_name, __reply)
+		// The route body runs on connect: join the room named in the URL.
+		live.roomJoin(live.clientId(), req.param("room"))
+		live.onMessage:
+			// Each handler is its own function, so a message carries its room:
+			// {"room": ..., "user": ..., "text": ...}
+			any msg = json.tryTextToData(live.message())
+			string room = msg.room.toString()
+			string reply = "{\"user\":\"" + msg.user.toString() + "\",\"text\":\"" + msg.text.toString() + "\"}"
+			// Broadcast to every client in the room, including the sender
+			live.roomBroadcast(room, reply)
 		live.onClose:
-			// Stateless rooms: no cleanup needed.
-			// For presence tracking, update a presence table or cache here.
+			// The server drops a closed client from its rooms; log the departure.
+			printl("chat client " + live.clientId().toString() + " left")
 
 	// ── FEED endpoint — one-way SSE push (notification stream) ───────────────────────────
 	//
@@ -53,11 +55,10 @@ endpoints:
 	// [member] guard: only authenticated users may subscribe.
 
 	FEED "/api/events/notifications" [member]:
-		string __sess = _auth_get_session()
-		string __userId = _json_get(__sess, "userId")
+		any session = json.tryTextToData(auth.getSession())
+		string user_id = session.userId.toString()
 		// Emit a connected confirmation so the client knows the stream is live
-		string __evt = "{\"type\":\"connected\",\"userId\":\"" + __userId + "\"}"
-		feed.emit(__evt)
+		feed.emit("{\"type\":\"connected\",\"userId\":\"" + user_id + "\"}")
 		// Handler returns here; the server holds the connection open.
 		// Use feed.emitEvent(name, data) from any job or endpoint handler
 		// to push named events to this client by user ID.

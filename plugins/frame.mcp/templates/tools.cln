@@ -3,6 +3,9 @@
 // Declare tools, resources, and prompts inside the mcp: block.
 // The frame.mcp plugin handles all JSON-RPC 2.0 protocol machinery.
 
+plugins:
+	frame.mcp
+
 mcp "my-app-tools":
 	version: "1.0.0"
 	description: "Tools for AI agents to interact with my application"
@@ -12,4 +15,4 @@ mcp "my-app-tools":
 		description: "A simple greeting tool that returns a personalized message"
 		params:
 			name: string
-		return mcpText("Hello, " + name + "!")
+		return mcpText("Hello, " + params.name + "!")

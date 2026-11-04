@@ -3,8 +3,8 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Article: {{slug}} | Article Blog</title>
-	<link rel="stylesheet" href="/public/css/style.css">
+	<title>Article: { slug } | Article Blog</title>
+	<link rel="stylesheet" href="/public/css/main.css">
 </head>
 <body>
 	<site-header></site-header>
@@ -13,7 +13,7 @@
 			<header>
 				<a href="/articles" class="back-link">Back to Articles</a>
 				<span class="category">Technology</span>
-				<h1>{{slug}}</h1>
+				<h1>{ slug }</h1>
 				<div class="meta">
 					<span class="author">By Author Name</span>
 					<span class="date">Published on January 1, 2025</span>
@@ -22,7 +22,7 @@
 			</header>
 			<div class="article-content">
 				<p>This is a sample article page demonstrating the dynamic routing feature.</p>
-				<p>The slug parameter (<strong>{{slug}}</strong>) is automatically extracted from the URL.</p>
+				<p>The slug parameter (<strong>{ slug }</strong>) is automatically extracted from the URL.</p>
 				<p>In a real application, you would fetch the article content from a database based on this slug.</p>
 				<h2>Features Demonstrated</h2>
 				<ul>

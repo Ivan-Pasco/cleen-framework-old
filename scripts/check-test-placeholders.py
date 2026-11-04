@@ -33,15 +33,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 TEST_ROOTS = [
     REPO_ROOT / "tests" / "framework",
-    REPO_ROOT / "tests" / "canvas",
-    REPO_ROOT / "tests" / "comprehensive-test",
+    REPO_ROOT / "tests" / "cln",
 ]
 PLUGIN_TESTS_GLOB = REPO_ROOT / "plugins"
 
 EXEMPT_RELATIVE_PATHS = {
     "tests/framework/utils/assertions.cln",
-    "tests/framework/utils/http_helpers.cln",
-    "tests/framework/utils/bridge_mocks.cln",
 }
 
 EXEMPT_SUFFIXES = (
@@ -357,7 +354,7 @@ def main(argv: list[str]) -> int:
         for o in offenses:
             print("  " + o.render())
         print()
-        print("Fix each offense per system-documents/testing/TEST_STRATEGY.md §5.")
+        print("Fix each offense per tests/CONVENTIONS.md.")
         print("If the fix requires an upstream compiler/plugin change:")
         print("  1. Call `report_error` via the MCP tool with the error code.")
         print("  2. Add the file to tests/PENDING.md with the error code and reason.")

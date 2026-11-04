@@ -1,75 +1,73 @@
 // Pattern: audit-log
 // Use when: every state change on a record must be traceable for compliance,
-//   debugging, or undo (financial transactions, user account changes, orders)
-// Anti-pattern: DON'T overwrite rows in place.
-//   When you UPDATE the source record you destroy history. Use an append-only
-//   *_events table where you only INSERT — never UPDATE or DELETE rows.
-//   The source table holds current state; the events table holds full history.
+//   debugging, or undo (financial transactions, account changes, orders)
+// Anti-pattern: DON'T overwrite history in place.
+//   The source table holds current state; an append-only *Event table holds
+//   every transition. Events are only ever inserted — never updated or
+//   deleted.
 
 plugins:
 	frame.data
 
 // Current state — one row per order
 data Order:
-	id: integer pk auto
-	customer_id: integer
-	status: string                  // "pending", "paid", "shipped", "cancelled"
-	total_cents: integer
-	updated_at: datetime auto
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		integer customerId required
+		string status required          // "pending", "paid", "shipped", "cancelled"
+		integer totalCents required
+		integer updatedAt default: 0
 
-// Append-only history — one row per state transition, never modified
+// Append-only history — one row per state transition
 data OrderEvent:
-	id: integer pk auto
-	order_id: integer               // FK to Order
-	actor_id: integer               // user who made the change
-	event_type: string              // "created", "paid", "shipped", "cancelled", "refunded"
-	previous_status: string nullable
-	new_status: string
-	metadata: string nullable       // JSON string for extra context (amount, reason, etc.)
-	occurred_at: datetime auto      // set by DB — never overwrite
+	fields:
+		integer id primary generated
+		integer orderId required
+		integer actorId required
+		string previousStatus
+		string newStatus required
+		string metadata                 // JSON text for extra context
+		integer occurredAt required
+
+	indexes:
+		(orderId, occurredAt)
+
+	relations:
+		order: belongs_to Order on orderId
 
 functions:
-	// Transition an order's status and record the event atomically
-	integer transition_order(integer order_id, integer actor_id, string new_status)
-		pairs order = Order.first:
-			where:
-				id == order_id
-
+	// Change the status and record the event in one transaction.
+	boolean transitionOrder(integer orderId, integer actorId, string newStatus)
 		transaction:
-			// Update current state
-			Order.update:
-				set:
-					status = new_status
+			Order order = Order.findOrFail:
 				where:
-					id == order_id
+					id == orderId
+			OrderEvent event = OrderEvent()
+			event.orderId = orderId
+			event.actorId = actorId
+			event.previousStatus = order.status
+			event.newStatus = newStatus
+			event.occurredAt = now()
+			Database.save(event)
+			order.status = newStatus
+			order.updatedAt = now()
+			Database.save(order)
+		return true
 
-			// Append immutable history record
-			OrderEvent.insert:
-				order_id = order_id
-				actor_id = actor_id
-				event_type = new_status
-				previous_status = order.status
-				new_status = new_status
-
-		return order_id
-
-	// Fetch full audit trail for an order, oldest first
-	list<pairs> get_order_history(integer order_id)
+	// Full audit trail, oldest first.
+	list<OrderEvent> orderHistory(integer orderId)
 		return OrderEvent.find:
 			where:
-				order_id == order_id
-			order:
-				occurred_at asc
+				orderId == orderId
+			order: occurredAt asc
 
-	// Replay history to reconstruct state at a point in time
-	string get_status_at(integer order_id, string point_in_time)
-		pairs event = OrderEvent.first:
+	// Status at a point in time: the last event at or before it.
+	string statusAt(integer orderId, integer pointInTime)
+		OrderEvent event = OrderEvent.first:
 			where:
-				order_id == order_id
-				occurred_at <= point_in_time
-			order:
-				occurred_at desc
+				orderId == orderId
+				occurredAt <= pointInTime
+			order: occurredAt desc
 		if event == null
 			return "unknown"
-		return event.new_status
+		return event.newStatus

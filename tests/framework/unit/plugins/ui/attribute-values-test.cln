@@ -1,0 +1,38 @@
+// Test: frame.ui — attribute values in pages and html: blocks
+// (frame-ui.ebnf standard_attribute; frame-ui-semantics UI-P006).
+//
+// `{expr}` in an attribute value is HTML-escaped and evaluated at render
+// time in a page exactly as in an html: block, and a value that holds a quote
+// character keeps both the markup and the generated code intact.
+// Regressions:
+//   - `<a href="{link()}">` in a page failed to compile (SYN001): the
+//     generated string literal was not closed when the value ended in `}`.
+//   - `title="Don't"` rendered as title='Don't' — the attribute ended at the
+//     apostrophe.
+//   - `data-x='say "hi"'` in an html: block failed to compile (SEM007): the
+//     double quote ended the generated string literal.
+
+plugins:
+	frame.ui
+
+page LinkPage:
+	<a href="{pageLink()}" title="Don't">go</a>
+
+start:
+	LinkPage page = LinkPage()
+	string page_out = page.render()
+	string block_out = quoted("/docs")
+	boolean ok_page = page_out == "<a href='/home' title='Don&#39;t'>go</a>"
+	boolean ok_block = block_out == "<p data-x='say &quot;hi&quot;' title='it&#39;s' data-u='/docs?a=1'>x</p>"
+	if ok_page and ok_block
+		printl("PASS: ui-attribute-values")
+	else
+		printl("FAIL: ui-attribute-values " + page_out + " | " + block_out)
+
+functions:
+	string pageLink()
+		return "/home"
+
+	string quoted(string url)
+		html:
+			<p data-x='say "hi"' title="it's" data-u="{url}?a=1">x</p>

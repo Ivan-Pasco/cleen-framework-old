@@ -4,7 +4,7 @@
 # Creates symlinks in .git/hooks/ pointing to scripts/hooks/.
 # Idempotent: safe to run repeatedly.
 #
-# See system-documents/testing/TEST_STRATEGY.md §4 for the hook layer mapping.
+# See tests/CONVENTIONS.md §6a for what each hook enforces.
 
 set -euo pipefail
 
@@ -12,7 +12,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 HOOK_SOURCE_DIR="scripts/hooks"
-HOOK_TARGET_DIR=".git/hooks"
+# `git rev-parse --git-path hooks` resolves correctly in linked worktrees,
+# where .git is a file and the hooks live in the main repository.
+HOOK_TARGET_DIR="$(git rev-parse --git-path hooks)"
 
 if [ ! -d "$HOOK_TARGET_DIR" ]; then
     echo "error: $HOOK_TARGET_DIR does not exist. Are you inside a git repository?" >&2
@@ -38,7 +40,11 @@ install_hook() {
         echo "backed up existing $dst"
     fi
 
-    ln -s "../../$HOOK_SOURCE_DIR/$name" "$dst"
+    if [ "$HOOK_TARGET_DIR" = ".git/hooks" ]; then
+        ln -s "../../$HOOK_SOURCE_DIR/$name" "$dst"
+    else
+        ln -s "$src" "$dst"
+    fi
     echo "installed: $dst -> $HOOK_SOURCE_DIR/$name"
 }
 
@@ -47,4 +53,4 @@ install_hook pre-push
 
 echo
 echo "Hooks installed. Test with: git commit --allow-empty -m test"
-echo "See system-documents/testing/TEST_STRATEGY.md §4 for what each hook enforces."
+echo "See tests/CONVENTIONS.md §6a for what each hook enforces."

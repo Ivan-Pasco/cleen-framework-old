@@ -1,0 +1,55 @@
+// Test: frame.data — table names.
+// Spec: DAT-M018 (`table "x"` overrides the table name), frame-data.ebnf §2.1
+// (default: snake_case plural of the class name with a trailing `Data`
+// dropped — PersonRecordData -> person_records).
+// Regression: the `table` sub-block was ignored, so every query and the
+// CREATE TABLE used the default name.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Person:
+	table "people"
+	fields:
+		integer id primary generated
+		string name required
+
+data PersonRecordData:
+	fields:
+		integer id primary generated
+		string label required
+
+endpoints:
+	GET "/test":
+		Person.migrate()
+		PersonRecordData.migrate()
+		Person p = Person()
+		p.name = "Ada"
+		Database.save(p)
+		PersonRecordData r = PersonRecordData()
+		r.label = "first"
+		Database.save(r)
+
+		string people = db.query("SELECT COUNT(*) AS n FROM people", "[]")
+		boolean ok_override = json.get(people, "data.rows.0.n") == "1"
+		string records = db.query("SELECT COUNT(*) AS n FROM person_records", "[]")
+		boolean ok_default = json.get(records, "data.rows.0.n") == "1"
+
+		Person found = Person.first:
+			where:
+				name == "Ada"
+		integer total = Person.count
+		boolean ok_query = found != null and total == 1
+
+		if ok_override and ok_default and ok_query
+			printl("PASS: data-table-name")
+		else
+			printl("FAIL: data-table-name override=" + ok_override.toString() + " default=" + ok_default.toString() + " query=" + ok_query.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-table-name server ready")

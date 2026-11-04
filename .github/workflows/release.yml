@@ -39,7 +39,7 @@ jobs:
             ## Installation
 
             ```bash
-            cleen install frame
+            cleen frame install latest
             ```
 
             Or download the plugin package below and extract to your project.
@@ -59,7 +59,7 @@ jobs:
 
             ## What's New
 
-            See [CHANGELOG.md](https://github.com/Ivan-Pasco/cleen-framework-old/blob/main/CHANGELOG.md) for details.
+            See the [commit history](https://github.com/Ivan-Pasco/cleen-framework-old/commits/${{ github.ref_name }}) for details.
 
   package-plugins:
     name: Package Plugins
@@ -92,7 +92,7 @@ jobs:
           Installation:
 
           1. Extract this archive to your project's plugins directory
-          2. Or install via cleen: cleen install frame
+          2. Or install via cleen: cleen frame install latest
 
           Included Plugins:
           - frame.auth - Authentication and authorization

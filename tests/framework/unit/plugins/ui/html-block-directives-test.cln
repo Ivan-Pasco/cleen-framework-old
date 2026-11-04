@@ -1,0 +1,38 @@
+// Test: frame.ui — cl-iterate / cl-if / cl-else / cl-show in html: blocks
+// (frame-ui.ebnf directive_attribute; frame-ui-semantics UI-B001..UI-B004).
+//
+// Regression: html: blocks copied the directives into the markup as plain
+// attributes — every element rendered once, whatever its condition or
+// collection.
+
+plugins:
+	frame.ui
+
+start:
+	list<string> two = ["a", "b"]
+	list<string> empty = []
+	string with_items = items(two)
+	string without_items = items(empty)
+	string shown = panel(true)
+	string hidden = panel(false)
+	boolean ok_iterate = with_items == "<ul><li>a</li><li>b</li><li>2 items</li></ul>"
+	boolean ok_empty = without_items == "<ul><li>none</li></ul>"
+	boolean ok_shown = shown == "<section>body</section>"
+	boolean ok_hidden = hidden == "<section style='display:none'>body</section>"
+	if ok_iterate and ok_empty and ok_shown and ok_hidden
+		printl("PASS: ui-html-block-directives")
+	else
+		printl("FAIL: ui-html-block-directives " + with_items + " | " + without_items + " | " + shown + " | " + hidden)
+
+functions:
+	string items(list<string> xs)
+		html:
+			<ul>
+				<li cl-iterate="x in xs">{x}</li>
+				<li cl-if="xs.length() == 0">none</li>
+				<li cl-else>{xs.length().toString()} items</li>
+			</ul>
+
+	string panel(boolean open)
+		html:
+			<section cl-show="open">body</section>

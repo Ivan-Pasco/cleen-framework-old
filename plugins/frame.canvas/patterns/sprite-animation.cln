@@ -60,9 +60,9 @@ canvasScene: width=800 height=400 fps=60
 			canvas.sprite "hero" x=heroX y=heroY state="hero-jump"
 		transitions:
 			"idle" -> "walk" when velX != 0.0 and on_ground
-			"walk" -> "run" when Math.abs(velX) > 150.0
+			"walk" -> "run" when math.abs(velX) > 150.0
 			"walk" -> "idle" when velX == 0.0
-			"run" -> "walk" when Math.abs(velX) <= 150.0
+			"run" -> "walk" when math.abs(velX) <= 150.0
 			"run" -> "idle" when velX == 0.0
 			"idle" -> "jump" when on_ground == false
 			"walk" -> "jump" when on_ground == false
@@ -75,13 +75,13 @@ canvasScene: width=800 height=400 fps=60
 
 	onFrame: param="dt"
 		velX = 0.0
-		if input.keyDown("ArrowLeft")
+		if input.keyDown("ArrowLeft") == 1
 			velX = -speed
 			facing_right = false
-		if input.keyDown("ArrowRight")
+		if input.keyDown("ArrowRight") == 1
 			velX = speed
 			facing_right = true
-		if input.keyDown("ShiftLeft")
+		if input.keyDown("ShiftLeft") == 1
 			if velX != 0.0
 				velX = velX * 1.6  // run
 

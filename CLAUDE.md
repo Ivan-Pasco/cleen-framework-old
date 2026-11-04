@@ -6,7 +6,7 @@ This file guides work on the Clean Language Frame framework. Frame provides the 
 
 ## What lives here
 
-- `plugins/frame.*/` — the 9 Clean Language plugins (see catalog below)
+- `plugins/frame.*/` — the 10 Clean Language plugins (see catalog below)
 - `examples/` — example Frame apps
 - `tests/` — test suites (see `tests/CONVENTIONS.md`)
 - `scripts/` — build tooling
@@ -51,7 +51,7 @@ Plugins are WASM modules that export a function named `expand`. It receives a JS
 No functions that return dummy values (`return 0`, `return false`, `todo!()`). All plugin code must be fully functional.
 
 ### JavaScript is never acceptable in Clean projects
-Never write `<script>` tags, `.js` files, or inline DOM API calls in examples or plugin templates. If a UI interaction isn't expressible via `_ui_*` bridge functions in `frame.ui`, call `report_error` with component `frame.ui` and stop. JavaScript simulations lie about framework capabilities and diverge from real behavior. Static HTML/CSS only; dynamic behavior comes from compiled Clean.
+Never write `<script>` tags, `.js` files, or inline DOM API calls in examples or plugin templates. If a UI interaction isn't expressible via `_ui_*` bridge functions in `frame.ui`, file a GitHub issue (label `compiler-old`) in `Ivan-Pasco/cleen-framework-old` for frame.ui and stop. JavaScript simulations lie about framework capabilities and diverge from real behavior. Static HTML/CSS only; dynamic behavior comes from compiled Clean.
 
 ### Folder ownership
 Plugins claim folders via `plugin.toml [owned_folders]`. Files inside owned folders get the plugin's DSL applied automatically (`implicit_import = true`). See `foundation/docs/framework/PROJECT_STRUCTURE.md` for the ownership table.
@@ -69,10 +69,10 @@ You are a Team Developer AI. When you discover something in another component, u
 
 | What you found | Channel |
 |---|---|
-| A bug (crash, wrong output, spec violation, regression) | `report_error` MCP tool (MANDATORY) |
-| A design proposal, schema request, architectural ask, or handoff | `/team-prompt` skill (publishes to https://errors.cleanlanguage.dev/prompts) |
+| A bug (crash, wrong output, spec violation, regression) | GitHub issue labeled `compiler-old` in the repo that owns the fix (`Ivan-Pasco/clean-language-compiler-old`, `clean-server-old`, `cleen-framework-old`, `clean-language-manager-old`); close it with `fixes #N` in the commit message. The errors dashboard and `report_error` are offline. |
+| A design proposal, schema request, architectural ask, or handoff | GitHub issue in the owning repo (the errors.cleanlanguage.dev prompts board is offline) |
 
-Do NOT edit code in other components directly. Do NOT write bug reports as markdown files — they are invisible to the dashboard, don't notify users on fix, and can't be queried via `list_component_bugs`.
+Do NOT edit code in other components directly. Do NOT write bug reports as markdown files — file an issue so the fix can close it.
 
 Full policy: `foundation/docs/governance/USER_TYPES_AND_ERROR_REPORTING.md`.
 
@@ -88,19 +88,26 @@ When you change bridge signatures, update:
 
 ## Common commands
 
+The old toolchain lives in `~/.cleen/bin` (`cln`, `clean-server`); plain `cln` on PATH is a different toolchain. The scripts default to `~/.cleen/bin` (override with `CLEEN_CLN` / `CLEEN_SERVER`).
+
 ```bash
-# Run tests
-cargo test
+# Build one plugin / all plugins
+(cd plugins/frame.data && CLN_COMPILER=~/.cleen/bin/cln bash build.sh)
+./scripts/build-all-plugins.sh
 
-# Format
-cargo fmt
+# Install this checkout's plugins into ~/.cleen/plugins
+./scripts/install-plugins.sh
 
-# Lint
-cargo clippy -- -D warnings
+# Run all framework tests, or one suite
+./scripts/run-framework-tests.sh
+./scripts/run-framework-tests.sh unit/plugins/data
+
+# Compile-check plugins/*/tests
+./scripts/test-plugins.sh
 ```
 
 ## Getting help
 
 1. Check the relevant plugin spec at `foundation/docs/framework/plugins/<name>.md`.
 2. Check the plugin contract at `foundation/spec/framework/plugin-contract.md`.
-3. Search open bugs via the `list_component_bugs` MCP tool.
+3. Search open bugs: `gh issue list -R Ivan-Pasco/cleen-framework-old --label compiler-old`.

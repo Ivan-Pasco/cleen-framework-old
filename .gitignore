@@ -30,8 +30,8 @@ Thumbs.db
 *.tmp
 *.log
 
-# Test results
-/tests/results/
+# Test results and compiled test output (scripts/run-framework-tests.sh)
+/tests/framework/output/
 *.test
 
 # Node (if needed for tooling)
@@ -51,5 +51,5 @@ plugins/frame.ui/scripts/node_modules/
 plugins/frame.ui/scripts/package-lock.json
 plugins/frame.ui/.canary-run/
 
-# Claude Code per-session state (auto-generated, not repo state)
+# Per-session editor-agent state (auto-generated, not repo state)
 .claude/scheduled_tasks.lock

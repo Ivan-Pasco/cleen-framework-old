@@ -1,17 +1,19 @@
 name: Test Frame Framework
 
-# Runs the real-bridge test suite (tests/framework/runtime/) on every push and PR.
-# Legacy placeholder tests under tests/framework/{unit,integration,e2e}/ are NOT
-# gated here; they will be migrated into runtime/ over Phases 2–5 of the
-# remediation plan and added to this workflow's scope as they are converted.
+# Runs the framework test suites against the plugins in THIS checkout (the
+# committed plugin.wasm files), the latest old-toolchain compiler and the
+# latest clean-server:
+#   - tests/framework/{runtime,unit,integration,e2e} via run-framework-tests.sh
+#   - the dev-capture endpoint shell tests
+#   - plugins/*/tests compile checks via test-plugins.sh
+#   - every example compiled, booted and requested via smoke-examples.sh
+#   - the browser runtime JSON bridge tests (node)
 
 on:
   push:
     branches: [main]
     paths-ignore:
       - '**.md'
-      - 'documents/**'
-      - 'foundation/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -21,8 +23,7 @@ permissions:
 
 jobs:
   # Fail-fast gate: block any PR/push containing placeholder tests before we
-  # spend runner minutes compiling anything. See
-  # system-documents/testing/TEST_STRATEGY.md §5.
+  # spend runner minutes compiling anything. See tests/CONVENTIONS.md §6a.
   placeholder-guard:
     name: Test placeholder guard
     runs-on: ubuntu-latest
@@ -37,103 +38,77 @@ jobs:
       - name: Run placeholder guard
         run: python3 scripts/check-test-placeholders.py
 
-  runtime-tests:
-    name: Runtime tests (real bridge)
+  framework-tests:
+    name: Framework tests (real bridge)
     runs-on: ubuntu-latest
     needs: placeholder-guard
-
-    # Postgres service for frame.data integration tests (Phase 2+).
-    # SQLite in-memory is the default for unit tests; Postgres covers parity.
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: cleen_test
-          POSTGRES_PASSWORD: cleen_test
-          POSTGRES_DB: cleen_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cleen_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      CLEEN_TEST_PG_URL: postgres://cleen_test:cleen_test@localhost:5432/cleen_test
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cleen (Clean Language version manager)
-        run: |
-          curl -fsSL https://github.com/Ivan-Pasco/clean-language-manager-old/releases/latest/download/install.sh | bash
-          # cleen itself goes to ~/.local/bin; cln (the compiler) goes to ~/.cleen/bin after `cleen install`.
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.cleen/bin" >> "$GITHUB_PATH"
-
       - name: Install latest Clean Language compiler
         run: |
           set -euo pipefail
           # The old compiler lives at Ivan-Pasco/clean-language-compiler-old (the
-          # original name now belongs to the new Clean Language project),
-          # and older `cleen install` releases do not follow
-          # the 301 redirect on asset downloads. Bypass cleen entirely and
-          # place the binary where `cleen use` expects it, so downstream
-          # `cleen frame install` still works. Resolve the tag ourselves so
-          # any resolution failure is loud.
+          # original name now belongs to the new Clean Language project).
+          # Resolve the tag ourselves so any resolution failure is loud.
           tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/clean-language-compiler-old/releases/latest | jq -r '.tag_name')"
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Failed to resolve latest compiler tag from GitHub API"
             exit 1
           fi
           ver="${tag#v}"
-          echo "Installing Clean Language compiler $ver (from $tag) directly from Releases"
+          echo "Installing Clean Language compiler $ver (from $tag)"
           mkdir -p "$HOME/.cleen/versions/$ver" "$HOME/.cleen/bin"
           curl -fsSL -o "$HOME/.cleen/versions/$ver/cln" \
             "https://github.com/Ivan-Pasco/clean-language-compiler-old/releases/download/$tag/cln-linux-x86_64"
           chmod +x "$HOME/.cleen/versions/$ver/cln"
           ln -sf "$HOME/.cleen/versions/$ver/cln" "$HOME/.cleen/bin/cln"
-          # Mark the active version so cleen commands (e.g. `cleen frame install`)
-          # resolve against it.
-          # cleen looks for either .active-version or active-version depending on version.
           echo "$ver" > "$HOME/.cleen/active-version"
-          echo "$ver" > "$HOME/.cleen/.active-version"
-          cln --version
+          "$HOME/.cleen/bin/cln" --version
 
-      - name: Install latest Frame plugins
+      - name: Install latest clean-server
         run: |
           set -euo pipefail
-          # cleen frame install requires cleen to know about the compiler via
-          # its own state, which we bypassed above. Download the frame plugin
-          # bundle directly and extract into ~/.cleen/plugins/.
-          frame_tag="$(curl -fsSL https://api.github.com/repos/Ivan-Pasco/cleen-framework-old/releases/latest | jq -r '.tag_name')"
-          frame_ver="${frame_tag#v}"
-          echo "Installing Frame plugins $frame_ver (from $frame_tag)"
-          mkdir -p "$HOME/.cleen/plugins"
-          curl -fsSL -o /tmp/frame-plugins.tar.gz \
-            "https://github.com/Ivan-Pasco/cleen-framework-old/releases/download/$frame_tag/frame-plugins-$frame_ver.tar.gz"
-          tar -xzf /tmp/frame-plugins.tar.gz -C "$HOME/.cleen/plugins"
-          ls "$HOME/.cleen/plugins/"
-
-      - name: Download clean-server (linux x64 binary)
-        run: |
-          mkdir -p "$HOME/.cleen/server"
+          mkdir -p "$HOME/.cleen/bin"
           curl -fsSL -o /tmp/clean-server.tar.gz \
             https://github.com/Ivan-Pasco/clean-server-old/releases/latest/download/clean-server-linux-x64.tar.gz
-          tar -xzf /tmp/clean-server.tar.gz -C "$HOME/.cleen/server"
-          chmod +x "$HOME/.cleen/server/clean-server"
-          echo "CLEEN_SERVER=$HOME/.cleen/server/clean-server" >> "$GITHUB_ENV"
+          tar -xzf /tmp/clean-server.tar.gz -C "$HOME/.cleen/bin" clean-server
+          chmod +x "$HOME/.cleen/bin/clean-server"
+          "$HOME/.cleen/bin/clean-server" --version
 
-      - name: Print toolchain versions
+      - name: Install Frame plugins from this checkout
+        # Tests the committed plugin.wasm files, not the latest release (which
+        # may still be uploading when a tag push and a main push race).
+        run: ./scripts/install-plugins.sh
+
+      - name: Framework suites (runtime, unit, integration, e2e)
+        run: ./scripts/run-framework-tests.sh
+
+      - name: Dev-capture endpoint tests
         run: |
-          cleen --version || true
-          cln --version || true
-          "$CLEEN_SERVER" --version || true
+          # Each script ends with one PASS:/FAIL: verdict line (a SKIP: line
+          # means a prerequisite is missing, which is a failure in CI).
+          failed=0
+          for t in tests/framework/integration/dev-capture/*-test.sh; do
+            out="$(bash "$t" 2>&1)" || true
+            echo "$out"
+            echo "$out" | tail -1 | grep -q '^PASS:' || failed=1
+          done
+          exit "$failed"
 
-      - name: Run framework runtime tests
-        run: ./scripts/run-framework-tests.sh runtime
+      - name: Plugin compile checks (plugins/*/tests)
+        run: ./scripts/test-plugins.sh
+
+      - name: Canvas runtime tests (node)
+        run: |
+          node plugins/frame.canvas/runtime/tests/runtime-bridges.test.mjs
+          node plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs
+
+      - name: Example smoke tests (compile, boot, request routes)
+        run: ./scripts/smoke-examples.sh
 
   json-bridge-conformance:
     name: JSON bridge conformance (JSONTestSuite)

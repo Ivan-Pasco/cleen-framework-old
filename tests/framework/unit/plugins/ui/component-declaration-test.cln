@@ -1,0 +1,46 @@
+// Test: frame.ui — component declarations (frame-ui.ebnf component_block).
+//
+//   - `component UserCard:` (named class form) emits a class named UserCard.
+//     Regression: the class was always named `Component`, so `UserCard()`
+//     was an undefined type (SEM007).
+//   - `state.x` in a template reads the state field x, while template text
+//     is left as written. Regression: every `state.` in the template was
+//     removed, so "Real estate." rendered as "Real e".
+//   - A component with client != off builds its frontend.wasm without
+//     declaring onMount() (lifecycle.md §3.3: client_init calls onMount()
+//     on every hydrated component). Regression: the client build failed with
+//     "Method 'onMount' not found", and _html_escape was declared server-only
+//     although the browser loader provides it (BRIDGE-HOST-MISMATCH).
+
+plugins:
+	frame.ui
+
+component UserCard:
+	inputs:
+		string name
+	state:
+		string label
+	html:
+		<p>Real estate. {state.label}: {name}</p>
+
+component: tag="live-badge" client="on"
+	state:
+		integer count
+	html:
+		<b>{state.count.toString()}</b>
+
+page BadgePage:
+	<live-badge client="on"></live-badge>
+
+start:
+	UserCard card = UserCard()
+	card.name = "ann"
+	string card_out = card.render()
+	BadgePage page = BadgePage()
+	string page_out = page.render()
+	boolean ok_card = card_out == "<p>Real estate. : ann</p>"
+	boolean ok_page = page_out == "<div data-island='live-badge' data-client='on'><b>0</b></div>"
+	if ok_card and ok_page
+		printl("PASS: ui-component-declaration")
+	else
+		printl("FAIL: ui-component-declaration " + card_out + " | " + page_out)

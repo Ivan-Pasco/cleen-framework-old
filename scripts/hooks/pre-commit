@@ -2,7 +2,7 @@
 # Clean Framework pre-commit hook.
 #
 # Time budget: <15s. This runs on every `git commit`.
-# See system-documents/testing/TEST_STRATEGY.md §4 for the layer mapping.
+# Test rules: tests/CONVENTIONS.md.
 #
 # Layers fired:
 #   1. Placeholder guard on staged .cln test files
@@ -38,7 +38,7 @@ if [ -n "$STAGED_TESTS" ]; then
     info "Checking $(echo "$STAGED_TESTS" | wc -l | tr -d ' ') staged test file(s) for placeholder patterns..."
     # shellcheck disable=SC2086
     if ! python3 scripts/check-test-placeholders.py $STAGED_TESTS; then
-        fail "Placeholder patterns found in staged tests. See system-documents/testing/TEST_STRATEGY.md §5."
+        fail "Placeholder patterns found in staged tests. See tests/CONVENTIONS.md §6a."
     fi
     ok "Placeholder guard passed."
 else
@@ -46,22 +46,22 @@ else
 fi
 
 # --- Layer 2: runtime smoke test (best-effort) ---
-# Only run if the compiler and server are both installed. Missing tools should
-# not block a commit — CI will catch the runtime layer regardless.
+# Only run if the old-toolchain compiler and server are both installed
+# (~/.cleen/bin, overridable with CLEEN_CLN / CLEEN_SERVER — the same
+# defaults scripts/run-framework-tests.sh uses). Plain `cln` on PATH is a
+# different toolchain and is never used here. Missing tools should not block
+# a commit — CI will catch the runtime layer regardless.
+CLN_BIN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+SERVER_BIN="${CLEEN_SERVER:-$HOME/.cleen/bin/clean-server}"
 SMOKE="tests/framework/runtime/smoke-test.cln"
-if [ -f "$SMOKE" ] && command -v cln >/dev/null 2>&1; then
-    if [ -x "${CLEEN_SERVER:-$HOME/.cleen/server/clean-server}" ] || \
-       [ -x "$HOME/Documents/Dev/Clean Language/clean-server/target/release/clean-server" ]; then
-        info "Running runtime smoke test..."
-        if ! ./scripts/run-framework-tests.sh runtime >/dev/null 2>&1; then
-            fail "Runtime smoke test failed. Fix the toolchain before committing."
-        fi
-        ok "Runtime smoke passed."
-    else
-        info "clean-server not found locally; skipping smoke run (CI will cover it)."
+if [ -f "$SMOKE" ] && [ -x "$CLN_BIN" ] && [ -x "$SERVER_BIN" ]; then
+    info "Running runtime smoke test..."
+    if ! ./scripts/run-framework-tests.sh runtime >/dev/null 2>&1; then
+        fail "Runtime smoke test failed. Fix the toolchain before committing."
     fi
+    ok "Runtime smoke passed."
 else
-    info "cln not found locally; skipping smoke run (CI will cover it)."
+    info "cln or clean-server not found in ~/.cleen/bin; skipping smoke run (CI will cover it)."
 fi
 
 ok "pre-commit checks passed."

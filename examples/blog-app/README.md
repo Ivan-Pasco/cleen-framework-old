@@ -1,101 +1,88 @@
-# Frame Blog - Full-Stack Example Application
+# Blog App Example
 
-A complete blog application built with the Frame Framework, demonstrating all core features including SSR, Islands Architecture, authentication, database ORM, validation, and theming.
-
-## Features Demonstrated
-
-### 🚀 Framework Features
-
-- **Server-Side Rendering (SSR)** - Fast initial page loads
-- **Islands Architecture** - Selective client hydration for interactivity
-- **Authentication** - Session-based auth with login/logout
-- **Database ORM** - Type-safe database queries and relationships
-- **Form Validation** - Client and server-side validation
-- **Theming** - Multiple themes with dark mode support
-- **API Generation** - OpenAPI spec and TypeScript SDK
-- **Migrations** - Database schema management
-
-### 📝 Application Features
-
-- User registration and authentication
-- Create, read, update, delete blog posts
-- Comment system with nested replies
-- User profiles
-- Tag-based post filtering
-- Search functionality
-- Responsive design
-- Dark mode toggle
+A blog with users, posts and comments: HTML pages and components (frame.ui), a JSON API (frame.server), data models (frame.data) and session auth with roles (frame.auth).
 
 ## Project Structure
 
 ```
 blog-app/
-├── src/
-│   ├── main.cln           # Application entry point
-│   ├── models/
-│   │   ├── User.cln       # User data model
-│   │   ├── Post.cln       # Blog post model
-│   │   └── Comment.cln    # Comment model
-│   ├── components/
-│   │   ├── Header.cln     # Site header with nav
-│   │   ├── PostCard.cln   # Post preview card
-│   │   ├── PostList.cln   # List of posts (island)
-│   │   ├── CommentForm.cln # Comment submission form (island)
-│   │   └── ThemeToggle.cln # Theme switcher (island)
-│   └── pages/
-│       ├── HomePage.cln   # Landing page
-│       ├── PostPage.cln   # Single post view
-│       ├── LoginPage.cln  # Login form
-│       └── ProfilePage.cln # User profile
-├── migrations/
-│   ├── 001_create_users.sql
-│   ├── 002_create_posts.sql
-│   └── 003_create_comments.sql
-└── README.md (this file)
+├── main.cln                          # Package manifest (target: server)
+└── app/
+    ├── auth/auth.cln                 # auth: session and roles
+    ├── data/
+    │   ├── migrations/               # Reference SQL schema for users, posts, comments
+    │   │   ├── 001_create_users.sql
+    │   │   ├── 002_create_posts.sql
+    │   │   └── 003_create_comments.sql
+    │   └── models/
+    │       ├── User.cln
+    │       ├── Post.cln
+    │       └── Comment.cln
+    ├── server/
+    │   ├── main.cln                  # start: migrate() for each model
+    │   └── api/
+    │       ├── auth/login.cln, register.cln, logout.cln
+    │       ├── posts/index.cln, [id].cln
+    │       ├── comments/index.cln, [id].cln
+    │       ├── me.cln
+    │       ├── user.cln
+    │       └── admin/stats.cln, users.cln, user.cln
+    └── ui/web/
+        ├── components/
+        │   ├── Header.cln            # <app-header>
+        │   ├── Footer.cln            # <app-footer>
+        │   └── PostCard.cln          # <post-card>
+        └── pages/
+            ├── index.html            # /
+            ├── posts.html            # /posts
+            ├── post/[slug].html      # /post/:slug
+            ├── login.html            # /login
+            ├── register.html         # /register
+            └── dashboard.html        # /dashboard
 ```
 
-## Getting Started
+## Build and Run
 
-### Prerequisites
-
-- Frame CLI installed
-- SQLite or PostgreSQL database
-
-### Installation
-
-1. **Create the database:**
-   ```bash
-   frame db:create
-   ```
-
-2. **Run migrations:**
-   ```bash
-   frame db:migrate
-   ```
-
-3. **Start development server:**
-   ```bash
-   frame serve
-   ```
-
-4. **Visit the application:**
-   Open http://localhost:3000 in your browser
-
-### Generate API Documentation
-
-Generate OpenAPI spec and TypeScript SDK:
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Generate OpenAPI 3.1 specification
-frame api:openapi openapi.json
+cd examples/blog-app
+~/.cleen/bin/cln compile main.cln -o blog-app.wasm --plugins
+DATABASE_URL=sqlite::memory: JWT_SECRET=dev-secret \
+  ~/.cleen/bin/clean-server blog-app.wasm --port 3000
 
-# Generate TypeScript SDK for frontend
-frame api:sdk typescript src/api-client.ts
+curl http://localhost:3000/api/posts
 ```
 
-## Key Code Examples
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
 
-### 1. Data Models with Relationships
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh blog-app` from the framework root.
+
+`app/server/main.cln` creates the tables on start with `Model.migrate()`. Register and login call `auth.setSession(...)`, which sets the `blog.sid` session cookie.
+
+## API Endpoints
+
+| Method | Path | Guard |
+|--------|------|-------|
+| POST | `/api/auth/register` | public |
+| POST | `/api/auth/login` | public |
+| POST | `/api/auth/logout` | `[user, admin]` |
+| GET | `/api/posts` | public |
+| GET | `/api/posts/:id` | public |
+| POST | `/api/posts` | `[user, admin, editor]` |
+| PUT / DELETE | `/api/posts/:id` | `[user, admin, editor]` |
+| GET | `/api/comments` | public |
+| POST | `/api/comments` | `[user, admin]` |
+| DELETE | `/api/comments/:id` | `[user, admin]` |
+| GET / PUT | `/api/me` | `[user, admin]` |
+| GET | `/api/user` | `[user, admin]` |
+| GET | `/api/admin/stats` | `[admin]` |
+| GET | `/api/admin/users` | `[admin]` |
+| DELETE | `/api/admin/user` | `[admin]` |
+
+## Key Code
+
+### Data model with indexes and relations
 
 ```clean
 // app/data/models/Post.cln
@@ -119,10 +106,9 @@ data Post:
 		author: belongs_to User on author_id
 ```
 
-### 2. API Endpoints
+### Endpoints
 
-Reads use the query DSL; writes construct or load an entity and go through
-`Database.save` / `Database.delete`.
+Reads use the query DSL; writes load an entity and go through `Database.save` / `Database.delete`.
 
 ```clean
 // app/server/api/posts/[id].cln
@@ -147,7 +133,7 @@ endpoints:
 		return jsonResponse("{\"ok\": true}")
 ```
 
-### 3. Components
+### Component
 
 ```clean
 // app/ui/web/components/PostCard.cln
@@ -166,7 +152,7 @@ component: tag="post-card"
 		</article>
 ```
 
-### 4. Authentication and Roles
+### Auth and roles
 
 ```clean
 // app/auth/auth.cln
@@ -183,80 +169,4 @@ auth:
 		user: ["comments.write"]
 ```
 
-Routes are guarded with inline role modifiers after the path:
-
-```clean
-endpoints:
-	POST "/api/posts" [user, admin, editor]:
-		...
-```
-
-## Architecture Highlights
-
-### SSR + Islands = Best of Both Worlds
-
-- **Server-Side Rendering** provides fast initial load and SEO
-- **Islands Architecture** adds interactivity only where needed
-- Non-interactive components stay static HTML
-- Interactive islands hydrate on client (visible, idle, or on-load)
-
-### Type-Safe Full Stack
-
-- Database schema → Clean models → TypeScript SDK
-- Single source of truth for data types
-- Compile-time type checking prevents runtime errors
-
-### Security by Default
-
-- CSRF protection on all POST/PUT/PATCH/DELETE
-- SQL injection prevention with parameterized queries
-- XSS prevention with automatic HTML escaping
-- HTTP-only secure cookies for sessions
-
-## Performance
-
-This example demonstrates Frame's performance characteristics:
-
-- **< 50ms** First paint for SSR pages
-- **< 100ms** API response times
-- **Minimal JavaScript** Only islands need client-side JS
-- **Progressive Enhancement** Works without JavaScript
-
-## Learning Path
-
-1. **Start with `src/main.cln`** - See the application entry point
-2. **Explore `models/`** - Understand data modeling
-3. **Read `components/`** - Learn component patterns
-4. **Study `endpoints:`** - API route definitions
-5. **Check `migrations/`** - Database schema evolution
-
-## Deployment
-
-Build for production:
-
-```bash
-# Build for server deployment
-frame build --target=server
-
-# Build for web (WASM)
-frame build --target=web
-
-# Build for mobile
-frame build --target=ios
-frame build --target=android
-```
-
-## Further Reading
-
-- [Frame Framework Documentation](../../documents/README.md)
-- [Islands Architecture Guide](../../system-documents/islands-architecture.md)
-- [Authentication Guide](../../system-documents/authentication-guide.md)
-- [Database ORM Guide](../../documents/specification/04_frame_data.md)
-
-## License
-
-MIT License - See LICENSE file for details
-
----
-
-**This example demonstrates production-ready patterns for building modern web applications with Frame Framework.**
+Routes are guarded with role lists after the path, e.g. `POST "/api/posts" [user, admin, editor]:`.

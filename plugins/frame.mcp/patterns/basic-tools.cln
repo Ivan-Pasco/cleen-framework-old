@@ -1,7 +1,12 @@
 // patterns/basic-tools.cln
-// MCP server with pure computation tools (no database dependency).
-// Use this pattern when your tools perform calculations, text processing,
-// or call external APIs — no frame.data required.
+// Pattern: basic-tools
+// MCP server with pure computation tools — no database, so no frame.data.
+// Use when: tools compute, transform text, or wrap other plugin calls.
+// Anti-pattern: adding database queries just to follow a pattern — keep tool
+//   bodies simple when nothing needs to persist.
+
+plugins:
+	frame.mcp
 
 mcp "math-tools":
 	version: "1.0.0"
@@ -9,47 +14,41 @@ mcp "math-tools":
 	transport: stdio
 
 	tool "add":
-		description: "Add two numbers together and return the result"
+		description: "Add two numbers and return the sum"
 		params:
 			a: number
 			b: number
-		number result = a + b
-		return mcpJson(result.toString())
+		return mcpJson(params.a + params.b)
 
 	tool "multiply":
-		description: "Multiply two numbers together and return the result"
+		description: "Multiply two numbers and return the product"
 		params:
 			a: number
 			b: number
-		number result = a * b
-		return mcpJson(result.toString())
+		return mcpJson(params.a * params.b)
 
 	tool "greet":
-		description: "Generate a personalized greeting in the requested language"
+		description: "Generate a greeting in the requested language (english, spanish, french, german)"
 		params:
 			name: string
 			language: string = "english"
-		if language == "spanish"
-			return mcpText("Hola, " + name + "!")
-		if language == "french"
-			return mcpText("Bonjour, " + name + "!")
-		if language == "german"
-			return mcpText("Hallo, " + name + "!")
-		if language == "italian"
-			return mcpText("Ciao, " + name + "!")
-		if language == "portuguese"
-			return mcpText("Olá, " + name + "!")
-		return mcpText("Hello, " + name + "!")
+		if params.language == "spanish"
+			return mcpText("Hola, " + params.name + "!")
+		if params.language == "french"
+			return mcpText("Bonjour, " + params.name + "!")
+		if params.language == "german"
+			return mcpText("Hallo, " + params.name + "!")
+		return mcpText("Hello, " + params.name + "!")
 
 	tool "word_count":
-		description: "Count the approximate number of words in a text string"
+		description: "Count the words in a text string"
 		params:
 			text: string
 		integer count = 0
 		integer i = 0
 		boolean in_word = false
-		while i < text.length()
-			string ch = text.substring(i, i + 1)
+		while i < params.text.length()
+			string ch = params.text.substring(i, i + 1)
 			boolean is_space = ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
 			if not is_space and not in_word
 				count = count + 1
@@ -57,29 +56,20 @@ mcp "math-tools":
 			if is_space
 				in_word = false
 			i = i + 1
-		return mcpJson(count.toString())
-
-	resource "info://version":
-		description: "Server version and capability information"
-		mimeType: "application/json"
-		return mcpJson("{\"name\":\"math-tools\",\"version\":\"1.0.0\",\"tools\":[\"add\",\"multiply\",\"greet\",\"word_count\"]}")
+		return mcpJson(count)
 
 	resource "info://supported-languages":
-		description: "List of languages supported by the greet tool"
-		mimeType: "application/json"
-		return mcpJson("[\"english\",\"spanish\",\"french\",\"german\",\"italian\",\"portuguese\"]")
+		description: "Languages supported by the greet tool"
+		list<string> languages = ["english", "spanish", "french", "german"]
+		return mcpJson(languages)
+
+	resource "info://about":
+		description: "What this server does, as plain text"
+		return mcpText("math-tools adds, multiplies, greets and counts words.")
 
 	prompt "explain_calculation":
-		description: "Generate a prompt asking an AI to explain a mathematical concept"
+		description: "Ask the AI to explain a mathematical concept for an audience level"
 		args:
 			concept: string
 			level: string = "beginner"
-		return "Explain the mathematical concept of '" + concept + "' for a " + level + " audience. Use simple, concrete examples and avoid abstract jargon where possible. Include one worked example showing how the concept applies in a real-world scenario."
-
-	prompt "write_tutorial":
-		description: "Generate a prompt to write a step-by-step tutorial on a programming topic"
-		args:
-			topic: string
-			language: string = "Python"
-			experience_level: string = "beginner"
-		return "Write a step-by-step tutorial on '" + topic + "' using " + language + " for a " + experience_level + " programmer. Include: (1) a brief introduction explaining what the concept is and why it matters, (2) prerequisites the reader should know, (3) at least three progressively more complex code examples with line-by-line explanations, (4) common mistakes and how to avoid them, and (5) a summary of what was learned and suggested next steps."
+		return "Explain the mathematical concept of '{{ args.concept }}' for a {{ args.level }} audience. Use simple, concrete examples and include one worked example."

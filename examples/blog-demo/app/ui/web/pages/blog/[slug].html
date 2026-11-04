@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Post: {{slug}} | Blog Demo</title>
+	<title>Post: { slug } | Blog Demo</title>
 	<link rel="stylesheet" href="/public/css/style.css">
 </head>
 <body>
@@ -13,12 +13,12 @@
 		<article class="post">
 			<header>
 				<a href="/blog" class="back-link">Back to Blog</a>
-				<h1>{{slug}}</h1>
+				<h1>{ slug }</h1>
 				<div class="meta">Posted in Demo Category</div>
 			</header>
 
 			<div class="content">
-				<p>This is the content for the blog post with slug: <strong>{{slug}}</strong></p>
+				<p>This is the content for the blog post with slug: <strong>{ slug }</strong></p>
 				<p>In a real application, you would fetch this from a database.</p>
 				<p>The slug parameter is automatically extracted from the URL by the framework.</p>
 			</div>

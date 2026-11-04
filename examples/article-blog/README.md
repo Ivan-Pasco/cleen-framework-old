@@ -1,138 +1,95 @@
 # Article Blog Example
 
-A beautiful article blog demonstrating the Frame Data Plugin with an editorial magazine aesthetic.
+An editorial-style article blog built with frame.ui pages and components, a frame.data `Article` model and a small JSON API.
 
-## Features
+## Project Structure
 
-- **Data Models**: Authors, Articles, Tags with relationships
-- **CRUD Operations**: Full database operations using Frame Data
-- **Responsive Design**: Mobile-first, works on all devices
-- **Editorial Aesthetic**: Sophisticated typography, elegant layouts
-- **Animations**: Smooth scroll-triggered card animations
-
-## Prerequisites
-
-- Clean Language Compiler v0.15.0+
-- Clean Server v1.0.0+
-- A database (SQLite for development)
-
-## Running the Example
-
-1. **Compile the application**:
-   ```bash
-   cln compile main.cln -o app.wasm --plugins
-   ```
-
-2. **Start the server with SQLite**:
-   ```bash
-   DATABASE_URL="sqlite:///tmp/blog.db" clean-server app.wasm --port 3000
-   ```
-
-3. **Open in browser**:
-   ```
-   http://localhost:3000
-   ```
-
-## Data Models
-
-### Author
-```clean
-data Author
-    integer id : pk, auto
-    string  name : required
-    string  bio
-    string  avatar
-    datetime createdAt : default=now
+```
+article-blog/
+├── main.cln                         # Package manifest (target: server)
+├── app/
+│   ├── data/models/Article.cln      # Article data model
+│   ├── server/
+│   │   ├── main.cln                 # start: Article.migrate()
+│   │   └── api/articles.cln         # /api/articles endpoints
+│   └── ui/web/
+│       ├── components/
+│       │   ├── Header.cln           # <site-header>
+│       │   ├── Footer.cln           # <site-footer>
+│       │   └── article-card.cln     # <article-card>
+│       └── pages/
+│           ├── index.html           # /
+│           ├── about.html           # /about
+│           └── articles/
+│               ├── index.html       # /articles
+│               └── [slug].html      # /articles/:slug
+└── public/css/main.css
 ```
 
-### Article
-```clean
-data Article
-    integer id : pk, auto
-    string  title : required
-    string  slug : unique, required
-    string  excerpt
-    string  content : required
-    string  coverImage
-    string  category
-    integer readTime = 5
-    boolean published = false
-    Author  author
-    datetime publishedAt
-    datetime createdAt : default=now
+## Build and Run
+
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
+
+```bash
+cd examples/article-blog
+~/.cleen/bin/cln compile main.cln -o article-blog.wasm --plugins
+DATABASE_URL="sqlite:///tmp/blog.db" ~/.cleen/bin/clean-server article-blog.wasm --port 3000
 ```
 
-## Endpoints
+Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
+
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh article-blog` from the framework root.
+
+`app/server/main.cln` creates the tables on start with `Model.migrate()`.
+
+## Data Model
+
+`app/data/models/Article.cln`:
+
+```clean
+data Article:
+	fields:
+		integer id primary generated
+		string title required
+		string slug required unique
+		string excerpt
+		string content
+		string category
+		string author
+		integer read_time
+		string created_at
+```
+
+## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Home page with featured articles |
-| GET | `/articles` | Paginated article list |
-| GET | `/articles/{slug}` | Article detail page |
-| GET | `/api/articles` | JSON API for articles |
-| GET | `/api/articles/{id}` | JSON API for single article |
+| GET | `/api/articles` | All articles, newest first |
+| GET | `/api/articles/:slug` | One article by slug |
 
-## Database Operations Demonstrated
+## Queries Used
 
-### Insert
+From `app/server/api/articles.cln`:
+
 ```clean
-Author author = Author()
-author.name = "Elena Marchetti"
-author.bio = "Senior Editor"
-Database.save(author)
+list<Article> articles = Article.find:
+	order: created_at desc
+
+Article article = Article.first:
+	where:
+		slug == articleSlug
+onError:
+	return notFound()
 ```
 
-### Find with conditions
-```clean
-list<Article> featured = Article.find:
-    where:
-        published == true
-    order:
-        publishedAt desc
-    limit: 6
-```
+Writes go through `Database.save(entity)`:
 
-### First (single record)
-```clean
-Article? article = Article.first:
-    where:
-        slug == slug
-        published == true
-```
-
-### Count
-```clean
-integer authorCount = Author.count:
-    where:
-        id > 0
-```
-
-## Design Features
-
-- **Typography**: Playfair Display for headlines, Source Serif 4 for body
-- **Color Palette**: Warm paper tones with rust, gold, sage, and navy accents
-- **Texture**: Subtle grain overlay for depth
-- **Animations**: Staggered card reveals, hover effects
-- **Layout**: Asymmetric grid with featured article prominence
-
-## Customization
-
-### Change Categories
-Modify the `category` field values and update the CSS:
-```css
-.category-technology .card-category { color: var(--accent-navy); }
-.category-culture .card-category { color: var(--accent-sage); }
-.category-design .card-category { color: var(--accent-gold); }
-```
-
-### Add New Articles
-Use the Frame Data syntax:
 ```clean
 Article article = Article()
 article.title = "Your Article Title"
 article.slug = "your-article-slug"
-article.excerpt = "Brief description..."
-article.content = "<p>Full HTML content...</p>"
 article.category = "Design"
 article.read_time = 5
 Database.save(article)

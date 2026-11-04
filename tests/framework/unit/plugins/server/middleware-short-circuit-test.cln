@@ -1,0 +1,31 @@
+// Test: frame.server — middleware() route modifier, short-circuit path.
+// Grammar: frame-server.ebnf §3.3 middleware_modifier — a non-empty string
+// returned by a middleware short-circuits the request: it becomes the HTTP
+// response and neither later middleware nor the handler body runs.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	GET "/test" middleware(Deny, Never):
+		printl("FAIL: server-middleware-short-circuit (handler ran after a short-circuit)")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-middleware-short-circuit server ready")
+
+functions:
+	string Deny()
+		string body = httpError(429, "slow down")
+		if body.contains("\"code\":\"HTTP_ERROR\"") and body.contains("slow down")
+			printl("PASS: server-middleware-short-circuit")
+		else
+			printl("FAIL: server-middleware-short-circuit (unexpected envelope: " + body + ")")
+		return body
+
+	string Never()
+		printl("FAIL: server-middleware-short-circuit (later middleware ran after a short-circuit)")
+		return ""

@@ -1,7 +1,8 @@
 // frame.server plugin - HTTP Server DSL
-// Provides: endpoints block with inline route modifiers [guard] cache() middleware()
-// Version: 2.8.0
-// Implements: Frame Server Specification v1.3
+// Provides: endpoints block with inline route modifiers [guard] cache() middleware(),
+// server: configuration, routes: redirects/guards, response helpers.
+// Spec: foundation/spec/framework/grammar/frame-server.ebnf,
+//       foundation/spec/framework/frame-server-semantics.md
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
 
 // ============================================================================
@@ -11,7 +12,7 @@
 //
 // These are env imports provided by the compiler's typed-emission sandbox only.
 // They MUST NOT appear in plugin.toml [bridge].functions — they are sandbox-internal.
-// Count: 21 bridges
+// Count: 22 bridges
 
 external:
 	// Statement constructors (typed-emission.md §3.8)
@@ -54,409 +55,217 @@ external:
 // foundation/spec/plugins/contracts/typed-emission.md §7
 // foundation/spec/plugins/contracts/lifecycle.md §3.1
 //
-// Called once per source file that loads frame.server. Emits the response helper
-// functions via _emit_function typed calls — no string concatenation.
-// All function bodies are plugin-authored so we use typed statement constructors,
-// not _emit_stmt_from_source (which is for user-authored fragments only).
+// Called once per source file that loads frame.server. Emits the response
+// helper functions via _emit_function typed calls — no string concatenation
+// of Clean source. Type handles are single-consumption (typed-emission.md §4
+// clause 2), so every parameter / return type gets a fresh handle.
 
 functions:
 	integer emit_module_helpers_typed(integer ctx, string ctx_json)
-		// Type handles are single-consumption per typed-emission.md §4 clause 2.
-		// Each _emit_function consumes one handle per param + one for the return
-		// type, so every use-site allocates fresh handles instead of caching.
-
-		// ── jsonResponse(data: string) -> string ──
-		// return _http_respond(200, "application/json", data)
-		integer jr_s200 = _expr_int_lit(ctx, 200, 0)
-		integer jr_ct = _expr_string_lit(ctx, "application/json")
-		integer jr_data = _expr_ident(ctx, "data")
-		integer jr_call = _expr_call(ctx, "_http_respond", "[" + jr_s200.toString() + "," + jr_ct.toString() + "," + jr_data.toString() + "]")
-		integer jr_ret = _stmt_return(ctx, jr_call)
-		integer jr_body = _stmt_block(ctx, "[" + jr_ret.toString() + "]")
-		integer jr_p_str = _type_string(ctx)
-		integer jr_r_str = _type_string(ctx)
-		integer jr_err = _emit_function(ctx, "jsonResponse", "[{\"name\":\"data\",\"type_handle\":" + jr_p_str.toString() + "}]", jr_r_str, jr_body, 2)
-		if jr_err != 0
+		// __json_escape first: every error-envelope helper calls it.
+		if emit_json_escape(ctx) != 0
 			return 1
 
-		// ── jsonResponseStatus(data: string, status_code: integer) -> string ──
-		// return _http_respond(status_code, "application/json", data)
-		integer jrs_sc = _expr_ident(ctx, "status_code")
-		integer jrs_ct = _expr_string_lit(ctx, "application/json")
-		integer jrs_data = _expr_ident(ctx, "data")
-		integer jrs_call = _expr_call(ctx, "_http_respond", "[" + jrs_sc.toString() + "," + jrs_ct.toString() + "," + jrs_data.toString() + "]")
-		integer jrs_ret = _stmt_return(ctx, jrs_call)
-		integer jrs_body = _stmt_block(ctx, "[" + jrs_ret.toString() + "]")
-		integer jrs_p_str = _type_string(ctx)
-		integer jrs_p_int = _type_integer(ctx)
-		integer jrs_r_str = _type_string(ctx)
-		integer jrs_err = _emit_function(ctx, "jsonResponseStatus", "[{\"name\":\"data\",\"type_handle\":" + jrs_p_str.toString() + "},{\"name\":\"status_code\",\"type_handle\":" + jrs_p_int.toString() + "}]", jrs_r_str, jrs_body, 2)
-		if jrs_err != 0
+		// ── JSON / HTML / status responses ──
+		integer p1 = _type_string(ctx)
+		integer v = respond_expr(ctx, _expr_int_lit(ctx, 200, 0), "application/json", _expr_ident(ctx, "data"))
+		if emit_return_helper(ctx, "jsonResponse", "[" + param_entry("data", p1) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── htmlResponse(content: string) -> string ──
-		// return _http_respond(200, "text/html", content)
-		integer hr_s200 = _expr_int_lit(ctx, 200, 0)
-		integer hr_ct = _expr_string_lit(ctx, "text/html")
-		integer hr_cont = _expr_ident(ctx, "content")
-		integer hr_call = _expr_call(ctx, "_http_respond", "[" + hr_s200.toString() + "," + hr_ct.toString() + "," + hr_cont.toString() + "]")
-		integer hr_ret = _stmt_return(ctx, hr_call)
-		integer hr_body = _stmt_block(ctx, "[" + hr_ret.toString() + "]")
-		integer hr_p_str = _type_string(ctx)
-		integer hr_r_str = _type_string(ctx)
-		integer hr_err = _emit_function(ctx, "htmlResponse", "[{\"name\":\"content\",\"type_handle\":" + hr_p_str.toString() + "}]", hr_r_str, hr_body, 2)
-		if hr_err != 0
+		p1 = _type_string(ctx)
+		integer p2 = _type_integer(ctx)
+		v = respond_expr(ctx, _expr_ident(ctx, "status_code"), "application/json", _expr_ident(ctx, "data"))
+		if emit_return_helper(ctx, "jsonResponseStatus", "[" + param_entry("data", p1) + "," + param_entry("status_code", p2) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── redirect(url: string) -> string ──
-		// return _http_redirect(302, url)
-		integer rd_s302 = _expr_int_lit(ctx, 302, 0)
-		integer rd_url = _expr_ident(ctx, "url")
-		integer rd_call = _expr_call(ctx, "_http_redirect", "[" + rd_s302.toString() + "," + rd_url.toString() + "]")
-		integer rd_ret = _stmt_return(ctx, rd_call)
-		integer rd_body = _stmt_block(ctx, "[" + rd_ret.toString() + "]")
-		integer rd_p_str = _type_string(ctx)
-		integer rd_r_str = _type_string(ctx)
-		integer rd_err = _emit_function(ctx, "redirect", "[{\"name\":\"url\",\"type_handle\":" + rd_p_str.toString() + "}]", rd_r_str, rd_body, 2)
-		if rd_err != 0
+		p1 = _type_string(ctx)
+		v = respond_expr(ctx, _expr_int_lit(ctx, 200, 0), "text/html", _expr_ident(ctx, "content"))
+		if emit_return_helper(ctx, "htmlResponse", "[" + param_entry("content", p1) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── redirectTo(url: string) -> string ── (alias for redirect(url))
-		// return _http_redirect(302, url)
-		integer rt_s302 = _expr_int_lit(ctx, 302, 0)
-		integer rt_url = _expr_ident(ctx, "url")
-		integer rt_call = _expr_call(ctx, "_http_redirect", "[" + rt_s302.toString() + "," + rt_url.toString() + "]")
-		integer rt_ret = _stmt_return(ctx, rt_call)
-		integer rt_body = _stmt_block(ctx, "[" + rt_ret.toString() + "]")
-		integer rt_p_str = _type_string(ctx)
-		integer rt_r_str = _type_string(ctx)
-		integer rt_err = _emit_function(ctx, "redirectTo", "[{\"name\":\"url\",\"type_handle\":" + rt_p_str.toString() + "}]", rt_r_str, rt_body, 2)
-		if rt_err != 0
+		// httpStatus(code, body) and its spec name status(code, body)
+		// (frame-server.ebnf §4 status_response).
+		p1 = _type_integer(ctx)
+		p2 = _type_string(ctx)
+		v = respond_expr(ctx, _expr_ident(ctx, "code"), "application/json", _expr_ident(ctx, "body"))
+		if emit_return_helper(ctx, "httpStatus", "[" + param_entry("code", p1) + "," + param_entry("body", p2) + "]", _type_string(ctx), v) != 0
+			return 1
+		p1 = _type_integer(ctx)
+		p2 = _type_string(ctx)
+		v = respond_expr(ctx, _expr_ident(ctx, "code"), "application/json", _expr_ident(ctx, "body"))
+		if emit_return_helper(ctx, "status", "[" + param_entry("code", p1) + "," + param_entry("body", p2) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── redirectToStatus(url: string, status: integer) -> string ──
-		// return _http_redirect(status, url)
-		integer rts_url = _expr_ident(ctx, "url")
-		integer rts_status = _expr_ident(ctx, "status")
-		integer rts_call = _expr_call(ctx, "_http_redirect", "[" + rts_status.toString() + "," + rts_url.toString() + "]")
-		integer rts_ret = _stmt_return(ctx, rts_call)
-		integer rts_body = _stmt_block(ctx, "[" + rts_ret.toString() + "]")
-		integer rts_p_str = _type_string(ctx)
-		integer rts_p_int = _type_integer(ctx)
-		integer rts_r_str = _type_string(ctx)
-		integer rts_err = _emit_function(ctx, "redirectToStatus", "[{\"name\":\"url\",\"type_handle\":" + rts_p_str.toString() + "},{\"name\":\"status\",\"type_handle\":" + rts_p_int.toString() + "}]", rts_r_str, rts_body, 2)
-		if rts_err != 0
+		// ── Redirects ──
+		// redirect(url, status = 302) — frame-server.ebnf §4 redirect_response
+		// takes an optional status code.
+		p1 = _type_string(ctx)
+		p2 = _type_integer(ctx)
+		integer dflt = _expr_int_lit(ctx, 302, 0)
+		v = redirect_expr(ctx, _expr_ident(ctx, "status"))
+		if emit_return_helper(ctx, "redirect", "[" + param_entry("url", p1) + "," + param_entry_default("status", p2, dflt) + "]", _type_string(ctx), v) != 0
+			return 1
+		p1 = _type_string(ctx)
+		v = redirect_expr(ctx, _expr_int_lit(ctx, 302, 0))
+		if emit_return_helper(ctx, "redirectTo", "[" + param_entry("url", p1) + "]", _type_string(ctx), v) != 0
+			return 1
+		p1 = _type_string(ctx)
+		p2 = _type_integer(ctx)
+		v = redirect_expr(ctx, _expr_ident(ctx, "status"))
+		if emit_return_helper(ctx, "redirectToStatus", "[" + param_entry("url", p1) + "," + param_entry("status", p2) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── notFound() -> string ──
-		// return _http_respond(404, "application/json", "{\"ok\":false,\"err\":{\"code\":\"NOT_FOUND\",\"message\":\"Resource not found\"}}")
-		integer nf_s404 = _expr_int_lit(ctx, 404, 0)
-		integer nf_ct = _expr_string_lit(ctx, "application/json")
-		integer nf_msg = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"NOT_FOUND\",\"message\":\"Resource not found\"}}")
-		integer nf_call = _expr_call(ctx, "_http_respond", "[" + nf_s404.toString() + "," + nf_ct.toString() + "," + nf_msg.toString() + "]")
-		integer nf_ret = _stmt_return(ctx, nf_call)
-		integer nf_body = _stmt_block(ctx, "[" + nf_ret.toString() + "]")
-		integer nf_r_str = _type_string(ctx)
-		integer nf_err = _emit_function(ctx, "notFound", "[]", nf_r_str, nf_body, 2)
-		if nf_err != 0
+		// ── Error envelopes (frame-server-semantics.md SRV-I002 / SRV-I003) ──
+		// notFound / badRequest take an optional message
+		// (frame-server.ebnf §4 not_found_response, bad_request_response).
+		if emit_envelope_helper(ctx, "notFound", 404, "NOT_FOUND", true, "Resource not found") != 0
+			return 1
+		if emit_envelope_helper(ctx, "notFoundMsg", 404, "NOT_FOUND", true, "") != 0
+			return 1
+		if emit_envelope_helper(ctx, "badRequest", 400, "VALIDATION_ERROR", true, "Invalid request") != 0
+			return 1
+		if emit_envelope_helper(ctx, "unauthorized", 401, "AUTH_ERROR", false, "Authentication required") != 0
+			return 1
+		if emit_envelope_helper(ctx, "forbidden", 403, "PERMISSION_DENIED", false, "Access denied") != 0
 			return 1
 
-		// ── __json_escape(s: string) -> string ──
-		// return s.replace("\\", "\\\\").replace("\"", "\\\"")
-		// Uses _expr_method_call (shipped cln 0.33.120, prompt a356a9b0).
-		// Nested method-call form avoids needing a var-decl bridge on this
-		// non-batch typed-emission surface.
-		integer je_s = _expr_ident(ctx, "s")
-		integer je_bs_from = _expr_string_lit(ctx, "\\")
-		integer je_bs_to = _expr_string_lit(ctx, "\\\\")
-		integer je_call1 = _expr_method_call(ctx, je_s, "replace", "[" + je_bs_from.toString() + "," + je_bs_to.toString() + "]")
-		integer je_q_from = _expr_string_lit(ctx, "\"")
-		integer je_q_to = _expr_string_lit(ctx, "\\\"")
-		integer je_call2 = _expr_method_call(ctx, je_call1, "replace", "[" + je_q_from.toString() + "," + je_q_to.toString() + "]")
-		integer je_ret = _stmt_return(ctx, je_call2)
-		integer je_body = _stmt_block(ctx, "[" + je_ret.toString() + "]")
-		integer je_p_str = _type_string(ctx)
-		integer je_r_str = _type_string(ctx)
-		integer je_err = _emit_function(ctx, "__json_escape", "[{\"name\":\"s\",\"type_handle\":" + je_p_str.toString() + "}]", je_r_str, je_body, 2)
-		if je_err != 0
+		// httpError(status_code, message) — HTTP_ERROR envelope with any status.
+		p1 = _type_integer(ctx)
+		p2 = _type_string(ctx)
+		v = respond_expr(ctx, _expr_ident(ctx, "status_code"), "application/json", envelope_expr(ctx, "HTTP_ERROR", _expr_ident(ctx, "message")))
+		if emit_return_helper(ctx, "httpError", "[" + param_entry("status_code", p1) + "," + param_entry("message", p2) + "]", _type_string(ctx), v) != 0
 			return 1
 
-		// ── notFoundMsg(message: string) -> string ──
-		// return _http_respond(404, "application/json",
-		//   "{\"ok\":false,\"err\":{\"code\":\"NOT_FOUND\",\"message\":\"" + __json_escape(message) + "\"}}")
-		integer nfm_msg_ident = _expr_ident(ctx, "message")
-		integer nfm_esc = _expr_call(ctx, "__json_escape", "[" + nfm_msg_ident.toString() + "]")
-		integer nfm_prefix = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"NOT_FOUND\",\"message\":\"")
-		integer nfm_suffix = _expr_string_lit(ctx, "\"}}")
-		integer nfm_body_p1 = _expr_binop(ctx, "+", nfm_prefix, nfm_esc)
-		integer nfm_body_expr = _expr_binop(ctx, "+", nfm_body_p1, nfm_suffix)
-		integer nfm_s404 = _expr_int_lit(ctx, 404, 0)
-		integer nfm_ct = _expr_string_lit(ctx, "application/json")
-		integer nfm_call = _expr_call(ctx, "_http_respond", "[" + nfm_s404.toString() + "," + nfm_ct.toString() + "," + nfm_body_expr.toString() + "]")
-		integer nfm_ret = _stmt_return(ctx, nfm_call)
-		integer nfm_body = _stmt_block(ctx, "[" + nfm_ret.toString() + "]")
-		integer nfm_p_str = _type_string(ctx)
-		integer nfm_r_str = _type_string(ctx)
-		integer nfm_err = _emit_function(ctx, "notFoundMsg", "[{\"name\":\"message\",\"type_handle\":" + nfm_p_str.toString() + "}]", nfm_r_str, nfm_body, 2)
-		if nfm_err != 0
+		// ── Response headers ──
+		p1 = _type_string(ctx)
+		p2 = _type_string(ctx)
+		if emit_void_helper(ctx, "httpHeader", "[" + param_entry("name", p1) + "," + param_entry("value", p2) + "]", "_http_set_header", "[" + _expr_ident(ctx, "name").toString() + "," + _expr_ident(ctx, "value").toString() + "]") != 0
+			return 1
+		p1 = _type_string(ctx)
+		if emit_void_helper(ctx, "resDownload", "[" + param_entry("filename", p1) + "]", "_res_download", "[" + _expr_ident(ctx, "filename").toString() + "]") != 0
 			return 1
 
-		// ── badRequest(message: string) -> string ──
-		// return _http_respond(400, "application/json",
-		//   "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"" + __json_escape(message) + "\"}}")
-		integer br_msg_ident = _expr_ident(ctx, "message")
-		integer br_esc = _expr_call(ctx, "__json_escape", "[" + br_msg_ident.toString() + "]")
-		integer br_prefix = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"")
-		integer br_suffix = _expr_string_lit(ctx, "\"}}")
-		integer br_body_p1 = _expr_binop(ctx, "+", br_prefix, br_esc)
-		integer br_body_expr = _expr_binop(ctx, "+", br_body_p1, br_suffix)
-		integer br_s400 = _expr_int_lit(ctx, 400, 0)
-		integer br_ct = _expr_string_lit(ctx, "application/json")
-		integer br_call = _expr_call(ctx, "_http_respond", "[" + br_s400.toString() + "," + br_ct.toString() + "," + br_body_expr.toString() + "]")
-		integer br_ret = _stmt_return(ctx, br_call)
-		integer br_body = _stmt_block(ctx, "[" + br_ret.toString() + "]")
-		integer br_p_str = _type_string(ctx)
-		integer br_r_str = _type_string(ctx)
-		integer br_err = _emit_function(ctx, "badRequest", "[{\"name\":\"message\",\"type_handle\":" + br_p_str.toString() + "}]", br_r_str, br_body, 2)
-		if br_err != 0
+		// ── Request accessors ──
+		p1 = _type_string(ctx)
+		v = _expr_call(ctx, "_req_param", "[" + _expr_ident(ctx, "name").toString() + "]")
+		if emit_return_helper(ctx, "param", "[" + param_entry("name", p1) + "]", _type_string(ctx), v) != 0
+			return 1
+		if emit_return_helper(ctx, "body", "[]", _type_string(ctx), _expr_call(ctx, "_req_body", "[]")) != 0
+			return 1
+		p1 = _type_string(ctx)
+		v = _expr_call(ctx, "_req_header", "[" + _expr_ident(ctx, "name").toString() + "]")
+		if emit_return_helper(ctx, "header", "[" + param_entry("name", p1) + "]", _type_string(ctx), v) != 0
+			return 1
+		if emit_return_helper(ctx, "method", "[]", _type_string(ctx), _expr_call(ctx, "_req_method", "[]")) != 0
 			return 1
 
-		// ── unauthorized() -> string ──
-		integer ua_s401 = _expr_int_lit(ctx, 401, 0)
-		integer ua_ct = _expr_string_lit(ctx, "application/json")
-		integer ua_msg = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"AUTH_ERROR\",\"message\":\"Authentication required\"}}")
-		integer ua_call = _expr_call(ctx, "_http_respond", "[" + ua_s401.toString() + "," + ua_ct.toString() + "," + ua_msg.toString() + "]")
-		integer ua_ret = _stmt_return(ctx, ua_call)
-		integer ua_body = _stmt_block(ctx, "[" + ua_ret.toString() + "]")
-		integer ua_r_str = _type_string(ctx)
-		integer ua_err = _emit_function(ctx, "unauthorized", "[]", ua_r_str, ua_body, 2)
-		if ua_err != 0
+		// ── Email ──
+		// emailSend: an empty from-override uses the configured default sender.
+		string mail_params = "[" + param_entry("to", _type_string(ctx)) + "," + param_entry("subject", _type_string(ctx)) + "," + param_entry("html", _type_string(ctx)) + "," + param_entry("text", _type_string(ctx)) + "]"
+		v = _expr_call(ctx, "_email_send", "[" + mail_args(ctx) + "," + _expr_string_lit(ctx, "").toString() + "]")
+		if emit_return_helper(ctx, "emailSend", mail_params, _type_boolean(ctx), v) != 0
+			return 1
+		mail_params = "[" + param_entry("to", _type_string(ctx)) + "," + param_entry("subject", _type_string(ctx)) + "," + param_entry("html", _type_string(ctx)) + "," + param_entry("text", _type_string(ctx)) + "," + param_entry("from", _type_string(ctx)) + "]"
+		v = _expr_call(ctx, "_email_send", "[" + mail_args(ctx) + "," + _expr_ident(ctx, "from").toString() + "]")
+		if emit_return_helper(ctx, "emailSendFrom", mail_params, _type_boolean(ctx), v) != 0
+			return 1
+		if emit_return_helper(ctx, "emailLastError", "[]", _type_string(ctx), _expr_call(ctx, "_email_last_error", "[]")) != 0
 			return 1
 
-		// ── forbidden() -> string ──
-		integer fb_s403 = _expr_int_lit(ctx, 403, 0)
-		integer fb_ct = _expr_string_lit(ctx, "application/json")
-		integer fb_msg = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"PERMISSION_DENIED\",\"message\":\"Access denied\"}}")
-		integer fb_call = _expr_call(ctx, "_http_respond", "[" + fb_s403.toString() + "," + fb_ct.toString() + "," + fb_msg.toString() + "]")
-		integer fb_ret = _stmt_return(ctx, fb_call)
-		integer fb_body = _stmt_block(ctx, "[" + fb_ret.toString() + "]")
-		integer fb_r_str = _type_string(ctx)
-		integer fb_err = _emit_function(ctx, "forbidden", "[]", fb_r_str, fb_body, 2)
-		if fb_err != 0
-			return 1
-
-		// ── httpHeader(name: string, value: string) -> void ──
-		// _http_set_header(name, value)
-		integer hh_name = _expr_ident(ctx, "name")
-		integer hh_value = _expr_ident(ctx, "value")
-		integer hh_call = _stmt_call(ctx, "_http_set_header", "[" + hh_name.toString() + "," + hh_value.toString() + "]")
-		integer hh_body = _stmt_block(ctx, "[" + hh_call.toString() + "]")
-		integer hh_p_str1 = _type_string(ctx)
-		integer hh_p_str2 = _type_string(ctx)
-		integer hh_r_void = _type_void(ctx)
-		integer hh_err = _emit_function(ctx, "httpHeader", "[{\"name\":\"name\",\"type_handle\":" + hh_p_str1.toString() + "},{\"name\":\"value\",\"type_handle\":" + hh_p_str2.toString() + "}]", hh_r_void, hh_body, 2)
-		if hh_err != 0
-			return 1
-
-		// ── httpError(status_code: integer, message: string) -> string ──
-		// return _http_respond(status_code, "application/json",
-		//   "{\"ok\":false,\"err\":{\"code\":\"HTTP_ERROR\",\"message\":\"" + __json_escape(message) + "\"}}")
-		// Un-deferred once _expr_method_call landed (cln 0.33.120, prompt a356a9b0).
-		integer he_msg_ident = _expr_ident(ctx, "message")
-		integer he_esc = _expr_call(ctx, "__json_escape", "[" + he_msg_ident.toString() + "]")
-		integer he_prefix = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"HTTP_ERROR\",\"message\":\"")
-		integer he_suffix = _expr_string_lit(ctx, "\"}}")
-		integer he_body_p1 = _expr_binop(ctx, "+", he_prefix, he_esc)
-		integer he_body_expr = _expr_binop(ctx, "+", he_body_p1, he_suffix)
-		integer he_code = _expr_ident(ctx, "status_code")
-		integer he_ct = _expr_string_lit(ctx, "application/json")
-		integer he_call = _expr_call(ctx, "_http_respond", "[" + he_code.toString() + "," + he_ct.toString() + "," + he_body_expr.toString() + "]")
-		integer he_ret = _stmt_return(ctx, he_call)
-		integer he_body = _stmt_block(ctx, "[" + he_ret.toString() + "]")
-		integer he_p_int = _type_integer(ctx)
-		integer he_p_str = _type_string(ctx)
-		integer he_r_str = _type_string(ctx)
-		integer he_err = _emit_function(ctx, "httpError", "[{\"name\":\"status_code\",\"type_handle\":" + he_p_int.toString() + "},{\"name\":\"message\",\"type_handle\":" + he_p_str.toString() + "}]", he_r_str, he_body, 2)
-		if he_err != 0
-			return 1
-
-		// ── httpStatus(code: integer, body: string) -> string ──
-		integer hs_code = _expr_ident(ctx, "code")
-		integer hs_ct = _expr_string_lit(ctx, "application/json")
-		integer hs_body_arg = _expr_ident(ctx, "body")
-		integer hs_call = _expr_call(ctx, "_http_respond", "[" + hs_code.toString() + "," + hs_ct.toString() + "," + hs_body_arg.toString() + "]")
-		integer hs_ret = _stmt_return(ctx, hs_call)
-		integer hs_body = _stmt_block(ctx, "[" + hs_ret.toString() + "]")
-		integer hs_p_int = _type_integer(ctx)
-		integer hs_p_str = _type_string(ctx)
-		integer hs_r_str = _type_string(ctx)
-		integer hs_err = _emit_function(ctx, "httpStatus", "[{\"name\":\"code\",\"type_handle\":" + hs_p_int.toString() + "},{\"name\":\"body\",\"type_handle\":" + hs_p_str.toString() + "}]", hs_r_str, hs_body, 2)
-		if hs_err != 0
-			return 1
-
-		// ── status(code: integer, body: string) -> string ── (alias)
-		integer st_code = _expr_ident(ctx, "code")
-		integer st_ct = _expr_string_lit(ctx, "application/json")
-		integer st_body_arg = _expr_ident(ctx, "body")
-		integer st_call = _expr_call(ctx, "_http_respond", "[" + st_code.toString() + "," + st_ct.toString() + "," + st_body_arg.toString() + "]")
-		integer st_ret = _stmt_return(ctx, st_call)
-		integer st_body = _stmt_block(ctx, "[" + st_ret.toString() + "]")
-		integer st_p_int = _type_integer(ctx)
-		integer st_p_str = _type_string(ctx)
-		integer st_r_str = _type_string(ctx)
-		integer st_err = _emit_function(ctx, "status", "[{\"name\":\"code\",\"type_handle\":" + st_p_int.toString() + "},{\"name\":\"body\",\"type_handle\":" + st_p_str.toString() + "}]", st_r_str, st_body, 2)
-		if st_err != 0
-			return 1
-
-		// ── param(name: string) -> string ──
-		// return _req_param(name)
-		integer pm_name = _expr_ident(ctx, "name")
-		integer pm_call = _expr_call(ctx, "_req_param", "[" + pm_name.toString() + "]")
-		integer pm_ret = _stmt_return(ctx, pm_call)
-		integer pm_body = _stmt_block(ctx, "[" + pm_ret.toString() + "]")
-		integer pm_p_str = _type_string(ctx)
-		integer pm_r_str = _type_string(ctx)
-		integer pm_err = _emit_function(ctx, "param", "[{\"name\":\"name\",\"type_handle\":" + pm_p_str.toString() + "}]", pm_r_str, pm_body, 2)
-		if pm_err != 0
-			return 1
-
-		// ── body() -> string ──
-		// return _req_body()
-		integer bd_call = _expr_call(ctx, "_req_body", "[]")
-		integer bd_ret = _stmt_return(ctx, bd_call)
-		integer bd_body = _stmt_block(ctx, "[" + bd_ret.toString() + "]")
-		integer bd_r_str = _type_string(ctx)
-		integer bd_err = _emit_function(ctx, "body", "[]", bd_r_str, bd_body, 2)
-		if bd_err != 0
-			return 1
-
-		// ── header(name: string) -> string ──
-		// return _req_header(name)
-		integer hd_name = _expr_ident(ctx, "name")
-		integer hd_call = _expr_call(ctx, "_req_header", "[" + hd_name.toString() + "]")
-		integer hd_ret = _stmt_return(ctx, hd_call)
-		integer hd_body = _stmt_block(ctx, "[" + hd_ret.toString() + "]")
-		integer hd_p_str = _type_string(ctx)
-		integer hd_r_str = _type_string(ctx)
-		integer hd_err = _emit_function(ctx, "header", "[{\"name\":\"name\",\"type_handle\":" + hd_p_str.toString() + "}]", hd_r_str, hd_body, 2)
-		if hd_err != 0
-			return 1
-
-		// ── method() -> string ──
-		// return _req_method()
-		integer mt_call = _expr_call(ctx, "_req_method", "[]")
-		integer mt_ret = _stmt_return(ctx, mt_call)
-		integer mt_body = _stmt_block(ctx, "[" + mt_ret.toString() + "]")
-		integer mt_r_str = _type_string(ctx)
-		integer mt_err = _emit_function(ctx, "method", "[]", mt_r_str, mt_body, 2)
-		if mt_err != 0
-			return 1
-
-		// ── resDownload(filename: string) -> void ──
-		// _res_download(filename)
-		integer rdl_fn = _expr_ident(ctx, "filename")
-		integer rdl_call = _stmt_call(ctx, "_res_download", "[" + rdl_fn.toString() + "]")
-		integer rdl_body = _stmt_block(ctx, "[" + rdl_call.toString() + "]")
-		integer rdl_p_str = _type_string(ctx)
-		integer rdl_r_void = _type_void(ctx)
-		integer rdl_err = _emit_function(ctx, "resDownload", "[{\"name\":\"filename\",\"type_handle\":" + rdl_p_str.toString() + "}]", rdl_r_void, rdl_body, 2)
-		if rdl_err != 0
-			return 1
-
-		// ── emailSend(to: string, subject: string, html: string, text: string) -> boolean ──
-		// return _email_send(to, subject, html, text, "")   -- empty from-override uses configured default
-		integer es_to = _expr_ident(ctx, "to")
-		integer es_subj = _expr_ident(ctx, "subject")
-		integer es_html = _expr_ident(ctx, "html")
-		integer es_text = _expr_ident(ctx, "text")
-		integer es_from = _expr_string_lit(ctx, "")
-		integer es_call = _expr_call(ctx, "_email_send", "[" + es_to.toString() + "," + es_subj.toString() + "," + es_html.toString() + "," + es_text.toString() + "," + es_from.toString() + "]")
-		integer es_ret = _stmt_return(ctx, es_call)
-		integer es_body = _stmt_block(ctx, "[" + es_ret.toString() + "]")
-		integer es_p1 = _type_string(ctx)
-		integer es_p2 = _type_string(ctx)
-		integer es_p3 = _type_string(ctx)
-		integer es_p4 = _type_string(ctx)
-		integer es_r_bool = _type_boolean(ctx)
-		integer es_err = _emit_function(ctx, "emailSend", "[{\"name\":\"to\",\"type_handle\":" + es_p1.toString() + "},{\"name\":\"subject\",\"type_handle\":" + es_p2.toString() + "},{\"name\":\"html\",\"type_handle\":" + es_p3.toString() + "},{\"name\":\"text\",\"type_handle\":" + es_p4.toString() + "}]", es_r_bool, es_body, 2)
-		if es_err != 0
-			return 1
-
-		// ── emailSendFrom(to, subject, html, text, from: string) -> boolean ──
-		// return _email_send(to, subject, html, text, from)
-		integer esf_to = _expr_ident(ctx, "to")
-		integer esf_subj = _expr_ident(ctx, "subject")
-		integer esf_html = _expr_ident(ctx, "html")
-		integer esf_text = _expr_ident(ctx, "text")
-		integer esf_from = _expr_ident(ctx, "from")
-		integer esf_call = _expr_call(ctx, "_email_send", "[" + esf_to.toString() + "," + esf_subj.toString() + "," + esf_html.toString() + "," + esf_text.toString() + "," + esf_from.toString() + "]")
-		integer esf_ret = _stmt_return(ctx, esf_call)
-		integer esf_body = _stmt_block(ctx, "[" + esf_ret.toString() + "]")
-		integer esf_p1 = _type_string(ctx)
-		integer esf_p2 = _type_string(ctx)
-		integer esf_p3 = _type_string(ctx)
-		integer esf_p4 = _type_string(ctx)
-		integer esf_p5 = _type_string(ctx)
-		integer esf_r_bool = _type_boolean(ctx)
-		integer esf_err = _emit_function(ctx, "emailSendFrom", "[{\"name\":\"to\",\"type_handle\":" + esf_p1.toString() + "},{\"name\":\"subject\",\"type_handle\":" + esf_p2.toString() + "},{\"name\":\"html\",\"type_handle\":" + esf_p3.toString() + "},{\"name\":\"text\",\"type_handle\":" + esf_p4.toString() + "},{\"name\":\"from\",\"type_handle\":" + esf_p5.toString() + "}]", esf_r_bool, esf_body, 2)
-		if esf_err != 0
-			return 1
-
-		// ── emailLastError() -> string ──
-		// return _email_last_error()
-		integer ele_call = _expr_call(ctx, "_email_last_error", "[]")
-		integer ele_ret = _stmt_return(ctx, ele_call)
-		integer ele_body = _stmt_block(ctx, "[" + ele_ret.toString() + "]")
-		integer ele_r_str = _type_string(ctx)
-		integer ele_err = _emit_function(ctx, "emailLastError", "[]", ele_r_str, ele_body, 2)
-		if ele_err != 0
-			return 1
-
-		// ── __route_default_body(body: string) -> string ──
-		// Auto-wrap invoked by wrap_returns_with_json on each user-return.
-		// Sets Content-Type: application/json header, sets body, and returns
-		// the same body string so user code composes normally.
-		//   _res_set_header("Content-Type", "application/json")
-		//   _res_body(body)
-		//   return body
-		integer rdb_ct_name = _expr_string_lit(ctx, "Content-Type")
-		integer rdb_ct_val = _expr_string_lit(ctx, "application/json")
-		integer rdb_hdr = _stmt_call(ctx, "_res_set_header", "[" + rdb_ct_name.toString() + "," + rdb_ct_val.toString() + "]")
-		integer rdb_body_arg = _expr_ident(ctx, "body")
-		integer rdb_body_set = _stmt_call(ctx, "_res_body", "[" + rdb_body_arg.toString() + "]")
-		integer rdb_body_ret_arg = _expr_ident(ctx, "body")
-		integer rdb_ret = _stmt_return(ctx, rdb_body_ret_arg)
-		integer rdb_block = _stmt_block(ctx, "[" + rdb_hdr.toString() + "," + rdb_body_set.toString() + "," + rdb_ret.toString() + "]")
-		integer rdb_p_str = _type_string(ctx)
-		integer rdb_r_str = _type_string(ctx)
-		integer rdb_err = _emit_function(ctx, "__route_default_body", "[{\"name\":\"body\",\"type_handle\":" + rdb_p_str.toString() + "}]", rdb_r_str, rdb_block, 2)
-		if rdb_err != 0
+		// ── __route_default_body(body) -> string ──
+		// Auto-wrap for raw `return X` in route handlers (wrap_returns_with_json):
+		// sets Content-Type: application/json and the body, then returns the
+		// body so user code composes normally.
+		integer ct_name = _expr_string_lit(ctx, "Content-Type")
+		integer ct_val = _expr_string_lit(ctx, "application/json")
+		integer set_hdr = _stmt_call(ctx, "_res_set_header", "[" + ct_name.toString() + "," + ct_val.toString() + "]")
+		integer set_body = _stmt_call(ctx, "_res_body", "[" + _expr_ident(ctx, "body").toString() + "]")
+		integer ret_body = _stmt_return(ctx, _expr_ident(ctx, "body"))
+		integer rdb_block = _stmt_block(ctx, "[" + set_hdr.toString() + "," + set_body.toString() + "," + ret_body.toString() + "]")
+		p1 = _type_string(ctx)
+		if _emit_function(ctx, "__route_default_body", "[" + param_entry("body", p1) + "]", _type_string(ctx), rdb_block, 2) != 0
 			return 1
 
 		return 0
 
-// ============================================================================
-// V3 LIFECYCLE SLOT — emit_server_init_typed (Plugin Contracts v3)
-// ============================================================================
-// foundation/spec/plugins/contracts/typed-emission.md §7
-// Route registration happens inside expand_block_typed via _emit_route sugar
-// (which wires both function emission and server_init registration). This slot
-// therefore emits nothing and returns success immediately.
+	// ── Typed-emission building blocks for the module helpers ──
 
-functions:
-	integer emit_server_init_typed(integer ctx, string ctx_json)
-		return 0
+	// One _emit_function parameter entry.
+	string param_entry(string name, integer type_handle)
+		return "{\"name\":\"" + name + "\",\"type_handle\":" + type_handle.toString() + "}"
 
-// ============================================================================
-// V3 LIFECYCLE SLOT — emit_per_request_typed (Plugin Contracts v3)
-// ============================================================================
-// foundation/spec/plugins/contracts/typed-emission.md §7
-// frame.server has no inlined per-route prelude — generated handlers run user
-// code directly. This slot emits nothing and returns success.
+	// A parameter with a default value (typed-emission.md §3.1 default_expr_handle).
+	string param_entry_default(string name, integer type_handle, integer default_handle)
+		return "{\"name\":\"" + name + "\",\"type_handle\":" + type_handle.toString() + ",\"default_expr_handle\":" + default_handle.toString() + "}"
 
-functions:
-	integer emit_per_request_typed(integer ctx, string ctx_json)
-		return 0
+	// `<name>(<params>) -> <ret> { return <value> }`
+	integer emit_return_helper(integer ctx, string name, string params_json, integer return_type, integer value)
+		integer ret = _stmt_return(ctx, value)
+		integer blk = _stmt_block(ctx, "[" + ret.toString() + "]")
+		return _emit_function(ctx, name, params_json, return_type, blk, 2)
+
+	// `<name>(<params>) { <callee>(<args>) }` returning void.
+	integer emit_void_helper(integer ctx, string name, string params_json, string callee, string args_json)
+		integer call = _stmt_call(ctx, callee, args_json)
+		integer blk = _stmt_block(ctx, "[" + call.toString() + "]")
+		return _emit_function(ctx, name, params_json, _type_void(ctx), blk, 2)
+
+	// `_http_respond(<status>, "<content_type>", <body>)`
+	integer respond_expr(integer ctx, integer status, string content_type, integer body)
+		integer ct = _expr_string_lit(ctx, content_type)
+		return _expr_call(ctx, "_http_respond", "[" + status.toString() + "," + ct.toString() + "," + body.toString() + "]")
+
+	// `_http_redirect(<status>, url)`
+	integer redirect_expr(integer ctx, integer status)
+		return _expr_call(ctx, "_http_redirect", "[" + status.toString() + "," + _expr_ident(ctx, "url").toString() + "]")
+
+	// `to, subject, html, text` identifier handles for the email helpers.
+	string mail_args(integer ctx)
+		return _expr_ident(ctx, "to").toString() + "," + _expr_ident(ctx, "subject").toString() + "," + _expr_ident(ctx, "html").toString() + "," + _expr_ident(ctx, "text").toString()
+
+	// `"{\"ok\":false,\"err\":{\"code\":\"<code>\",\"message\":\"" + __json_escape(<message>) + "\"}}"`
+	integer envelope_expr(integer ctx, string code, integer message)
+		integer esc = _expr_call(ctx, "__json_escape", "[" + message.toString() + "]")
+		integer prefix = _expr_string_lit(ctx, "{\"ok\":false,\"err\":{\"code\":\"" + code + "\",\"message\":\"")
+		integer suffix = _expr_string_lit(ctx, "\"}}")
+		return _expr_binop(ctx, "+", _expr_binop(ctx, "+", prefix, esc), suffix)
+
+	// Error-envelope helper answering <status>. With takes_message the helper
+	// has a `message` parameter (defaulting to default_message when that is
+	// non-empty); without it the envelope carries default_message.
+	integer emit_envelope_helper(integer ctx, string name, integer status, string code, boolean takes_message, string default_message)
+		string params = "[]"
+		integer message = 0
+		if takes_message
+			integer p = _type_string(ctx)
+			if default_message.length() > 0
+				params = "[" + param_entry_default("message", p, _expr_string_lit(ctx, default_message)) + "]"
+			else
+				params = "[" + param_entry("message", p) + "]"
+			message = _expr_ident(ctx, "message")
+		else
+			message = _expr_string_lit(ctx, default_message)
+		integer value = respond_expr(ctx, _expr_int_lit(ctx, status, 0), "application/json", envelope_expr(ctx, code, message))
+		return emit_return_helper(ctx, name, params, _type_string(ctx), value)
+
+	// __json_escape(s) — escapes backslash, quote and the control characters
+	// that may appear in a message (newline, carriage return, tab) so error
+	// envelopes stay valid JSON (SRV-I002).
+	integer emit_json_escape(integer ctx)
+		integer value = _expr_ident(ctx, "s")
+		value = replace_expr(ctx, value, "\\", "\\\\")
+		value = replace_expr(ctx, value, "\"", "\\\"")
+		value = replace_expr(ctx, value, "\n", "\\n")
+		value = replace_expr(ctx, value, "\r", "\\r")
+		value = replace_expr(ctx, value, "\t", "\\t")
+		integer p = _type_string(ctx)
+		return emit_return_helper(ctx, "__json_escape", "[" + param_entry("s", p) + "]", _type_string(ctx), value)
+
+	// `<value>.replace("<needle>", "<replacement>")`
+	integer replace_expr(integer ctx, integer value, string needle, string replacement)
+		integer n = _expr_string_lit(ctx, needle)
+		integer r = _expr_string_lit(ctx, replacement)
+		return _expr_method_call(ctx, value, "replace", "[" + n.toString() + "," + r.toString() + "]")
 
 // ============================================================================
 // V3 BLOCK EXPAND ENTRY POINT: expand_block_typed
@@ -465,9 +274,19 @@ functions:
 //
 // Routes all block types to their typed expansion functions.
 // Returns 0 on success, non-zero on error.
+//
+// The block is validated first. plugin-contract.md §7 has the compiler call
+// [exports].validate before expand, but compilers that skip that call would
+// otherwise expand malformed headers (unclosed guard lists, bad cache values)
+// into wrong code silently — so the check runs here and reports through
+// _emit_error.
 
 functions:
 	integer expand_block_typed(integer ctx, string block_name, string attrs_json, string body)
+		string invalid = validate_block(block_name, attrs_json, body)
+		if invalid.length() > 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E020", invalid, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+			return 1
 		if block_name == "endpoints"
 			// Compound form `endpoints server:` parses as block_name="endpoints"
 			// with a "model_name":"server" attribute (parser boundary lumps the
@@ -492,15 +311,15 @@ functions:
 		return 0
 
 // ============================================================================
-// KEYWORD DISCOVERY EXPORT (unchanged from v1 — not a lifecycle slot)
+// KEYWORD DISCOVERY EXPORT (not a lifecycle slot)
 // ============================================================================
 
 functions:
 	string get_keywords()
-		return "[\"endpoints\", \"routes\", \"cache\", \"handle\", \"jsonResponse\", \"htmlResponse\", \"redirect\", \"redirectTo\", \"notFound\", \"notFoundMsg\", \"badRequest\", \"unauthorized\", \"forbidden\", \"httpStatus\", \"status\", \"httpHeader\", \"httpError\", \"middleware\", \"param\", \"body\", \"header\", \"method\", \"mail\", \"resDownload\", \"emailSend\", \"emailSendFrom\", \"emailLastError\", \"res.download\", \"email.send\", \"email.sendFrom\", \"email.lastError\", \"LIVE\", \"FEED\", \"live.send\", \"live.broadcast\", \"live.close\", \"live.clientId\", \"live.message\", \"live.roomJoin\", \"live.roomLeave\", \"live.roomBroadcast\", \"live.onMessage\", \"live.onClose\"]"
+		return "[\"endpoints\", \"routes\", \"cache\", \"handle\", \"jsonResponse\", \"htmlResponse\", \"redirect\", \"redirectTo\", \"notFound\", \"notFoundMsg\", \"badRequest\", \"unauthorized\", \"forbidden\", \"httpStatus\", \"status\", \"httpHeader\", \"httpError\", \"middleware\", \"param\", \"body\", \"header\", \"method\", \"mail\", \"resDownload\", \"emailSend\", \"emailSendFrom\", \"emailLastError\", \"res.download\", \"email.send\", \"email.sendFrom\", \"email.lastError\", \"LIVE\", \"FEED\", \"live.send\", \"live.broadcast\", \"live.close\", \"live.clientId\", \"live.message\", \"live.roomJoin\", \"live.roomLeave\", \"live.roomBroadcast\", \"live.onMessage\", \"live.onClose\", \"jsonResponseStatus\", \"redirectToStatus\"]"
 
 // ============================================================================
-// VALIDATION EXPORT (unchanged from v1 — not a lifecycle slot)
+// VALIDATION EXPORT (not a lifecycle slot)
 // ============================================================================
 
 functions:
@@ -514,295 +333,186 @@ functions:
 // ============================================================================
 // ENDPOINTS BLOCK — V3 TYPED EXPANSION
 // ============================================================================
-// Replaces v1 expand_endpoints which built result via string concatenation.
-// Each route handler is emitted via _emit_function; registration via _emit_route.
-// User-authored handler bodies are passed to _emit_stmt_from_source (§3.11).
-// Guard/cache/middleware preambles are built with typed statement constructors.
+// Each route handler is emitted via _emit_function and registered by name with
+// an explicit _http_*_route call emitted into start:. User-authored handler
+// bodies go through _emit_stmt_from_source (§3.11). Guard/cache/middleware
+// preambles are built with typed statement constructors.
 
 functions:
 	integer expand_endpoints_typed(integer ctx, string body)
-		// Type handles are single-consumption per typed-emission.md §4 clause 2.
-		// Fresh allocations happen at every _define_function / _emit_function
-		// site below (one per route), so no top-level caching.
-
 		string remaining = body
-		integer handler_idx = 0
-		boolean keep_going = true
+		integer method_pos = next_route_pos(remaining)
+		while method_pos >= 0
+			string method = route_method_at(remaining, method_pos)
+			integer path_first_pos = method_pos + method.length() + 1
+			integer close_q_pos = remaining.indexOf("\"", path_first_pos + 1)
+			string path = remaining.substring(path_first_pos + 1, close_q_pos)
 
-		while handler_idx < 100 and keep_going
-			integer get_pos = find_method_pos(remaining, "GET")
-			integer post_pos = find_method_pos(remaining, "POST")
-			integer put_pos = find_method_pos(remaining, "PUT")
-			integer delete_pos = find_method_pos(remaining, "DELETE")
-			integer patch_pos = find_method_pos(remaining, "PATCH")
-			integer stream_pos = find_method_pos(remaining, "FEED")
-			integer websocket_pos = find_method_pos(remaining, "LIVE")
-
-			integer method_pos = -1
-			string method = ""
-
-			if get_pos >= 0 and (method_pos == -1 or get_pos < method_pos)
-				method_pos = get_pos
-				method = "GET"
-			if post_pos >= 0 and (method_pos == -1 or post_pos < method_pos)
-				method_pos = post_pos
-				method = "POST"
-			if put_pos >= 0 and (method_pos == -1 or put_pos < method_pos)
-				method_pos = put_pos
-				method = "PUT"
-			if delete_pos >= 0 and (method_pos == -1 or delete_pos < method_pos)
-				method_pos = delete_pos
-				method = "DELETE"
-			if patch_pos >= 0 and (method_pos == -1 or patch_pos < method_pos)
-				method_pos = patch_pos
-				method = "PATCH"
-			if stream_pos >= 0 and (method_pos == -1 or stream_pos < method_pos)
-				method_pos = stream_pos
-				method = "FEED"
-			if websocket_pos >= 0 and (method_pos == -1 or websocket_pos < method_pos)
-				method_pos = websocket_pos
-				method = "LIVE"
-
-			if method_pos == -1
-				keep_going = false
+			integer header_start_pos = close_q_pos + 1
+			integer header_nl_pos = remaining.indexOf("\n", header_start_pos)
+			string header_line = ""
+			if header_nl_pos == -1
+				header_line = remaining.substring(header_start_pos, remaining.length())
 			else
-				// Position-based scanning (same as v1 — eliminates O(N²) allocations)
-				integer path_first_pos = method_pos + method.length()
-				if remaining.substring(path_first_pos, path_first_pos + 1) == " "
-					path_first_pos = path_first_pos + 1
+				header_line = remaining.substring(header_start_pos, header_nl_pos)
 
-				integer close_q_pos = remaining.indexOf("\"", path_first_pos + 1)
-				string path = remaining.substring(path_first_pos + 1, close_q_pos)
+			// Route ':' is the last ':' on the header line (validate_endpoints
+			// guarantees there is one).
+			integer colon_pos = header_line.lastIndexOf(":")
+			string modifiers = header_line.substring(0, colon_pos).trim()
+			string guard_roles = parse_guard_roles(modifiers)
+			string cache_arg = parse_cache_arg(modifiers)
+			string mw_list = parse_middleware_list(modifiers)
 
-				integer header_start_pos = close_q_pos + 1
-				integer header_nl_pos = remaining.indexOf("\n", header_start_pos)
-				string header_line = ""
-				if header_nl_pos == -1
-					header_line = remaining.substring(header_start_pos, remaining.length())
-				else
-					header_line = remaining.substring(header_start_pos, header_nl_pos)
+			// Advance past the route ':' — the handler body follows.
+			remaining = remaining.substring(header_start_pos + colon_pos + 1, remaining.length())
+			string route_id = sanitize_route_id(path)
 
-				// Route ':' is the last ':' on the header line
-				integer colon_pos = header_line.length() - 1
-				integer cscan = 0
-				while cscan < header_line.length()
-					if header_line.substring(cscan, cscan + 1) == ":"
-						colon_pos = cscan
-					cscan = cscan + 1
+			integer route_err = 0
+			if method == "LIVE"
+				route_err = emit_live_route(ctx, path, route_id, route_region(remaining), guard_roles)
+			else
+				route_err = emit_http_route(ctx, method, path, route_id, route_region(remaining), guard_roles, cache_arg, mw_list)
+			if route_err != 0
+				return route_err
 
-				string modifiers = ""
-				if colon_pos > 0
-					modifiers = header_line.substring(0, colon_pos).trim()
-
-				string guard_roles = parse_guard_roles(modifiers)
-				string cache_arg = parse_cache_arg(modifiers)
-				string mw_list = parse_middleware_list(modifiers)
-
-				// Advance remaining past the route ':' — handler body follows
-				remaining = remaining.substring(header_start_pos + colon_pos + 1, remaining.length())
-
-				string route_id = sanitize_route_id(path)
-
-				if method == "LIVE"
-					// §15: LIVE routes — three WebSocket handler functions
-					string ws_connect = extract_ws_connect_body(remaining)
-					string ws_message = extract_ws_message_body(remaining)
-					string ws_close = extract_ws_close_body(remaining)
-					string connect_name = "__ws_connect_" + route_id
-					string message_name = "__ws_message_" + route_id
-					string close_name = "__ws_close_" + route_id
-
-					// Build onConnect handler (each call allocates its own void type)
-					integer connect_err = emit_ws_handler_typed(ctx, connect_name, ws_connect, guard_roles, true)
-					if connect_err != 0
-						return connect_err
-
-					// Build onMessage handler
-					integer message_err = emit_ws_handler_typed(ctx, message_name, ws_message, "", false)
-					if message_err != 0
-						return message_err
-
-					// Build onClose handler
-					integer close_err = emit_ws_handler_typed(ctx, close_name, ws_close, "", false)
-					if close_err != 0
-						return close_err
-
-					// Register WebSocket route via _emit_statement_into_start
-					integer ws_path_expr = _expr_string_lit(ctx, path)
-					integer ws_m_expr = _expr_string_lit(ctx, "GET")
-					integer ws_con_expr = _expr_string_lit(ctx, connect_name)
-					integer ws_msg_expr = _expr_string_lit(ctx, message_name)
-					integer ws_cls_expr = _expr_string_lit(ctx, close_name)
-					integer ws_reg_stmt = _stmt_call(ctx, "_http_ws_route", "[" + ws_m_expr.toString() + "," + ws_path_expr.toString() + "," + ws_con_expr.toString() + "," + ws_msg_expr.toString() + "," + ws_cls_expr.toString() + "]")
-					integer ws_reg_err = _emit_statement_into_start(ctx, ws_reg_stmt)
-					if ws_reg_err != 0
-						return 1
-
-					handler_idx = handler_idx + 1
-				else
-					// Regular / FEED routes
-					string handler_code = extract_handler_body(remaining)
-					string handler_name = "__route_handler_" + method + "_" + route_id
-
-					// Auto-wrap raw `return X` in handlers with
-					// `return __route_default_body(X)` so users can write
-					// `return "hello"` and get a proper JSON response back.
-					// Skip when the handler already invokes a response helper
-					// (jsonResponse, redirect, notFound, http.respond, etc.).
-					// A handler ending in an `html:` block returns that page as
-					// text/html (frame-ui.ebnf html_block; SRV-R003 response).
-					string final_handler_code = trailing_html_block_to_response(handler_code)
-					if handler_sets_response(final_handler_code) == false
-						final_handler_code = wrap_returns_with_json(final_handler_code)
-
-					// Build preamble stmts: guard, cache, middleware
-					string preamble_handles = ""
-					if guard_roles.length() > 0
-						string guard_handles = build_guard_stmts(ctx, guard_roles, false)
-						if guard_handles.length() > 0
-							preamble_handles = guard_handles
-					if cache_arg.length() > 0
-						integer cache_stmt = build_cache_stmt(ctx, cache_arg)
-						if cache_stmt != 0
-							if preamble_handles.length() > 0
-								preamble_handles = preamble_handles + ","
-							preamble_handles = preamble_handles + cache_stmt.toString()
-					if mw_list.length() > 0
-						string mw_handles = build_middleware_stmts(ctx, mw_list)
-						if mw_handles.length() > 0
-							if preamble_handles.length() > 0
-								preamble_handles = preamble_handles + ","
-							preamble_handles = preamble_handles + mw_handles
-
-					// Parse user handler body via _emit_stmt_from_source (§3.11)
-					integer body_stmt = 0
-					if final_handler_code.length() > 0
-						body_stmt = _emit_stmt_from_source(ctx, final_handler_code, 0)
-						if body_stmt == 0
-							// Parser emitted diagnostic already; fail this expansion
-							_emit_error(ctx, 2, "FRAME-SERVER-E001", "syntax error in handler body for " + method + " " + path, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
-							return 1
-
-					// Compose final body block
-					string all_stmts = preamble_handles
-					if body_stmt != 0
-						if all_stmts.length() > 0
-							all_stmts = all_stmts + ","
-						all_stmts = all_stmts + body_stmt.toString()
-
-					integer handler_body_block = 0
-					if all_stmts.length() > 0
-						handler_body_block = _stmt_block(ctx, "[" + all_stmts + "]")
-					else
-						// No user code and no preamble: emit default response
-						integer def_m_expr = _expr_string_lit(ctx, method + " " + path)
-						integer def_call_expr = _expr_call(ctx, "jsonResponse", "[" + def_m_expr.toString() + "]")
-						integer def_ret = _stmt_return(ctx, def_call_expr)
-						handler_body_block = _stmt_block(ctx, "[" + def_ret.toString() + "]")
-
-					// Register route:
-					//   - Non-FEED: _emit_route consumes a PendingFunction handle (from
-					//     _define_function). It marks the handler public and emits the
-					//     _http_route(...) call into server_init.
-					//   - FEED: the SSE route registration references the handler by
-					//     name, so the handler must be pushed as a top-level function
-					//     via _emit_function (which returns err, 0 == success).
-					// Emit the handler function via _emit_function (returns err,
-					// 0 = success) and register the route by name via
-					// _emit_statement_into_start with an explicit _http_*_route
-					// call. We deliberately avoid the _emit_route sugar bridge:
-					// it emits the handler name as `Expression::Variable`, which
-					// the semantic checker resolves to a `() -> string` function
-					// reference and then fails to unify with the `string`
-					// third-parameter of `_http_route` (function-registry.toml).
-					// Emitting `Expression::Literal(String)` via _stmt_call keeps
-					// the type consistent with the registry.
-					integer h_r_str = _type_string(ctx)
-					integer h_err = _emit_function(ctx, handler_name, "[]", h_r_str, handler_body_block, 2)
-					if h_err != 0
-						_emit_error(ctx, 2, "FRAME-SERVER-E002", "failed to emit handler function for " + method + " " + path, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
-						return 1
-
-					if method == "FEED"
-						integer sse_m_expr = _expr_string_lit(ctx, "GET")
-						integer sse_path_expr = _expr_string_lit(ctx, path)
-						integer sse_fn_expr = _expr_string_lit(ctx, handler_name)
-						integer sse_reg = _stmt_call(ctx, "_http_sse_route", "[" + sse_m_expr.toString() + "," + sse_path_expr.toString() + "," + sse_fn_expr.toString() + "]")
-						integer sse_err = _emit_statement_into_start(ctx, sse_reg)
-						if sse_err != 0
-							return 1
-					else
-						integer rt_m_expr = _expr_string_lit(ctx, method)
-						integer rt_path_expr = _expr_string_lit(ctx, path)
-						integer rt_fn_expr = _expr_string_lit(ctx, handler_name)
-						integer rt_reg = _stmt_call(ctx, "_http_route", "[" + rt_m_expr.toString() + "," + rt_path_expr.toString() + "," + rt_fn_expr.toString() + "]")
-						integer rt_err = _emit_statement_into_start(ctx, rt_reg)
-						if rt_err != 0
-							return 1
-
-					handler_idx = handler_idx + 1
-
+			method_pos = next_route_pos(remaining)
 		return 0
 
-	// Build typed guard statements into a comma-separated handle list string.
-	// For void WS handlers: is_void=true uses _ws_close/_ws_client_id instead of returning unauthorized().
+	// GET/POST/PUT/PATCH/DELETE and FEED (SSE) routes: one string-returning
+	// handler plus its registration.
+	integer emit_http_route(integer ctx, string method, string path, string route_id, string region, string guard_roles, string cache_arg, string mw_list)
+		string handler_name = "__route_handler_" + method + "_" + route_id
+
+		// A handler ending in an `html:` block returns that page as text/html
+		// (frame-ui.ebnf html_block; SRV-R003). Raw `return X` becomes
+		// `return __route_default_body(X)` so `return "hello"` answers JSON;
+		// see wrap_returns_with_json for which returns are rewritten.
+		string handler_code = trailing_html_block_to_response(reindent_block(region))
+		if handler_streams(handler_code) == false
+			handler_code = wrap_returns_with_json(handler_code, contains_response_call(handler_code))
+
+		// Preamble: guard, then cache, then middleware (frame-server.ebnf §2
+		// modifier order).
+		string stmts = ""
+		if guard_roles.length() > 0
+			stmts = join_handles(stmts, build_guard_stmts(ctx, guard_roles, false))
+		if cache_arg.length() > 0
+			stmts = join_handles(stmts, build_cache_stmt(ctx, cache_arg).toString())
+		if mw_list.length() > 0
+			stmts = join_handles(stmts, build_middleware_stmts(ctx, mw_list))
+
+		if handler_code.length() > 0
+			integer body_stmt = _emit_stmt_from_source(ctx, handler_code, 0)
+			if body_stmt == 0
+				_emit_error(ctx, 2, "FRAME-SERVER-E001", "syntax error in handler body for " + method + " " + path, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
+			stmts = join_handles(stmts, body_stmt.toString())
+
+		if stmts.length() == 0
+			// No user code and no preamble: answer with the route name.
+			integer def_call = _expr_call(ctx, "jsonResponse", "[" + _expr_string_lit(ctx, method + " " + path).toString() + "]")
+			stmts = _stmt_return(ctx, def_call).toString()
+
+		// The registration names the handler with a string literal: the
+		// _emit_route sugar emits it as a variable, which the checker resolves
+		// to a function reference and fails to unify with the `string` third
+		// parameter of _http_route (function-registry.toml).
+		integer h_err = _emit_function(ctx, handler_name, "[]", _type_string(ctx), _stmt_block(ctx, "[" + stmts + "]"), 2)
+		if h_err != 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E002", "failed to emit handler function for " + method + " " + path, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+			return 1
+
+		string register = "_http_route"
+		string reg_method = method
+		if method == "FEED"
+			// SSE: an HTTP GET whose connection stays open (§FEXT-4.2).
+			register = "_http_sse_route"
+			reg_method = "GET"
+		integer m_expr = _expr_string_lit(ctx, reg_method)
+		integer p_expr = _expr_string_lit(ctx, path)
+		integer h_expr = _expr_string_lit(ctx, handler_name)
+		integer reg = _stmt_call(ctx, register, "[" + m_expr.toString() + "," + p_expr.toString() + "," + h_expr.toString() + "]")
+		if _emit_statement_into_start(ctx, reg) != 0
+			return 1
+		return 0
+
+	// LIVE (WebSocket) routes: the route body is the onConnect handler; the
+	// live.onMessage: / live.onClose: sub-blocks are the other two handlers
+	// (frame-server.ebnf §3a). The guard runs on connect only.
+	integer emit_live_route(integer ctx, string path, string route_id, string region, string guard_roles)
+		string connect_name = "__ws_connect_" + route_id
+		string message_name = "__ws_message_" + route_id
+		string close_name = "__ws_close_" + route_id
+
+		integer connect_end = region.length()
+		integer msg_label = region.indexOf("live.onMessage:")
+		integer close_label = region.indexOf("live.onClose:")
+		if msg_label >= 0 and msg_label < connect_end
+			connect_end = msg_label
+		if close_label >= 0 and close_label < connect_end
+			connect_end = close_label
+
+		if emit_ws_handler_typed(ctx, connect_name, reindent_block(region.substring(0, connect_end)), guard_roles) != 0
+			return 1
+		if emit_ws_handler_typed(ctx, message_name, live_section(region, "live.onMessage:", "live.onClose:"), "") != 0
+			return 1
+		if emit_ws_handler_typed(ctx, close_name, live_section(region, "live.onClose:", "live.onMessage:"), "") != 0
+			return 1
+
+		integer m_expr = _expr_string_lit(ctx, "GET")
+		integer p_expr = _expr_string_lit(ctx, path)
+		integer c_expr = _expr_string_lit(ctx, connect_name)
+		integer msg_expr = _expr_string_lit(ctx, message_name)
+		integer cls_expr = _expr_string_lit(ctx, close_name)
+		integer reg = _stmt_call(ctx, "_http_ws_route", "[" + m_expr.toString() + "," + p_expr.toString() + "," + c_expr.toString() + "," + msg_expr.toString() + "," + cls_expr.toString() + "]")
+		if _emit_statement_into_start(ctx, reg) != 0
+			return 1
+		return 0
+
+	// Append a comma-separated handle list to another.
+	string join_handles(string acc, string more)
+		if more.length() == 0
+			return acc
+		if acc.length() == 0
+			return more
+		return acc + "," + more
+
+	// Typed guard statements as a comma-separated handle list:
+	//   boolean __auth_ok = false
+	//   if _auth_require_role("<role>") == 1: __auth_ok = true     (per role)
+	//   if __auth_ok == false: return unauthorized()
+	// For void WebSocket handlers (is_void) the failure branch closes the
+	// connection instead: _ws_close(_ws_client_id()); return.
 	string build_guard_stmts(integer ctx, string roles, boolean is_void)
-		string result = ""
-		// boolean __auth_ok = false
-		integer false_expr = _expr_bool_lit(ctx, 0)
-		integer auth_ok_assign = _stmt_var_decl(ctx, "__auth_ok", "boolean", false_expr)
-		result = result + auth_ok_assign.toString()
+		integer auth_ok_decl = _stmt_var_decl(ctx, "__auth_ok", "boolean", _expr_bool_lit(ctx, 0))
+		string result = auth_ok_decl.toString()
 
-		// For each role: if _auth_require_role("role") == 1: __auth_ok = true
-		string remaining_roles = roles
-		integer role_safety = 0
-		while role_safety < 20 and remaining_roles.length() > 0
-			role_safety = role_safety + 1
-			integer comma = remaining_roles.indexOf(",")
-			string role = ""
-			if comma == -1
-				role = remaining_roles.trim()
-				remaining_roles = ""
-			else
-				role = remaining_roles.substring(0, comma).trim()
-				remaining_roles = remaining_roles.substring(comma + 1, remaining_roles.length())
-
+		list<string> role_list = roles.split(",")
+		iterate i in 0 to role_list.length() - 1
+			string role = role_list[i].trim()
 			if role.length() > 0
-				integer role_expr = _expr_string_lit(ctx, role)
-				integer role_check_call = _expr_call(ctx, "_auth_require_role", "[" + role_expr.toString() + "]")
-				integer one_expr = _expr_int_lit(ctx, 1, 0)
-				// op_code 5 = "==" per typed-emission-ops.toml
-				integer cond = _expr_binop(ctx, "==",role_check_call, one_expr)
-				integer true_expr = _expr_bool_lit(ctx, 1)
-				integer set_true = _stmt_assign(ctx, "__auth_ok", true_expr)
-				integer then_blk = _stmt_block(ctx, "[" + set_true.toString() + "]")
-				integer role_if = _stmt_if(ctx, cond, then_blk, 0)
+				integer role_check = _expr_call(ctx, "_auth_require_role", "[" + _expr_string_lit(ctx, role).toString() + "]")
+				integer cond = _expr_binop(ctx, "==", role_check, _expr_int_lit(ctx, 1, 0))
+				integer set_true = _stmt_assign(ctx, "__auth_ok", _expr_bool_lit(ctx, 1))
+				integer role_if = _stmt_if(ctx, cond, _stmt_block(ctx, "[" + set_true.toString() + "]"), 0)
 				result = result + "," + role_if.toString()
 
-		// if not __auth_ok: return unauthorized() / _ws_close(_ws_client_id())
-		integer auth_ok_ident = _expr_ident(ctx, "__auth_ok")
-		integer not_auth = _expr_binop(ctx, "==",auth_ok_ident, _expr_bool_lit(ctx, 0))
-		integer fail_stmt = 0
+		integer not_auth = _expr_binop(ctx, "==", _expr_ident(ctx, "__auth_ok"), _expr_bool_lit(ctx, 0))
+		string fail_stmts = ""
 		if is_void
-			// _ws_close(_ws_client_id())
 			integer ws_id_call = _expr_call(ctx, "_ws_client_id", "[]")
 			integer ws_close_call = _stmt_call(ctx, "_ws_close", "[" + ws_id_call.toString() + "]")
-			integer ret_void = _stmt_return(ctx, 0)
-			integer fail_blk = _stmt_block(ctx, "[" + ws_close_call.toString() + "," + ret_void.toString() + "]")
-			fail_stmt = _stmt_if(ctx, not_auth, fail_blk, 0)
+			fail_stmts = ws_close_call.toString() + "," + _stmt_return(ctx, 0).toString()
 		else
-			integer unauth_call = _expr_call(ctx, "unauthorized", "[]")
-			integer ret_unauth = _stmt_return(ctx, unauth_call)
-			integer fail_blk = _stmt_block(ctx, "[" + ret_unauth.toString() + "]")
-			fail_stmt = _stmt_if(ctx, not_auth, fail_blk, 0)
+			fail_stmts = _stmt_return(ctx, _expr_call(ctx, "unauthorized", "[]")).toString()
+		integer fail_if = _stmt_if(ctx, not_auth, _stmt_block(ctx, "[" + fail_stmts + "]"), 0)
+		return result + "," + fail_if.toString()
 
-		result = result + "," + fail_stmt.toString()
-		return result
-
-	// Build a cache statement, returning the stmt handle integer. Returns 0 on unknown arg.
+	// The cache() modifier as one statement handle (frame-server.ebnf §3.2).
+	// validate_endpoints has already rejected unknown values.
 	integer build_cache_stmt(integer ctx, string cache_arg)
-		// Quoted string form
-		if cache_arg.startsWith("\"") and cache_arg.endsWith("\"")
+		if cache_arg.startsWith("\"")
 			string val = cache_arg.substring(1, cache_arg.length() - 1)
 			if val == "no-store" or val == "no-cache"
 				return _stmt_call(ctx, "_http_no_cache", "[]")
@@ -810,98 +520,52 @@ functions:
 				integer hdr_name = _expr_string_lit(ctx, "Cache-Control")
 				integer hdr_val = _expr_string_lit(ctx, val)
 				return _stmt_call(ctx, "_http_set_header", "[" + hdr_name.toString() + "," + hdr_val.toString() + "]")
-			// Duration string: "5m"/"2h"/"1d"
-			string secs_str = duration_to_seconds(val)
-			integer secs_i = secs_str.toInteger()
-			integer secs_expr = _expr_int_lit(ctx, secs_i, 0)
-			return _stmt_call(ctx, "_http_set_cache", "[" + secs_expr.toString() + "]")
-		// Plain integer
-		integer n = cache_arg.toInteger()
-		integer n_expr = _expr_int_lit(ctx, n, 0)
-		return _stmt_call(ctx, "_http_set_cache", "[" + n_expr.toString() + "]")
+			// Duration string: "5m" / "2h" / "1d"
+			integer secs = duration_to_seconds(val)
+			return _stmt_call(ctx, "_http_set_cache", "[" + _expr_int_lit(ctx, secs, 0).toString() + "]")
+		return _stmt_call(ctx, "_http_set_cache", "[" + _expr_int_lit(ctx, cache_arg.toInteger(), 0).toString() + "]")
 
-	// Build middleware call statements, returning comma-separated handle list.
+	// The middleware() modifier (frame-server.ebnf §3.3): each listed function
+	// is called in order; a non-empty result short-circuits the request and
+	// becomes the response.
+	//   string __mw_N = <Name>()
+	//   if __mw_N.length() > 0: return __mw_N
 	string build_middleware_stmts(integer ctx, string mw_list)
 		string result = ""
-		string remaining = mw_list
-		integer idx = 0
-		integer safety = 0
-		while safety < 10 and remaining.length() > 0
-			safety = safety + 1
-			integer comma = remaining.indexOf(",")
-			string name = ""
-			if comma == -1
-				name = remaining.trim()
-				remaining = ""
-			else
-				name = remaining.substring(0, comma).trim()
-				remaining = remaining.substring(comma + 1, remaining.length())
-
+		list<string> names = mw_list.split(",")
+		iterate i in 0 to names.length() - 1
+			string name = names[i].trim()
 			if name.length() > 0
-				string var_name = "__mw_" + idx.toString()
-				integer mw_call_expr = _expr_call(ctx, name, "[]")
-				integer assign_stmt = _stmt_assign(ctx, var_name, mw_call_expr)
-
-				// if __mw_N.length() > 0: return __mw_N
-				integer var_expr = _expr_ident(ctx, var_name)
-				integer len_call = _expr_call(ctx, var_name + ".length", "[]")
-				integer zero_expr = _expr_int_lit(ctx, 0, 0)
-				// op_code 8 = ">" per typed-emission-ops.toml
-				integer cond = _expr_binop(ctx, ">",len_call, zero_expr)
-				integer ret_var = _expr_ident(ctx, var_name)
-				integer ret_stmt = _stmt_return(ctx, ret_var)
-				integer then_blk = _stmt_block(ctx, "[" + ret_stmt.toString() + "]")
-				integer mw_if = _stmt_if(ctx, cond, then_blk, 0)
-
-				if result.length() > 0
-					result = result + ","
-				result = result + assign_stmt.toString() + "," + mw_if.toString()
-				idx = idx + 1
-
+				string var_name = "__mw_" + i.toString()
+				integer decl = _stmt_var_decl(ctx, var_name, "string", _expr_call(ctx, name, "[]"))
+				integer len_call = _expr_method_call(ctx, _expr_ident(ctx, var_name), "length", "[]")
+				integer cond = _expr_binop(ctx, ">", len_call, _expr_int_lit(ctx, 0, 0))
+				integer ret_stmt = _stmt_return(ctx, _expr_ident(ctx, var_name))
+				integer mw_if = _stmt_if(ctx, cond, _stmt_block(ctx, "[" + ret_stmt.toString() + "]"), 0)
+				result = join_handles(result, decl.toString() + "," + mw_if.toString())
 		return result
 
-	// Emit a WebSocket handler function (void return, optional guard).
-	// Type handles are allocated fresh per call — see typed-emission.md §4
-	// single-consumption rule.
-	integer emit_ws_handler_typed(integer ctx, string name, string ws_body, string guard_roles, boolean apply_guard)
-		string preamble_handles = ""
-		if apply_guard and guard_roles.length() > 0
-			string guard_handles = build_guard_stmts(ctx, guard_roles, true)
-			if guard_handles.length() > 0
-				preamble_handles = guard_handles
-
-		integer body_stmt = 0
+	// Emit a void WebSocket handler; a non-empty guard_roles adds the guard.
+	integer emit_ws_handler_typed(integer ctx, string name, string ws_body, string guard_roles)
+		string stmts = ""
+		if guard_roles.length() > 0
+			stmts = build_guard_stmts(ctx, guard_roles, true)
 		if ws_body.length() > 0
-			body_stmt = _emit_stmt_from_source(ctx, ws_body, 0)
+			integer body_stmt = _emit_stmt_from_source(ctx, ws_body, 0)
 			if body_stmt == 0
 				_emit_error(ctx, 2, "FRAME-SERVER-E003", "syntax error in WebSocket handler body for " + name, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
 				return 1
-
-		string all_stmts = preamble_handles
-		if body_stmt != 0
-			if all_stmts.length() > 0
-				all_stmts = all_stmts + ","
-			all_stmts = all_stmts + body_stmt.toString()
-
-		integer fn_body = 0
-		if all_stmts.length() > 0
-			fn_body = _stmt_block(ctx, "[" + all_stmts + "]")
-		else
-			fn_body = _stmt_block(ctx, "[]")
-
-		integer ws_void_t = _type_void(ctx)
-		// _emit_function returns err (0 = success) per typed-emission.md §3.1.
-		integer fn_err = _emit_function(ctx, name, "[]", ws_void_t, fn_body, 2)
+			stmts = join_handles(stmts, body_stmt.toString())
+		integer fn_err = _emit_function(ctx, name, "[]", _type_void(ctx), _stmt_block(ctx, "[" + stmts + "]"), 2)
 		if fn_err != 0
 			_emit_error(ctx, 2, "FRAME-SERVER-E004", "failed to emit WebSocket handler: " + name, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
 			return 1
-
 		return 0
 
 // ============================================================================
 // SERVER BLOCK — V3 TYPED EXPANSION
 // ============================================================================
-// Replaces v1 expand_server which built a start: fragment via string concat.
+// Statements are built with typed constructors and emitted into start:.
 // All code here is plugin-authored (port, host, static, mail, cors, rate limit,
 // global error handler). Statements emitted via _emit_statement_into_start.
 
@@ -934,8 +598,12 @@ functions:
 		string rate_window_secs = "60"
 		boolean has_rate_limit = false
 
+		// server: handle: — only the `any <ident>:` clause is materialised
+		// (frame-server.ebnf §1 error_handle_field); typed clauses fall
+		// through to the server's default 500.
 		string handle_body = ""
-		boolean has_handle = false
+		string handle_err_ident = ""
+		integer handle_clause_tabs = 0
 
 		string lines = body
 		integer line_start = 0
@@ -978,7 +646,6 @@ functions:
 				line_start = line_end + 1
 				continue
 			if trimmed == "handle:"
-				has_handle = true
 				in_handle_block = true
 				in_mail_block = false
 				in_cors_block = false
@@ -1044,21 +711,15 @@ functions:
 					in_handle_block = false
 					in_handle_any_clause = false
 				else
-					if trimmed == "any err:" or trimmed.startsWith("any err:")
+					if trimmed.length() > 0 and in_handle_any_clause and leading_tabs(line) <= handle_clause_tabs
+						// A sibling clause ends the `any` clause body.
+						in_handle_any_clause = false
+					if trimmed.startsWith("any ") and trimmed.endsWith(":") and handle_err_ident.length() == 0
+						handle_err_ident = trimmed.substring(4, trimmed.length() - 1).trim()
+						handle_clause_tabs = leading_tabs(line)
 						in_handle_any_clause = true
-						line_start = line_end + 1
-						continue
-					if in_handle_any_clause
-						// Strip all leading tabs — the compiler wraps the
-						// fragment under a synthetic `start:` block and
-						// prepends exactly one tab per line. Extra leading
-						// tabs would over-indent and trip SYN001.
-						string body_line = line
-						if line.startsWith("\t\t\t")
-							body_line = line.substring(3, line.length())
-						else if line.startsWith("\t\t")
-							body_line = line.substring(2, line.length())
-						handle_body = handle_body + body_line + "\n"
+					else if in_handle_any_clause
+						handle_body = handle_body + line + "\n"
 					line_start = line_end + 1
 					continue
 
@@ -1077,29 +738,25 @@ functions:
 
 			line_start = line_end + 1
 
-		// Emit global error handler function if present (user-authored body — _emit_stmt_from_source)
+		// Global error handler. clean-server invokes it like a route handler —
+		// no arguments, request context in scope — and forwards the error text
+		// in the X-Clean-Error request header, so `<ident>.message` reads that
+		// header. Without an `any` clause body nothing is registered and the
+		// server's default 500 response applies.
+		string handle_code = reindent_block(handle_body)
+		boolean has_handle = handle_code.length() > 0
 		if has_handle
-			string rewritten_body = handle_body.replace("err.message", "message")
-			integer gh_body_stmt = 0
-			if rewritten_body.trim().length() > 0
-				gh_body_stmt = _emit_stmt_from_source(ctx, rewritten_body, 0)
-				if gh_body_stmt == 0
-					_emit_error(ctx, 2, "FRAME-SERVER-E005", "syntax error in server: handle: body", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
-					return 1
-			integer gh_fn_body = 0
-			if gh_body_stmt != 0
-				gh_fn_body = _stmt_block(ctx, "[" + gh_body_stmt.toString() + "]")
-			else
-				// empty handle body: emit a default return
-				integer gh_empty = _expr_string_lit(ctx, "")
-				integer gh_ret = _stmt_return(ctx, gh_empty)
-				gh_fn_body = _stmt_block(ctx, "[" + gh_ret.toString() + "]")
-			// Fresh type handles per typed-emission.md §4 clause 2 — one for the
-			// `message: string` parameter and one for the string return type.
-			integer gh_p_str = _type_string(ctx)
-			integer gh_r_str = _type_string(ctx)
-			integer gh_fn_err = _emit_function(ctx, "__server_global_error_handler", "[{\"name\":\"message\",\"type_handle\":" + gh_p_str.toString() + "}]", gh_r_str, gh_fn_body, 2)
-			if gh_fn_err != 0
+			handle_code = handle_code.replace(handle_err_ident + ".message", "__error_message")
+			handle_code = trailing_html_block_to_response(handle_code)
+			handle_code = wrap_returns_with_json(handle_code, contains_response_call(handle_code))
+			integer gh_body = _emit_stmt_from_source(ctx, handle_code, 0)
+			if gh_body == 0
+				_emit_error(ctx, 2, "FRAME-SERVER-E005", "syntax error in server: handle: body", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
+			integer hdr_name = _expr_string_lit(ctx, "X-Clean-Error")
+			integer read_msg = _stmt_var_decl(ctx, "__error_message", "string", _expr_call(ctx, "_req_header", "[" + hdr_name.toString() + "]"))
+			integer gh_block = _stmt_block(ctx, "[" + read_msg.toString() + "," + gh_body.toString() + "]")
+			if _emit_function(ctx, "__server_global_error_handler", "[]", _type_string(ctx), gh_block, 2) != 0
 				return 1
 
 		// Emit start: statements in correct order
@@ -1195,27 +852,15 @@ functions:
 // ============================================================================
 // ROUTES BLOCK — V3 TYPED EXPANSION
 // ============================================================================
-// Replaces v1 expand_routes which built start: statements as a string.
+// Each directive becomes typed statements or a build_state record.
 // redirect: directives → _http_redirect_route via _emit_statement_into_start.
 // guard: directives → _build_state_set (these are [bridge] functions, unchanged).
 
 functions:
 	integer expand_routes_typed(integer ctx, string body)
-		string remaining = body
-		integer safety = 0
-
-		while safety < 200 and remaining.length() > 0
-			safety = safety + 1
-			integer nl = remaining.indexOf("\n")
-			string line = ""
-			if nl == -1
-				line = remaining
-				remaining = ""
-			else
-				line = remaining.substring(0, nl)
-				remaining = remaining.substring(nl + 1, remaining.length())
-
-			string trimmed = line.trim()
+		list<string> route_lines = body.split("\n")
+		iterate li in 0 to route_lines.length() - 1
+			string trimmed = route_lines[li].trim()
 			if trimmed.length() == 0
 				continue
 			if trimmed.startsWith("error:")
@@ -1253,9 +898,13 @@ functions:
 					if q2 != -1
 						string from_path = after.substring(q1 + 1, q2)
 
+						// frame-server.ebnf §10.1 writes the separator as `→`; `->`
+						// is accepted as its ASCII spelling.
 						string rest = after.substring(q2 + 1, after.length()).trim()
 						if rest.startsWith("->")
 							rest = rest.substring(2, rest.length()).trim()
+						else if rest.startsWith("→")
+							rest = rest.substring(1, rest.length()).trim()
 
 						integer q3 = rest.indexOf("\"")
 						if q3 != -1
@@ -1264,7 +913,9 @@ functions:
 								string to_path = rest.substring(q3 + 1, q4)
 
 								string after_to = rest.substring(q4 + 1, rest.length()).trim()
-								string status = "302"
+								// Permanent (301) unless a `[status]` suffix says otherwise
+								// (frame-server.ebnf §10.1).
+								string status = "301"
 								if after_to.startsWith("[")
 									integer close_b = after_to.indexOf("]")
 									if close_b != -1
@@ -1285,9 +936,9 @@ functions:
 // ============================================================================
 // SHARED DSL PARSING HELPERS
 // ============================================================================
-// These helpers parse the DSL body string using the plugin's own scanner.
-// They perform NO string construction — they only extract/locate fragments.
-// Preserved from v1 unchanged; they are the §3.11 extraction side.
+// These helpers locate and slice fragments of the DSL body. User-authored
+// handler code they return is passed verbatim to _emit_stmt_from_source
+// (typed-emission.md §3.11).
 
 functions:
 	// sanitize_route_id converts a route path to a valid identifier segment.
@@ -1304,8 +955,49 @@ functions:
 			i = i + 1
 		return result
 
+	// Every route method keyword (frame-server.ebnf §2 http_method).
+	list<string> route_methods()
+		return "GET,POST,PUT,DELETE,PATCH,FEED,LIVE".split(",")
+
+	// Position of the next `METHOD "` route header in text, or -1. A match
+	// must start a word, so `INPUT "` or `TARGET "` inside handler code is
+	// not taken for a PUT / GET header.
 	integer find_method_pos(string text, string method)
-		return text.indexOf(method + " \"")
+		string needle = method + " \""
+		integer pos = text.indexOf(needle)
+		while pos > 0
+			string before = text.substring(pos - 1, pos)
+			if before == "\n" or before == "\t" or before == " "
+				return pos
+			pos = text.indexOf(needle, pos + 1)
+		return pos
+
+	// Position of the next route header of any method, or -1.
+	integer next_route_pos(string text)
+		integer best = -1
+		list<string> methods = route_methods()
+		iterate i in 0 to methods.length() - 1
+			integer p = find_method_pos(text, methods[i])
+			if p >= 0 and (best == -1 or p < best)
+				best = p
+		return best
+
+	// The method keyword of the route header that starts at pos.
+	string route_method_at(string text, integer pos)
+		list<string> methods = route_methods()
+		iterate i in 0 to methods.length() - 1
+			string m = methods[i]
+			if text.substring(pos, pos + m.length() + 2) == m + " \""
+				return m
+		return ""
+
+	// The text of the current route's body: everything up to the next route
+	// header.
+	string route_region(string text)
+		integer end_pos = next_route_pos(text)
+		if end_pos == -1
+			return text
+		return text.substring(0, end_pos)
 
 	string parse_guard_roles(string modifiers)
 		integer open_b = modifiers.indexOf("[")
@@ -1337,20 +1029,15 @@ functions:
 			return ""
 		return after.substring(0, close_p).replace(" ", "")
 
-	// Convert duration string to seconds: "5m"→300, "2h"→7200, "1d"→86400
-	string duration_to_seconds(string val)
-		if val.length() < 2
-			return val
+	// Duration string to seconds: "5m"→300, "2h"→7200, "1d"→86400.
+	integer duration_to_seconds(string val)
 		string unit = val.substring(val.length() - 1, val.length())
-		string num_str = val.substring(0, val.length() - 1)
-		integer num = num_str.toInteger()
+		integer num = val.substring(0, val.length() - 1).toInteger()
 		if unit == "m"
-			return (num * 60).toString()
+			return num * 60
 		if unit == "h"
-			return (num * 3600).toString()
-		if unit == "d"
-			return (num * 86400).toString()
-		return val
+			return num * 3600
+		return num * 86400
 
 	// Count leading tab characters of a line.
 	integer leading_tabs(string line)
@@ -1390,11 +1077,7 @@ functions:
 				trailing = false
 		if trailing == false
 			return code
-		string indent = ""
-		integer m = 0
-		while m < base
-			indent = indent + "\t"
-			m = m + 1
+		string indent = tabs_indent(base)
 		string out = ""
 		iterate q in 0 to lines.length() - 1
 			string lq = lines[q]
@@ -1405,83 +1088,19 @@ functions:
 			out = out + lq
 		return out + "\n" + indent + "return htmlResponse(__route_page)"
 
-	// handler_sets_response: true when the handler code already calls a response helper.
-	// Preserved from v1 — used to decide whether auto-wrap is needed before
-	// passing handler_code to _emit_stmt_from_source.
-	boolean handler_sets_response(string code)
-		if code.indexOf("jsonResponse(") >= 0
-			return true
-		if code.indexOf("__route_default_body(") >= 0
-			return true
-		if code.indexOf("jsonResponseStatus(") >= 0
-			return true
-		if code.indexOf("htmlResponse(") >= 0
-			return true
-		if code.indexOf("redirectTo(") >= 0
-			return true
-		if code.indexOf("redirectToStatus(") >= 0
-			return true
-		if code.indexOf("redirect(") >= 0
-			return true
-		if code.indexOf("notFound(") >= 0
-			return true
-		if code.indexOf("notFoundMsg(") >= 0
-			return true
-		if code.indexOf("badRequest(") >= 0
-			return true
-		if code.indexOf("unauthorized(") >= 0
-			return true
-		if code.indexOf("forbidden(") >= 0
-			return true
-		if code.indexOf("httpStatus(") >= 0
-			return true
-		if code.indexOf("httpError(") >= 0
-			return true
-		if code.indexOf("httpHeader(") >= 0
-			return true
-		if code.indexOf("status(") >= 0
-			return true
-		if code.indexOf("_http_respond(") >= 0
-			return true
-		if code.indexOf("_http_redirect(") >= 0
-			return true
-		if code.indexOf("_http_set_header(") >= 0
-			return true
-		if code.indexOf("http.respond(") >= 0
-			return true
-		if code.indexOf("http.redirect(") >= 0
-			return true
-		if code.indexOf("http.setHeader(") >= 0
-			return true
-		if code.indexOf("_res_json(") >= 0
-			return true
-		if code.indexOf("_res_body(") >= 0
-			return true
-		if code.indexOf("_res_redirect(") >= 0
-			return true
-		if code.indexOf("_res_status(") >= 0
-			return true
-		if code.indexOf("_res_set_header(") >= 0
-			return true
-		if code.indexOf("_res_download(") >= 0
-			return true
-		if code.indexOf("resDownload(") >= 0
-			return true
-		if code.indexOf("json(") >= 0
-			return true
-		if code.indexOf("html(") >= 0
-			return true
-		if code.indexOf("error(") >= 0
-			return true
-		if code.indexOf("feed.") >= 0
-			return true
-		if code.indexOf("live.") >= 0
-			return true
-		if code.indexOf("_sse_") >= 0
-			return true
-		if code.indexOf("_ws_") >= 0
-			return true
+	// True when code calls a response helper — a function that writes the
+	// HTTP response itself (status, headers, body).
+	boolean contains_response_call(string code)
+		list<string> helpers = "jsonResponse(,jsonResponseStatus(,htmlResponse(,redirect(,redirectTo(,redirectToStatus(,notFound(,notFoundMsg(,badRequest(,unauthorized(,forbidden(,httpStatus(,httpError(,httpHeader(,status(,json(,html(,error(,render(,renderWith(,resDownload(,__route_default_body(,_http_respond(,_http_redirect(,_http_set_header(,http.respond(,http.redirect(,http.setHeader(,_res_json(,_res_body(,_res_redirect(,_res_status(,_res_set_header(,_res_download(".split(",")
+		iterate i in 0 to helpers.length() - 1
+			if code.indexOf(helpers[i]) >= 0
+				return true
 		return false
+
+	// True when the handler drives a stream (FEED / LIVE): it has no single
+	// response body to wrap.
+	boolean handler_streams(string code)
+		return code.indexOf("feed.") >= 0 or code.indexOf("live.") >= 0 or code.indexOf("_sse_") >= 0 or code.indexOf("_ws_") >= 0
 
 	// Returns true when '(' and ')' counts match — skip wrap on continuation lines.
 	boolean parens_balanced(string s)
@@ -1494,302 +1113,86 @@ functions:
 			if ch == ")"
 				depth = depth - 1
 			i = i + 1
-		if depth == 0
-			return true
-		return false
+		return depth == 0
 
-	// wrap_returns_with_json: rewrite `return <expr>` → `return __route_default_body(<expr>)`.
-	// Applied to user handler_code string before passing to _emit_stmt_from_source.
-	// This is a string operation on user-authored content (not plugin string construction),
-	// and is valid as pre-processing before the pass-through bridge call.
-	string wrap_returns_with_json(string code)
+	// Rewrite `return <expr>` → `return __route_default_body(<expr>)` so a raw
+	// value answers as a JSON body. Returns whose expression already calls a
+	// response helper are left alone. When the handler sets the response
+	// through a helper elsewhere (literal_only), only string-literal returns
+	// are rewritten: those are always raw bodies, while another value may
+	// carry a response a helper already wrote.
+	string wrap_returns_with_json(string code, boolean literal_only)
 		if code.indexOf("return ") < 0
 			return code
-
 		string result = ""
-		integer code_len = code.length()
-		integer cursor = 0
-		integer safety = 0
-		while safety < 500 and cursor < code_len
-			safety = safety + 1
-			integer nl = code.indexOf("\n", cursor)
-			integer line_end = code_len
-			if nl >= 0
-				line_end = nl
-
-			integer tabs = 0
-			while cursor + tabs < line_end and code.substring(cursor + tabs, cursor + tabs + 1) == "\t"
-				tabs = tabs + 1
-
-			boolean wrapped = false
-			integer after_tabs_pos = cursor + tabs
-			if line_end - after_tabs_pos >= 7 and code.substring(after_tabs_pos, after_tabs_pos + 7) == "return "
-				string expr = code.substring(after_tabs_pos + 7, line_end).trim()
-				if expr.length() > 0 and parens_balanced(expr)
-					result = result + tabs_indent(tabs) + "return __route_default_body(" + expr + ")\n"
-					wrapped = true
-
-			if wrapped == false
-				result = result + code.substring(cursor, line_end) + "\n"
-
-			if nl == -1
-				cursor = code_len
-			else
-				cursor = nl + 1
-
+		list<string> lines = code.split("\n")
+		iterate i in 0 to lines.length() - 1
+			string line = lines[i]
+			integer tabs = leading_tabs(line)
+			string stmt = line.substring(tabs, line.length())
+			string out = line
+			if stmt.startsWith("return ")
+				string expr = stmt.substring(7, stmt.length()).trim()
+				boolean wrap = expr.length() > 0 and parens_balanced(expr) and contains_response_call(expr) == false
+				if literal_only and expr.startsWith("\"") == false
+					wrap = false
+				if wrap
+					out = tabs_indent(tabs) + "return __route_default_body(" + expr + ")"
+			if line.length() > 0 or i < lines.length() - 1
+				result = result + out + "\n"
 		return result
 
-	// Precomputed indent strings (avoids per-character allocation).
+	// A run of depth tab characters.
 	string tabs_indent(integer depth)
-		if depth <= 0
-			return ""
-		if depth == 1
-			return "\t"
-		if depth == 2
-			return "\t\t"
-		if depth == 3
-			return "\t\t\t"
-		if depth == 4
-			return "\t\t\t\t"
-		if depth == 5
-			return "\t\t\t\t\t"
-		if depth == 6
-			return "\t\t\t\t\t\t"
-		if depth == 7
-			return "\t\t\t\t\t\t\t"
-		if depth == 8
-			return "\t\t\t\t\t\t\t\t"
-		string result = "\t\t\t\t\t\t\t\t"
-		integer d = 8
+		string result = ""
+		integer d = 0
 		while d < depth
 			result = result + "\t"
 			d = d + 1
 		return result
 
-// ============================================================================
-// HANDLER BODY EXTRACTION (§3.11 extraction side — preserved from v1)
-// ============================================================================
-// extract_handler_body slices the user-authored handler code from the DSL body.
-// The result is passed verbatim to _emit_stmt_from_source — no plugin strings
-// are mixed in. This is the legitimate pass-through pattern per §3.11.
-
-functions:
-	string extract_handler_body(string endpoint_body)
-		integer end_pos = endpoint_body.length()
-		integer next_get = find_method_pos(endpoint_body, "GET")
-		integer next_post = find_method_pos(endpoint_body, "POST")
-		integer next_put = find_method_pos(endpoint_body, "PUT")
-		integer next_delete = find_method_pos(endpoint_body, "DELETE")
-		integer next_patch = find_method_pos(endpoint_body, "PATCH")
-		integer next_stream = find_method_pos(endpoint_body, "FEED")
-		integer next_ws = find_method_pos(endpoint_body, "LIVE")
-
-		if next_get >= 0 and next_get < end_pos
-			end_pos = next_get
-		if next_post >= 0 and next_post < end_pos
-			end_pos = next_post
-		if next_put >= 0 and next_put < end_pos
-			end_pos = next_put
-		if next_delete >= 0 and next_delete < end_pos
-			end_pos = next_delete
-		if next_patch >= 0 and next_patch < end_pos
-			end_pos = next_patch
-		if next_stream >= 0 and next_stream < end_pos
-			end_pos = next_stream
-		if next_ws >= 0 and next_ws < end_pos
-			end_pos = next_ws
-
-		// Pass 1: find minimum tab depth
-		integer min_tabs = 99
-		integer scan_cursor = 0
-		integer scan_safety = 0
-		while scan_safety < 500 and scan_cursor < end_pos
-			scan_safety = scan_safety + 1
-			integer snl = endpoint_body.indexOf("\n", scan_cursor)
-			integer line_end = end_pos
-			if snl >= 0 and snl < end_pos
-				line_end = snl
-			integer tabs = 0
-			while scan_cursor + tabs < line_end and endpoint_body.substring(scan_cursor + tabs, scan_cursor + tabs + 1) == "\t"
-				tabs = tabs + 1
-			boolean has_content = false
-			integer probe = scan_cursor + tabs
-			while probe < line_end
-				string ch = endpoint_body.substring(probe, probe + 1)
-				if ch != " " and ch != "\t"
-					has_content = true
-					probe = line_end
-				else
-					probe = probe + 1
-			if has_content and tabs < min_tabs
-				min_tabs = tabs
-			if snl == -1 or snl >= end_pos
-				scan_cursor = end_pos
-			else
-				scan_cursor = snl + 1
-		if min_tabs == 99
-			min_tabs = 0
-
-		// Pass 2: re-indent to zero-tab base. The compiler wraps the fragment
-		// under a synthetic `start:` block and prepends exactly one tab per
-		// line (see clean-language-compiler grammar.rs parse_single_statement).
-		// Emitting extra leading tabs here would over-indent the statement
-		// under `start:` and trip SYN001.
+	// Re-indent a section to a zero-tab base, dropping blank and whole-line
+	// comment lines. The compiler wraps a fragment under a synthetic `start:`
+	// block and prepends one tab per line (grammar.rs parse_single_statement),
+	// so any extra leading tab would over-indent the statement and trip
+	// SYN001; a comment-only fragment would parse as no statement at all.
+	string reindent_block(string section)
+		list<string> lines = section.split("\n")
+		integer min_tabs = -1
+		iterate i in 0 to lines.length() - 1
+			string t = lines[i].trim()
+			if t.length() > 0 and t.startsWith("//") == false
+				integer tabs = leading_tabs(lines[i])
+				if min_tabs == -1 or tabs < min_tabs
+					min_tabs = tabs
 		string result = ""
-		integer cursor = 0
-		integer safety = 0
-		while safety < 500 and cursor < end_pos
-			safety = safety + 1
-			integer nl = endpoint_body.indexOf("\n", cursor)
-			integer line_end = end_pos
-			if nl >= 0 and nl < end_pos
-				line_end = nl
-			integer orig_tabs = 0
-			while cursor + orig_tabs < line_end and endpoint_body.substring(cursor + orig_tabs, cursor + orig_tabs + 1) == "\t"
-				orig_tabs = orig_tabs + 1
-			string trimmed = endpoint_body.substring(cursor + orig_tabs, line_end).trim()
-			if trimmed.length() > 0
-				integer rel_depth = orig_tabs - min_tabs
-				if rel_depth < 0
-					rel_depth = 0
-				result = result + tabs_indent(rel_depth) + trimmed + "\n"
-			if nl == -1 or nl >= end_pos
-				cursor = end_pos
-			else
-				cursor = nl + 1
-
+		iterate j in 0 to lines.length() - 1
+			string line = lines[j]
+			string trimmed = line.trim()
+			if trimmed.length() > 0 and trimmed.startsWith("//") == false
+				integer depth = leading_tabs(line) - min_tabs
+				if depth < 0
+					depth = 0
+				result = result + tabs_indent(depth) + trimmed + "\n"
 		return result
 
-// ============================================================================
-// LIVE HANDLER BODY EXTRACTION (§3.11 extraction side — preserved from v1)
-// ============================================================================
-
-functions:
-	string extract_ws_connect_body(string endpoint_body)
-		string raw = extract_ws_raw_section(endpoint_body)
-		integer msg_pos = raw.indexOf("\tlive.onMessage:")
-		if msg_pos == -1
-			msg_pos = raw.indexOf("live.onMessage:")
-		integer section_end = raw.length()
-		if msg_pos >= 0
-			section_end = msg_pos
-		string section = raw.substring(0, section_end)
-		return reindent_ws_section(section)
-
-	string extract_ws_message_body(string endpoint_body)
-		string raw = extract_ws_raw_section(endpoint_body)
-		integer label_pos = raw.indexOf("live.onMessage:")
-		if label_pos == -1
+	// The body of a LIVE sub-block (`live.onMessage:` / `live.onClose:`): the
+	// lines after its label, up to the other sub-block's label.
+	string live_section(string region, string label, string other_label)
+		integer at = region.indexOf(label)
+		if at == -1
 			return ""
-		integer after_label = label_pos + 13
-		integer nl = raw.indexOf("\n", after_label)
+		integer nl = region.indexOf("\n", at)
 		if nl == -1
 			return ""
-		string block_start = raw.substring(nl + 1, raw.length())
-		integer close_label = block_start.indexOf("live.onClose:")
-		integer section_end = block_start.length()
-		if close_label >= 0
-			section_end = close_label
-		string section = block_start.substring(0, section_end)
-		return reindent_ws_section(section)
-
-	string extract_ws_close_body(string endpoint_body)
-		string raw = extract_ws_raw_section(endpoint_body)
-		integer label_pos = raw.indexOf("live.onClose:")
-		if label_pos == -1
-			return ""
-		integer after_label = label_pos + 11
-		integer nl = raw.indexOf("\n", after_label)
-		if nl == -1
-			return ""
-		string section = raw.substring(nl + 1, raw.length())
-		return reindent_ws_section(section)
-
-	string extract_ws_raw_section(string endpoint_body)
-		integer end_pos = endpoint_body.length()
-		integer next_get = find_method_pos(endpoint_body, "GET")
-		integer next_post = find_method_pos(endpoint_body, "POST")
-		integer next_put = find_method_pos(endpoint_body, "PUT")
-		integer next_delete = find_method_pos(endpoint_body, "DELETE")
-		integer next_patch = find_method_pos(endpoint_body, "PATCH")
-		integer next_stream = find_method_pos(endpoint_body, "FEED")
-		integer next_ws = find_method_pos(endpoint_body, "LIVE")
-		if next_get >= 0 and next_get < end_pos
-			end_pos = next_get
-		if next_post >= 0 and next_post < end_pos
-			end_pos = next_post
-		if next_put >= 0 and next_put < end_pos
-			end_pos = next_put
-		if next_delete >= 0 and next_delete < end_pos
-			end_pos = next_delete
-		if next_patch >= 0 and next_patch < end_pos
-			end_pos = next_patch
-		if next_stream >= 0 and next_stream < end_pos
-			end_pos = next_stream
-		if next_ws >= 0 and next_ws < end_pos
-			end_pos = next_ws
-		return endpoint_body.substring(0, end_pos)
-
-	string reindent_ws_section(string section)
-		integer sec_len = section.length()
-		integer min_tabs = 99
-		integer scan_cursor = 0
-		integer scan_safety = 0
-		while scan_safety < 500 and scan_cursor < sec_len
-			scan_safety = scan_safety + 1
-			integer snl = section.indexOf("\n", scan_cursor)
-			integer line_end = sec_len
-			if snl >= 0
-				line_end = snl
-			integer tabs = 0
-			while scan_cursor + tabs < line_end and section.substring(scan_cursor + tabs, scan_cursor + tabs + 1) == "\t"
-				tabs = tabs + 1
-			boolean has_content = false
-			integer probe = scan_cursor + tabs
-			while probe < line_end
-				string ch = section.substring(probe, probe + 1)
-				if ch != " " and ch != "\t"
-					has_content = true
-					probe = line_end
-				else
-					probe = probe + 1
-			if has_content and tabs < min_tabs
-				min_tabs = tabs
-			if snl == -1
-				scan_cursor = sec_len
-			else
-				scan_cursor = snl + 1
-		if min_tabs == 99
-			min_tabs = 0
-
-		string result = ""
-		integer cursor = 0
-		integer safety = 0
-		while safety < 500 and cursor < sec_len
-			safety = safety + 1
-			integer nl = section.indexOf("\n", cursor)
-			integer line_end = sec_len
-			if nl >= 0
-				line_end = nl
-			integer orig_tabs = 0
-			while cursor + orig_tabs < line_end and section.substring(cursor + orig_tabs, cursor + orig_tabs + 1) == "\t"
-				orig_tabs = orig_tabs + 1
-			string trimmed = section.substring(cursor + orig_tabs, line_end).trim()
-			if trimmed.length() > 0
-				integer rel_depth = orig_tabs - min_tabs
-				if rel_depth < 0
-					rel_depth = 0
-				// Base indent = 0 — the compiler wraps the fragment with a
-				// synthetic `start:` block and prepends one tab per line.
-				result = result + tabs_indent(rel_depth) + trimmed + "\n"
-			if nl == -1
-				cursor = sec_len
-			else
-				cursor = nl + 1
-		return result
+		string rest = region.substring(nl + 1, region.length())
+		integer other = rest.indexOf(other_label)
+		if other >= 0
+			rest = rest.substring(0, other)
+		return reindent_block(rest)
 
 // ============================================================================
-// SERVER CONFIG HELPERS (preserved from v1 — purely parser utilities)
+// SERVER CONFIG HELPERS
 // ============================================================================
 
 functions:
@@ -1842,164 +1245,62 @@ functions:
 	// Emits the pass_criteria selector helpers, the __debug_capture_handler
 	// function, and the GET /_debug/capture route registration.
 	//
-	// Each helper is emitted using the same "user-authored fragment" pattern
-	// that expand_server_typed uses for `handle:` (the global error handler):
-	//   1. Build a Clean source fragment as a string.
-	//   2. Parse it via _emit_stmt_from_source(ctx, body, 0) → stmt handle.
-	//   3. Wrap in _stmt_block, emit via _emit_function with typed signature.
-	// This is required because the current typed-emission surface can only
-	// emit helpers that call `_http_respond` directly — any helper that must
-	// call `_dev_snapshot`, `_env_get`, `_req_param`, `_json_get`, etc. has
-	// to go through the parse-fragment path (see the DEFERRED comment inside
-	// emit_module_helpers_typed for the specific codegen gap).
+	// The helper bodies have loops and branches, so each is written as a
+	// Clean source fragment, parsed with _emit_stmt_from_source, and emitted
+	// with a typed signature through _emit_function (emit_dc_helper).
 	//
 	// Canonical source of the emitted text: plugins/frame.server/dev/*.cln.
 	// The strings below MUST match those files verbatim.
 	integer emit_dev_capture(integer ctx)
-		// ── jsonEscapeString(s: string) -> string ────────────────────────
-		integer je_err = emit_dc_helper_1param(ctx, "jsonEscapeString", "s", dc_body_jsonEscapeString())
-		if je_err != 0
-			return je_err
+		if emit_dc_helper(ctx, "jsonEscapeString", "s", "string", dc_body_jsonEscapeString()) != 0
+			return 1
+		if emit_dc_helper(ctx, "buildRuntimeCrash", "entry", "string", dc_body_buildRuntimeCrash()) != 0
+			return 1
+		if emit_dc_helper(ctx, "buildWrongOutput", "entry,regex", "string", dc_body_buildWrongOutput()) != 0
+			return 1
+		if emit_dc_helper(ctx, "countJsonArrayEntries", "arr", "integer", dc_body_countJsonArrayEntries()) != 0
+			return 1
+		if emit_dc_helper(ctx, "findMostRecentFailingStatus", "request_log", "integer", dc_body_findMostRecentFailingStatus()) != 0
+			return 1
+		if emit_dc_helper(ctx, "logsContainWasmTrap", "logs", "boolean", dc_body_logsContainWasmTrap()) != 0
+			return 1
+		if emit_dc_helper(ctx, "computePassCriteria", "request_log,logs,wrong_output_hint,entry", "string", dc_body_computePassCriteria()) != 0
+			return 1
+		if emit_dc_helper(ctx, "mergePassCriteriaIntoSnapshot", "snapshot,pass_criteria_json", "string", dc_body_mergePassCriteriaIntoSnapshot()) != 0
+			return 1
+		if emit_dc_helper(ctx, "__debug_capture_handler", "", "string", dc_body_handler()) != 0
+			return 1
 
-		// ── buildRuntimeCrash(entry: string) -> string ───────────────────
-		integer brc_err = emit_dc_helper_1param(ctx, "buildRuntimeCrash", "entry", dc_body_buildRuntimeCrash())
-		if brc_err != 0
-			return brc_err
-
-		// ── buildWrongOutput(entry: string, regex: string) -> string ─────
-		integer bwo_err = emit_dc_helper_2param(ctx, "buildWrongOutput", "entry", "regex", dc_body_buildWrongOutput())
-		if bwo_err != 0
-			return bwo_err
-
-		// ── countJsonArrayEntries(arr: string) -> integer ────────────────
-		integer cje_err = emit_dc_helper_1param_intret(ctx, "countJsonArrayEntries", "arr", dc_body_countJsonArrayEntries())
-		if cje_err != 0
-			return cje_err
-
-		// ── findMostRecentFailingStatus(request_log: string) -> integer ──
-		integer fmrfs_err = emit_dc_helper_1param_intret(ctx, "findMostRecentFailingStatus", "request_log", dc_body_findMostRecentFailingStatus())
-		if fmrfs_err != 0
-			return fmrfs_err
-
-		// ── logsContainWasmTrap(logs: string) -> boolean ─────────────────
-		integer lcwt_err = emit_dc_helper_1param_boolret(ctx, "logsContainWasmTrap", "logs", dc_body_logsContainWasmTrap())
-		if lcwt_err != 0
-			return lcwt_err
-
-		// ── computePassCriteria(request_log, logs, hint, entry) -> string ─
-		integer cpc_err = emit_dc_helper_4param(ctx, "computePassCriteria", "request_log", "logs", "wrong_output_hint", "entry", dc_body_computePassCriteria())
-		if cpc_err != 0
-			return cpc_err
-
-		// ── mergePassCriteriaIntoSnapshot(snapshot, pc_json) -> string ────
-		integer mpc_err = emit_dc_helper_2param(ctx, "mergePassCriteriaIntoSnapshot", "snapshot", "pass_criteria_json", dc_body_mergePassCriteriaIntoSnapshot())
-		if mpc_err != 0
-			return mpc_err
-
-		// ── __debug_capture_handler() -> string ──────────────────────────
-		integer dch_err = emit_dc_handler(ctx)
-		if dch_err != 0
-			return dch_err
-
-		// ── Register the route: _http_route("GET", "/_debug/capture", "__debug_capture_handler")
+		// Register the route: _http_route("GET", "/_debug/capture", "__debug_capture_handler")
 		integer rt_m = _expr_string_lit(ctx, "GET")
 		integer rt_p = _expr_string_lit(ctx, "/_debug/capture")
 		integer rt_h = _expr_string_lit(ctx, "__debug_capture_handler")
 		integer rt_stmt = _stmt_call(ctx, "_http_route", "[" + rt_m.toString() + "," + rt_p.toString() + "," + rt_h.toString() + "]")
-		integer rt_err = _emit_statement_into_start(ctx, rt_stmt)
-		if rt_err != 0
+		if _emit_statement_into_start(ctx, rt_stmt) != 0
 			return 1
-
 		return 0
 
-	// ── Helper-emission shims ────────────────────────────────────────────
-	// One-param string helper returning string.
-	integer emit_dc_helper_1param(integer ctx, string name, string p1, string body_src)
+	// Emit one dev-capture function: string parameters named in params_csv
+	// (comma-separated, "" for none), a return type of "string", "integer" or
+	// "boolean", and body_src parsed as its body.
+	integer emit_dc_helper(integer ctx, string name, string params_csv, string return_kind, string body_src)
 		integer body_stmt = _emit_stmt_from_source(ctx, body_src, 0)
 		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E010", "dev-capture: syntax error in helper " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
+			_emit_error(ctx, 2, "FRAME-SERVER-E010", "dev-capture: syntax error in " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
 			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer p_str = _type_string(ctx)
-		integer r_str = _type_string(ctx)
-		integer fn_err = _emit_function(ctx, name, "[{\"name\":\"" + p1 + "\",\"type_handle\":" + p_str.toString() + "}]", r_str, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
-
-	// One-param string helper returning integer.
-	integer emit_dc_helper_1param_intret(integer ctx, string name, string p1, string body_src)
-		integer body_stmt = _emit_stmt_from_source(ctx, body_src, 0)
-		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E011", "dev-capture: syntax error in helper " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
-			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer p_str = _type_string(ctx)
-		integer r_int = _type_integer(ctx)
-		integer fn_err = _emit_function(ctx, name, "[{\"name\":\"" + p1 + "\",\"type_handle\":" + p_str.toString() + "}]", r_int, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
-
-	// One-param string helper returning boolean.
-	integer emit_dc_helper_1param_boolret(integer ctx, string name, string p1, string body_src)
-		integer body_stmt = _emit_stmt_from_source(ctx, body_src, 0)
-		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E012", "dev-capture: syntax error in helper " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
-			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer p_str = _type_string(ctx)
-		integer r_bool = _type_boolean(ctx)
-		integer fn_err = _emit_function(ctx, name, "[{\"name\":\"" + p1 + "\",\"type_handle\":" + p_str.toString() + "}]", r_bool, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
-
-	// Two-param string,string helper returning string.
-	integer emit_dc_helper_2param(integer ctx, string name, string p1, string p2, string body_src)
-		integer body_stmt = _emit_stmt_from_source(ctx, body_src, 0)
-		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E013", "dev-capture: syntax error in helper " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
-			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer p1_t = _type_string(ctx)
-		integer p2_t = _type_string(ctx)
-		integer r_str = _type_string(ctx)
-		integer fn_err = _emit_function(ctx, name, "[{\"name\":\"" + p1 + "\",\"type_handle\":" + p1_t.toString() + "},{\"name\":\"" + p2 + "\",\"type_handle\":" + p2_t.toString() + "}]", r_str, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
-
-	// Four-param string,string,string,string helper returning string.
-	integer emit_dc_helper_4param(integer ctx, string name, string p1, string p2, string p3, string p4, string body_src)
-		integer body_stmt = _emit_stmt_from_source(ctx, body_src, 0)
-		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E014", "dev-capture: syntax error in helper " + name, "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
-			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer p1_t = _type_string(ctx)
-		integer p2_t = _type_string(ctx)
-		integer p3_t = _type_string(ctx)
-		integer p4_t = _type_string(ctx)
-		integer r_str = _type_string(ctx)
-		string params_json = "[{\"name\":\"" + p1 + "\",\"type_handle\":" + p1_t.toString() + "},{\"name\":\"" + p2 + "\",\"type_handle\":" + p2_t.toString() + "},{\"name\":\"" + p3 + "\",\"type_handle\":" + p3_t.toString() + "},{\"name\":\"" + p4 + "\",\"type_handle\":" + p4_t.toString() + "}]"
-		integer fn_err = _emit_function(ctx, name, params_json, r_str, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
-
-	// Zero-param __debug_capture_handler returning string.
-	integer emit_dc_handler(integer ctx)
-		integer body_stmt = _emit_stmt_from_source(ctx, dc_body_handler(), 0)
-		if body_stmt == 0
-			_emit_error(ctx, 2, "FRAME-SERVER-E015", "dev-capture: syntax error in __debug_capture_handler", "{\"start\":0,\"end\":0,\"source\":\"dev_capture\"}")
-			return 1
-		integer fn_body = _stmt_block(ctx, "[" + body_stmt.toString() + "]")
-		integer r_str = _type_string(ctx)
-		integer fn_err = _emit_function(ctx, "__debug_capture_handler", "[]", r_str, fn_body, 2)
-		if fn_err != 0
-			return 1
-		return 0
+		string params = ""
+		if params_csv.length() > 0
+			list<string> names = params_csv.split(",")
+			iterate i in 0 to names.length() - 1
+				params = join_handles(params, param_entry(names[i], _type_string(ctx)))
+		integer ret_type = 0
+		if return_kind == "integer"
+			ret_type = _type_integer(ctx)
+		else if return_kind == "boolean"
+			ret_type = _type_boolean(ctx)
+		else
+			ret_type = _type_string(ctx)
+		return _emit_function(ctx, name, "[" + params + "]", ret_type, _stmt_block(ctx, "[" + body_stmt.toString() + "]"), 2)
 
 	// ── Embedded source bodies (mirror of plugins/frame.server/dev/*.cln) ─
 	// Any edit here MUST be mirrored in the canonical dev/*.cln files. The
@@ -2126,7 +1427,7 @@ functions:
 		return s
 
 // ============================================================================
-// VALIDATION (unchanged from v1 — not a lifecycle slot)
+// VALIDATION (called from expand_block_typed and the validate export)
 // ============================================================================
 
 functions:
@@ -2134,34 +1435,15 @@ functions:
 		if body.trim().length() == 0
 			return "endpoints: block is empty"
 
-		string remaining = body
-		integer safety = 0
-
-		while safety < 500 and remaining.length() > 0
-			safety = safety + 1
-			integer nl = remaining.indexOf("\n")
-			string line = ""
-			if nl == -1
-				line = remaining
-				remaining = ""
-			else
-				line = remaining.substring(0, nl)
-				remaining = remaining.substring(nl + 1, remaining.length())
-
-			string trimmed = line.trim()
+		list<string> lines = body.split("\n")
+		iterate li in 0 to lines.length() - 1
+			string trimmed = lines[li].trim()
 			if trimmed.length() == 0
 				continue
-
-			boolean is_route = trimmed.startsWith("GET \"") or trimmed.startsWith("POST \"") or trimmed.startsWith("PUT \"") or trimmed.startsWith("DELETE \"") or trimmed.startsWith("PATCH \"")
-			if not is_route
+			if route_method_at(trimmed, 0).length() == 0
 				continue
 
-			integer last_colon = -1
-			integer ci = 0
-			while ci < trimmed.length()
-				if trimmed.substring(ci, ci + 1) == ":"
-					last_colon = ci
-				ci = ci + 1
+			integer last_colon = trimmed.lastIndexOf(":")
 			if last_colon == -1
 				return "endpoints: route declaration must end with ':'"
 
@@ -2212,17 +1494,10 @@ functions:
 						cache_ok = true
 					if not cache_ok and val.length() >= 2
 						string last = val.substring(val.length() - 1, val.length())
-						if last == "m" or last == "h" or last == "d"
+						if (last == "m" or last == "h" or last == "d") and all_digits(val.substring(0, val.length() - 1))
 							cache_ok = true
-				if not arg.startsWith("\"")
-					boolean all_digits = arg.length() > 0
-					integer di = 0
-					while di < arg.length()
-						if arg.substring(di, di + 1) < "0" or arg.substring(di, di + 1) > "9"
-							all_digits = false
-						di = di + 1
-					if all_digits
-						cache_ok = true
+				if not arg.startsWith("\"") and all_digits(arg)
+					cache_ok = true
 				if not cache_ok
 					return "endpoints: invalid cache() value — use integer seconds, or \"no-store\"/\"no-cache\"/\"public\"/\"private\"/\"5m\"/\"2h\"/\"1d\""
 
@@ -2250,21 +1525,9 @@ functions:
 		if body.trim().length() == 0
 			return "routes: block is empty"
 
-		string remaining = body
-		integer safety = 0
-
-		while safety < 200 and remaining.length() > 0
-			safety = safety + 1
-			integer nl = remaining.indexOf("\n")
-			string line = ""
-			if nl == -1
-				line = remaining
-				remaining = ""
-			else
-				line = remaining.substring(0, nl)
-				remaining = remaining.substring(nl + 1, remaining.length())
-
-			string trimmed = line.trim()
+		list<string> lines = body.split("\n")
+		iterate li in 0 to lines.length() - 1
+			string trimmed = lines[li].trim()
 			if trimmed.length() == 0
 				continue
 			if trimmed.startsWith("error:")
@@ -2276,7 +1539,19 @@ functions:
 				string after = trimmed.substring(9, trimmed.length()).trim()
 				if after.indexOf("\"") == -1
 					return "routes: redirect: directive must specify a quoted from-path"
-				if after.indexOf("->") == -1
-					return "routes: redirect: directive must use '->' separator: redirect: \"/from\" -> \"/to\""
+				if after.indexOf("->") == -1 and after.indexOf("→") == -1
+					return "routes: redirect: directive must use the '→' (or '->') separator: redirect: \"/from\" → \"/to\""
 
 		return ""
+
+	// True when s is a non-empty run of decimal digits.
+	boolean all_digits(string s)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch < "0" or ch > "9"
+				return false
+			i = i + 1
+		return true

@@ -4,39 +4,11 @@
 //   An instant scene swap is jarring. Use scene.changeTo with a transition
 //   (fade, slide) for smoothness. Use scene.set / scene.get to pass data
 //   (score, level number, selected character) to the incoming scene.
+//   Each scene lives in its own file (CVS-S011): this is app/canvas/game.cln;
+//   the "menu" and "game-over" scenes are their own canvasScene: files.
 
 plugins:
 	frame.canvas
-
-// ── MAIN MENU SCENE ──────────────────────────────────────────────────────────
-
-canvasScene: width=800 height=600 fps=60 id="menu"
-
-	state:
-		number titleY = -100.0     // animates in from above
-
-	tween "titleEntrance":
-		titleY from=-100 to=150
-		duration = 0.8
-		ease = "easeOutBack"
-
-	init:
-		play tween "titleEntrance"
-
-	draw:
-		canvas.clear color="#0a0a1a"
-		canvas.text "MY GAME" x=400 y=titleY size=64 color="white" align="center"
-		canvas.text "Press SPACE to start" x=400 y=350 size=24 color="#aaaaaa" align="center"
-
-	onKeyDown: param="key"
-		if key == "Space"
-			// Pass starting data to the game scene before transitioning
-			scene.set "level" value=1
-			scene.set "score" value=0
-			// Fade out over 0.5s, then load the game scene
-			scene.changeTo "game" transition="fade" duration=0.5
-
-// ── GAME SCENE ───────────────────────────────────────────────────────────────
 
 canvasScene: width=800 height=600 fps=60 id="game"
 
@@ -44,46 +16,39 @@ canvasScene: width=800 height=600 fps=60 id="game"
 		integer level = 1
 		integer score = 0
 		number playerX = 400.0
+		number bannerAlpha = 0.0
+
+	tween "levelBanner":
+		bannerAlpha from=1.0 to=0.0
+		duration = 1.2
+		ease = "easeInQuad"
 
 	init:
-		// Read data passed from the menu scene
-		level = scene.get("level").toInteger()
-		score = scene.get("score").toInteger()
+		// Read the data the previous scene passed with scene.set
+		level = scene.get "level".toInteger()
+		score = scene.get "score".toInteger()
+		play tween "levelBanner"
 
 	draw:
 		canvas.clear color="#1a1a2e"
-		canvas.text "Level {level}  Score: {score}" x=10 y=30 size=18 color="white"
+		canvas.text value="Level {level}  Score: {score}" x=10 y=30 size=18 color="white"
+		canvas.alpha value=bannerAlpha:
+			canvas.text value="LEVEL {level}" x=400 y=250 size=48 color="white" align="center"
 		canvas.rect x=playerX y=500 width=40 height=40 color="#3b82f6"
 
 	onKeyDown: param="key"
 		if key == "Escape"
-			// Return to menu with a slide transition
+			// Back to the menu with a slide transition
 			scene.changeTo "menu" transition="slide" duration=0.4
+			return
 
-		// Simulate level complete
+		// Level complete: pass the next level's data, then fade into it
 		if key == "Enter"
 			scene.set "level" value=level + 1
 			scene.set "score" value=score + 100
 			scene.changeTo "game" transition="fade" duration=0.3
+			return
 
-// ── GAME OVER SCENE ──────────────────────────────────────────────────────────
-
-canvasScene: width=800 height=600 fps=60 id="game-over"
-
-	state:
-		integer final_score = 0
-
-	init:
-		final_score = scene.get("score").toInteger()
-
-	draw:
-		canvas.clear color="#1a0000"
-		canvas.text "GAME OVER" x=400 y=200 size=64 color="#ff4444" align="center"
-		canvas.text "Score: {final_score}" x=400 y=300 size=32 color="white" align="center"
-		canvas.text "Press R to restart" x=400 y=380 size=20 color="#aaaaaa" align="center"
-
-	onKeyDown: param="key"
-		if key == "r" or key == "R"
-			scene.set "level" value=1
-			scene.set "score" value=0
-			scene.changeTo "game" transition="fade" duration=0.5
+		if key == "q"
+			scene.set "score" value=score
+			scene.changeTo "game-over" transition="fade" duration=0.5

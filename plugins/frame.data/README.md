@@ -1,99 +1,69 @@
 # frame.data Plugin
 
-ORM and database plugin for Clean Language. Provides DSL blocks for data modeling and database operations.
+ORM and database plugin for Clean Language. The language-level rules live in
+the spec — this file only orients you:
 
-## Blocks
+- Syntax: `foundation/spec/framework/grammar/frame-data.ebnf`
+- Semantics (DAT-* rules): `foundation/spec/framework/frame-data-semantics.md`
+- `db.*` functions: `foundation/spec/stdlib-reference.md` §9
 
-### model
+## Data models
 
-Defines a database model with automatic ORM methods.
-
-**Attributes:**
-- `name` (required) - Model class name (PascalCase)
-- `table` (optional) - Database table name (defaults to lowercase of name)
-
-**Example:**
 ```clean
-import:
-    frame.data
-
-model: name="User" table="users"
-    string email
-    string name
-    boolean active = true
-    string created_at
+data Post:
+	table "posts"                       // optional; default: snake_case plural
+	fields:
+		integer id primary generated
+		string title required
+		integer viewCount default: 0
+	indexes:
+		(viewCount, title)
+	relations:
+		author: belongs_to User on authorId
+	queries:
+		list<Post> popular(integer minViews)
+			return find:
+				where:
+					viewCount >= minViews
 ```
 
-**Generated Methods:**
-- `save()` - Insert or update the model
-- `delete()` - Delete the model from database
-- `find(id)` - Find model by ID (static)
-- `all()` - Get all models (static)
-- `where(column, value)` - Find models matching criteria (static)
-- `findBy(column, value)` - Find first model matching criteria (static)
+`data M:` emits `class M` (fields plus `save()`, `delete()`, `migrate()`,
+conforming to `can Persist`), the query methods of `queries:`, and the
+per-model `PagedResult_M` / `CursorResult_M` classes.
 
-### query
+## Reading
 
-Creates a query builder for complex database queries.
+`M.find:`, `M.first:`, `M.findOrFail:`, `M.count:`, `M.exists:`,
+`M.paginate:`, `M.cursor:` with the clauses `where:`, `order:`, `limit:`,
+`offset:`, `select:`, `join:`, `link:`, `include:`, `group:`, `having:`,
+`paginate:` and `cursor:`. Each query becomes one expression that builds the
+SQL at run time; values are quoted, never pasted raw.
 
-**Attributes:**
-- `model` (required) - Model name to query
+## Writing
 
-**Example:**
-```clean
-query: model="User"
-    where: column="active" value=true
-    order: column="created_at" direction="desc"
-    limit: 10
-```
+`Database.save(entity)`, `Database.delete(entity)`,
+`Database.deleteOrFail(entity)`, `Database.saveAll(list)`,
+`Database.deleteAll(list)`. Group writes in `transaction:` (flat — no
+nesting). Versioned schema changes go in `migrate "001_name":` blocks with
+`up:` / `down:` SQL string literals. Raw SQL: `db.query(sql, params)`,
+`db.execute(sql, params)`.
 
-### transaction
+## Tenant isolation
 
-Wraps operations in a database transaction with automatic rollback on error.
+A model with a `tenantId` (or `tenant_id`) field is tenant-scoped: inserts
+take the session tenant (`tenant_getId()`, frame.auth) when the field is
+empty, and every query, update and delete is limited to that tenant.
 
-**Example:**
-```clean
-transaction:
-    user = User()
-    user.email = "test@example.com"
-    user.save()
-
-    post = Post()
-    post.user_id = user.id
-    post.title = "First Post"
-    post.save()
-```
-
-## Generated Code
-
-The plugin expands DSL blocks into Clean code that uses Host Bridge functions:
-
-- `_db_query(sql, params)` - Execute query and return rows
-- `_db_query_one(sql, params)` - Execute query and return single row
-- `_db_insert(table, data)` - Insert row and return ID
-- `_db_update(table, id, data)` - Update row by ID
-- `_db_delete(table, id)` - Delete row by ID
-- `_db_begin_transaction()` - Start transaction
-- `_db_commit()` - Commit transaction
-- `_db_rollback()` - Rollback transaction
-
-## Building
+## Building and testing
 
 ```bash
-./build.sh
-# or
-cln compile src/main.cln -o plugin.wasm
+CLN_COMPILER=~/.cleen/bin/cln bash build.sh
+bash ../../scripts/test-plugins.sh                       # plugin helper tests (tests/)
+CLEEN_SERVER=~/.cleen/bin/clean-server ../../scripts/run-framework-tests.sh unit/plugins/data
 ```
 
-## Installation
+## Plugin contracts
 
-```bash
-cleen plugin install ./
-```
-
-## Plugin Contracts
-
-Implements:
-
-- [`lifecycle`](../../../foundation/spec/plugins/contracts/lifecycle.md) — `module_helpers_are_roots = true` so preamble-emitted ORM helpers (PagedResult / CursorResult constructors, query builders) survive the import-minimality BFS even when only reached through plugin-generated CRUD code.
-- [`bridge-host-classes`](../../../foundation/spec/plugins/contracts/bridge-host-classes.md) — every `_db_*` bridge declares `hosts = ["server"]`; the database driver only loads on hosts that ship a runtime DB connection.
+- `lifecycle` — `module_helpers_are_roots = true`; `emit_module_helpers_typed`
+  emits `can Persist:` and `class Database`.
+- `bridge-host-classes` — every `_db_*` bridge declares `hosts = ["server"]`.

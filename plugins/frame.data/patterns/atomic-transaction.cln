@@ -1,0 +1,46 @@
+// Pattern: atomic-transaction
+// Use when: one business operation writes more than one row or table and
+//   must either fully succeed or fully roll back (transfer between accounts,
+//   order + line items, user + profile creation).
+// Anti-pattern: DON'T issue the writes as separate top-level saves. If a
+//   later write fails, the earlier ones are already committed. Wrap the
+//   whole sequence in transaction:; any error inside rolls everything back
+//   (DAT-T002). transaction: blocks are flat — never nest them (DAT-T003).
+
+plugins:
+	frame.data
+
+data Account:
+	fields:
+		integer id primary generated
+		string owner required unique
+		integer balanceCents required
+
+data Transfer:
+	fields:
+		integer id primary generated
+		integer fromAccountId required
+		integer toAccountId required
+		integer amountCents required
+
+functions:
+	boolean transfer(integer fromId, integer toId, integer amountCents)
+		transaction:
+			Account payer = Account.findOrFail:
+				where:
+					id == fromId
+			if payer.balanceCents < amountCents
+				error("INSUFFICIENT_FUNDS")
+			Account payee = Account.findOrFail:
+				where:
+					id == toId
+			payer.balanceCents = payer.balanceCents - amountCents
+			payee.balanceCents = payee.balanceCents + amountCents
+			Database.save(payer)
+			Database.save(payee)
+			Transfer record = Transfer()
+			record.fromAccountId = fromId
+			record.toAccountId = toId
+			record.amountCents = amountCents
+			Database.save(record)
+		return true

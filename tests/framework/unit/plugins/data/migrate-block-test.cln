@@ -1,0 +1,37 @@
+// Test: frame.data — versioned migrations.
+// Spec: frame-data.ebnf §7 (up:/down: hold SQL string literals, one
+// statement each), DAT-C006/C007; the host applies registered migrations
+// before the first request.
+// Regression: up:/down: lines were sent with their quotes, so a migration
+// written in the grammar's string-literal form produced invalid SQL.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+migrate "001_create_widgets":
+	up:
+		"CREATE TABLE widgets (id INTEGER PRIMARY KEY, label TEXT)"
+		"CREATE INDEX idx_widgets_label ON widgets (label)"
+	down:
+		"DROP TABLE widgets"
+
+endpoints:
+	GET "/test":
+		db.execute("INSERT INTO widgets (label) VALUES ('a')", "[]")
+		string rows = db.query("SELECT COUNT(*) AS n FROM widgets", "[]")
+		boolean ok_table = json.get(rows, "data.rows.0.n") == "1"
+		string idx = db.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_widgets_label'", "[]")
+		boolean ok_index = json.get(idx, "data.rows.0.n") == "1"
+
+		if ok_table and ok_index
+			printl("PASS: data-migrate-block")
+		else
+			printl("FAIL: data-migrate-block table=" + ok_table.toString() + " index=" + ok_index.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-migrate-block server ready")

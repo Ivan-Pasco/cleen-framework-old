@@ -4,6 +4,23 @@ Extracted from plugin.toml description on 2026-07-19. Each entry below was previ
 
 > Intro (pre-versioned): Server plugin for Clean Language - provides routing, request context, response helpers, and authentication guards.
 
+## v2.9.8
+
+Review fixes (spec: frame-server.ebnf, frame-server-semantics.md, plugin-contract.md §3.6).
+
+- `middleware()` route modifier compiles and works: each middleware result is a declared `string` local, and a non-empty result short-circuits the request. It previously failed with SEM007 (undeclared `__mw_N`).
+- `server: handle:` — the global error handler is parameterless and reads the error from `X-Clean-Error`, so clean-server can call it (it was never reachable before); `any <ident>:` accepts any identifier; `req.*` works inside it; raw returns are wrapped like route handlers; a `handle:` block with only typed clauses registers nothing, so the server's default 500 applies instead of an empty 200.
+- `notFound(message?)`, `badRequest(message?)`, `redirect(url, status?)` accept the argument forms frame-server.ebnf §4 defines (default parameters); `notFoundMsg` stays as an alias.
+- Error envelopes escape newlines, carriage returns and tabs, so a message such as a wasm trap backtrace no longer produces invalid JSON (SRV-I002).
+- `routes:` `redirect:` defaults to 301 (frame-server.ebnf §10.1) and its validation accepts the `→` separator.
+- An `endpoints:` block is no longer cut off after 100 routes; handler, LIVE and validation scanners have no line caps.
+- LIVE: a body with `live.onClose:` but no `live.onMessage:` no longer leaks the close block into onConnect; comment-only handler sections compile.
+- `PUT "` / `GET "` inside identifiers such as `INPUT "` are not taken for route headers.
+- In a handler that also calls a response helper, `return "literal"` is still sent as a JSON body; `render(` / `renderWith(` count as response helpers.
+- Block validation runs inside `expand_block_typed` (FRAME-SERVER-E020), so malformed guard lists and cache values are reported even when the compiler does not call the `validate` export.
+- plugin.toml: `_dev_snapshot` declared (matches function-registry.toml); `registers_handler_at_arg` declared on `_http_route`, `_http_route_protected`, `_http_sse_route`, `_http_ws_route` (onConnect) and `_http_set_global_error_handler`; empty `server_init` / `per_request` lifecycle slots removed.
+- Refactor: module helpers and dev-capture helpers are emitted through shared builders; patterns compile against the current API.
+
 ## v2.9.7
 
 fix container-payload layouts in the `_json_encode_v2`, `_json_encode_pretty_v2`, and `_json_decode_v2` bridges shipped in v2.9.6. The v2.9.6 code was built against a stale BOXED_ANY_ABI.md that described tag-5/tag-6 payloads as Clean `list<any>` / `pairs<string,any>` structures (16-byte and 8-byte headers with capacity/type_id fields). Foundation `[P1-hotfix-3]` (commit 1e22de3) corrected §3.2/§3.3 to what the compiler's `__json_from_cln_list` / `__json_from_cln_pairs` helpers actually emit: JSON-tree fragments with 4-byte `count` headers only. Encode paths now read tag-5 at `[count @0][elem_ptr × count @4]` (stride 4, total 4+count*4) and tag-6 at `[count @0][(key_ptr, val_ptr) × count @4]` (stride 8, total 4+count*8). Decode paths write the same shape. All `type_id` / `capacity` / `padding` writes removed. Added a compiler-format bit-for-bit compat test to `test_json_v2.mjs` (54/54 pass). Blast radius of v2.9.6 was zero — no compiler had yet emitted `_json_encode_v2` calls, so no deployed WASM used the broken path. **v2.9.6 is BROKEN — do not use.**

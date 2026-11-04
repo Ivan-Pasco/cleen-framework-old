@@ -1,0 +1,141 @@
+// Test: frame.canvas — DSL expressions and statements inside handler code.
+// Spec: foundation/spec/framework/grammar/frame-canvas.ebnf §20 (animation
+//       control), §21 (audio), §22 (input.*), §23 (collision.* with named
+//       attributes), §24 (camera.*), §25 (scene.*), §26 (page.*), §27
+//       (deltaTime() / time()); frame-canvas-semantics.md CVS-P001 (collision
+//       results are 1 or 0), CVS-X008 (integer / number / boolean state).
+//
+// The DSL expression forms are not plain Clean calls (`input.mouseX` has no
+// parentheses, `collision.circles` takes named attributes, `scene.get "k"`
+// takes a bare string). The plugin rewrites them to bridge calls — but never
+// inside string literals. The browser bridges are no-op stubs on
+// clean-server, so the test checks types, result ranges, untouched string
+// literals and that every statement form compiles and runs.
+//
+// Regressions covered: `input.mouseX` and `collision.* x1=..` failed to
+// type-check; integer / boolean state was loaded as number (SEM004 on
+// `integer doubled = score * 2`, SEM001 on `if paused`); audio.*, scene.*,
+// page.set and `play tween` lines were sent to the statement parser.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas dsl expressions: start")
+
+state:
+	integer failures = 0
+	integer frames = 0
+
+canvasScene: id="dsl" width=320 height=240
+
+	assets:
+		sound "jump" src="audio/jump.wav"
+		music "theme" src="audio/theme.ogg"
+
+	state:
+		integer score = 4
+		number heroX = 10.0
+		boolean paused = false
+
+	particles "spark":
+		lifetime = 0.2..0.6
+		speed = 40..90
+		color = "#ffcc00"
+
+	tween "slide":
+		heroX to=200.0
+		duration = 0.4
+		ease = "easeOutQuad"
+
+	timeline "intro":
+		at 0.0:
+			tween "slide"
+
+	init:
+		play tween "slide"
+		play timeline "intro"
+		audio.music.play "theme" loop=true volume=0.6
+		checkStrings()
+		_frame_callback(0)
+		_on_pointer_down(0, 5.0, 6.0)
+		finish()
+
+	onFrame: param="dt"
+		frames = frames + 1
+		// Typed state (CVS-X008): integer arithmetic stays integer.
+		integer doubled = score * 2
+		expectTrue(doubled == score * 2, "integer state arithmetic keeps its type")
+		if paused
+			score = score + 1
+		number now = time() + deltaTime()
+		expectTrue(now >= 0.0, "time() + deltaTime() is a number")
+		number mx = input.mouseX
+		number my = input.mouseY
+		integer left = input.keyDown("ArrowLeft")
+		integer clicked = input.mousePressed
+		string last = input.lastKey
+		expectTrue(left == 0 or left == 1, "input.keyDown returns 1 or 0")
+		expectTrue(clicked == 0 or clicked == 1, "input.mousePressed returns 1 or 0")
+		integer hit = collision.circles x1=heroX y1=my r1=8 x2=mx y2=my r2=size(4)
+		expectTrue(hit == 0 or hit == 1, "collision.circles returns 1 or 0 (CVS-P001)")
+		if collision.pointRect px=mx py=my rx=0 ry=0 rw=10 rh=10 == 1
+			score = score + 1
+		number dist = collision.rayCircle ox=0 oy=0 dx=1 dy=0 cx=heroX cy=0 r=5
+		expectTrue(dist >= -1.0, "collision.rayCircle returns a distance or -1")
+		string level = scene.get "level"
+		string shown = page.get "score"
+		string fsmState = animState.current "heroFSM"
+		expectTrue(level.length() >= 0 and shown.length() >= 0 and fsmState.length() >= 0 and last.length() >= 0, "string-returning DSL expressions")
+		page.set "score" value=score
+		scene.set "lastX" value=heroX
+
+	onPointerDown: param="x,y"
+		audio.play "jump" volume=0.8 pitch=1.2
+		emit particles "spark" x=x y=y
+		start particles "spark" x=x y=y
+		stop particles "spark"
+		animate heroX to=x duration=0.3 ease="easeOutBack"
+		seek timeline "intro" to=0.1
+		pause tween "slide"
+		resume tween "slide"
+		stop timeline "intro"
+		camera.shake intensity=4 duration=0.2
+		camera.setZoom zoom=1.5
+		audio.music.crossfade "theme" to="theme" duration=0.5
+		audio.music.fadeOut duration=0.2
+		audio.masterVolume value=0.9
+		scene.push "pause"
+
+functions:
+	// A user function named like a DSL attribute must stay callable.
+	number size(integer n)
+		return n.toNumber()
+
+	void checkStrings()
+		// String literals are never rewritten, even when they spell DSL forms:
+		// a rewritten literal would name the bridge (`_canvas_get_time()` ...).
+		expectLiteral("deltaTime()", 11, "deltaTime() inside a string literal is untouched")
+		expectLiteral("time() and fps()", 16, "time() / fps() inside a string literal are untouched")
+		expectLiteral("input.mouseX", 12, "input.* inside a string literal is untouched")
+		expectLiteral("collision.circles x1=1 y1=2", 27, "collision.* inside a string literal is untouched")
+		expectLiteral("scene.get \"k\"", 13, "scene.get inside a string literal is untouched")
+
+	void expectLiteral(string text, integer length, string message)
+		expectTrue(text.length() == length and text.indexOf("_canvas_") == -1 and text.indexOf("_input_") == -1 and text.indexOf("_collision_") == -1 and text.indexOf("_scene_") == -1, message)
+
+	void finish()
+		expectTrue(frames == 1, "onFrame ran once")
+		if failures == 0
+			printl("PASS: canvas-scene-dsl-expressions")
+		else
+			printl("FAIL: canvas-scene-dsl-expressions (" + failures.toString() + " assertion(s) failed)")
+
+	// Assertion helper — same contract as assertTrue in
+	// tests/framework/utils/assertions.cln (copied: no module import system yet).
+	boolean expectTrue(boolean condition, string message)
+		if condition == false
+			printl("FAIL: " + message)
+			failures = failures + 1
+			return false
+		return true

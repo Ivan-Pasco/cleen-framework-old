@@ -1,6 +1,9 @@
 // Test: frame.data — raw db.query for cases the ORM cannot express.
 // Rule A (Quick Reference): raw SQL is justified for COUNT aliases,
 // aggregates, and multi-table joins. This test exercises COUNT.
+// The db.query: block form (frame-data.ebnf §8) is exercised from a
+// function; inside an endpoint handler, and for db.queryAs(Model):, the
+// compiler does not parse the block form yet.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -18,6 +21,15 @@ data Item:
 		integer id primary generated
 		string name required
 		integer qty required
+
+start:
+	printl("[boot] data-raw-query server ready")
+
+functions:
+	string namesAbove(integer minQty)
+		return db.query:
+			sql: "SELECT name FROM items WHERE qty > ? ORDER BY name"
+			params: [minQty]
 
 endpoints:
 	GET "/test":
@@ -39,13 +51,15 @@ endpoints:
 
 		// Raw query — COUNT alias, ORM-inexpressible.
 		string result = db.query("SELECT COUNT(*) as cnt FROM items WHERE qty > 6", "")
-		boolean ok_shape = result.length() > 0
+		// Fixed: only checked that some text came back (a failed query also
+		// answers with JSON text); the count must be 2 (apple, cherry).
+		boolean ok_shape = json.get(result, "data.rows.0.cnt") == "2"
 
-		if ok_shape
+		string names = namesAbove(6)
+		boolean ok_block = json.get(names, "data.rows.1.name") == "cherry"
+
+		if ok_shape and ok_block
 			printl("PASS: data-raw-query")
 		else
 			printl("FAIL: data-raw-query")
 		return json({ok: true})
-
-start:
-	printl("[boot] data-raw-query server ready")

@@ -1,7 +1,7 @@
 [plugin]
 name = "frame.data"
-version = "3.0.16"
-description = "ORM and database plugin for Clean Language — v3.0.10: build_delete_body now returns an arena stmt handle from a single _emit_stmt_from_source call (whole body as source string). Class-spec inline methods' body_handle field accepts arena handles per typed-emission §3.13 (BatchMethod.body_handle in batch_schema.rs, resolved via arena.take_stmt() in _emit_class_full). This replaces the 3.0.9 attempt that used _batch_stmtSeq — that bridge expects a JSON handle array (\"[123, 456]\"), not a source string. Contract per compiler prompt c81db7f1-7bda-11f1. — v3.0.9: fix arena-vs-batch handle crossing in build_delete_body — the params line was built via _emit_stmt_from_source (plain arena handle, no BATCH_TAG) and pushed into a batch stmt array via _batch_arrayPush, tripping PLUGIN013 batch.arrayPush + PLUGIN008 already-consumed + PLUGIN013 InvalidBatchSpec body_handle OutOfRange. Now uses _batch_stmtSeq (returns a batch stmt handle) with sticky-error + handle==0 guards. Same bug class as frame.auth 2.4.3's PLUGIN013 fix, applied here after compiler prompt 58764a2b-7bd8-11f1 confirmed the pattern. — v3.0.8: fix SYN001 source-fragment indentation and add sticky-error checks in emit_orm_helpers path. generate_field_serialization no longer prefixes emitted statements with \\t\\t\\t\\t (four tabs) — callers concatenate them at column 0 so any leading tabs produce mixed-indent SYN001 failures. emit_parse_as_function no longer embeds the function-declaration line at the top of the source fragment (the compiler expects statement-scope input from _emit_stmt_from_source; the signature comes from _emit_function args). Also adds _ctx_had_error checks + body_handle==0 guards after every _emit_stmt_from_source and _emit_function call in the ORM helper and migration paths, so failures propagate cleanly instead of cascading through PLUGIN017 body_handle=0. Contract per compiler prompt 011e63d4-7bc0-11f1. — v3.0.7: _emit_function typed-emission contract compliance — external declaration corrected (string return_type → integer return_type_handle); all 8 emission call sites (__parse_as_<Model>, __find_as_strings_<Model>, __<Model>_exists, __<Model>_count, __<Model>_raw_update, __<Model>_raw_delete, __migration_<name>_up/down) now allocate _type_string / _type_integer / _type_boolean / _type_array / _type_class_ref handles and use type_handle in params JSON per compiler contract (bridges.rs:1116). Unblocked by compiler 0.33.32 parser fix (prompt c150650c-7bb7-11f1) that made `data Todo:` blocks correctly reach expand_data_model. — v3.0.6: Model.exists: now returns boolean (was integer), matching the spec. `__<Model>_exists` helpers and the instance-method .exists() emit `return true`/`return false` and declare `return_type: boolean`. Closes fingerprint 3c96dc980a54da7e (FRAME-DATA-EXISTS-RETURNS-INTEGER-NOT-BOOLEAN). — v3.0.5 baseline: fix SEM007 __find_sql / __first_sql / __where_json_pg / __where_json_cur / __paged_json / __cursor_json when Model.find:/first:/paginate:/cursor: are expanded with a multi-branch preamble. Each preamble statement is now emitted individually into the enclosing scope. Closes fingerprint 031060c8e272 (framework SEM007). — v3.0.4 baseline: plugin contracts v3 typed-emission. Atomic migration across 5 sub-cycles on branch v3/frame.data (Amendment 1 atomic per plugin). Closes marquee bug a648b4e6a8ec (find/join OOM) structurally: user-authored where/join/set/on_insert/match fragments route through _emit_expr_from_source (Am 6); no plugin-built triangular SQL concat. Predecessor v2.2.4 retained at git tag frame.data-v2.2.4."
+version = "3.0.17"
+description = "ORM and database plugin for Clean Language: data models with save/delete/migrate, the query DSL (find, first, findOrFail, count, exists, paginate, cursor), transactions, migrations and raw SQL."
 author = "Clean Language Team"
 license = "MIT"
 
@@ -24,27 +24,11 @@ expansion_version = "3.0.0"
 emission_ops_hash = "60d06836a7068ee66a330e8c26ca59bc47cc44991b4f31d56e95e06c707eeaf0"
 
 [lifecycle]
-# Plugin Contracts v3 — typed-emission.md §7. Under atomic-migration, every
-# declared slot MUST be a typed variant. Sub-cycle 1 ships a no-op stub for
-# emit_module_helpers_typed; the legacy emit_data_helpers preamble content
-# (insertReturningId helper) will be re-emitted from expand_data_model /
-# expand_block_typed in Sub-cycles 2–4 via _emit_statement_into_start, matching
-# frame.canvas's inline-emission pattern (see canvas main.cln:83–85 rationale).
+# typed-emission.md §7: emit_module_helpers_typed emits `can Persist:` and
+# `class Database` (DAT-S000, DAT-S011). Connection setup and migration
+# auto-apply live in clean-server, so the server-init slot emits nothing.
 module_helpers_are_roots = true
 module_helpers = "emit_module_helpers_typed"
-
-# Plugin Contracts v2 — lifecycle.md §3.4. Server-init slot retained (still
-# server-only) but renamed to the typed variant. Body remains empty pending the
-# expand_data_config rework called out in the v1 comment below — Sub-cycles
-# 2–4 do not touch this slot; it stays a stub through the v3 migration.
-# Original v1 note preserved:
-# migration.md §1.3 calls for connection-pool setup and migration auto-apply on
-# startup to live here. That logic currently resides in clean-server and is
-# invoked by _db_configure / _db_run_migrations calls emitted by
-# expand_data_config; moving it into this slot is deferred — the slot would
-# need to re-emit those calls while expand_data_config still emits them into
-# start:, causing double-execution. Declaring the slot now satisfies the
-# migration.md §1.3 manifest requirement.
 server_init = "emit_server_init_typed"
 
 [exports]
@@ -61,21 +45,16 @@ lint = "lint_project"
 # Model definitions and migration definitions
 blocks = ["data", "migrate"]
 
-# CRUD operations (these are expression-level, handled by compiler calling expand functions)
-# Audit note: *.select: and *.exists: were dispatched by expand_block but absent
-# from this list — Bug #0fe687073184 (MANIFEST-DRIFT-001). Added here so the
-# manifest matches the actual dispatch table; critical for Phase D when the
-# wasm_adapter.rs:74-76 hardcoded ORM verb list is removed.
+# Expression-level blocks routed to expand_block_typed. The removed v1
+# mutation verbs (insert, insert_id, update, upsert, delete) stay listed so
+# the plugin answers them with FRAME-DATA-E021 and the v2 replacement.
 #
-# CRITICAL: This `expressions` key MUST appear BEFORE any `[blocks.*]` or
-# `[bridge]` sub-tables open, otherwise TOML scopes it under whichever
-# sub-table is currently open. Post-plan follow-up 2026-07-04: prior layout
-# had this key AFTER [blocks.migrate], causing tomllib to parse it as
-# `blocks.migrate.expressions` and breaking client-mode ORM dispatch for
-# class-method queries (client_mode_orm_count_in_class_method_compiles).
+# This key MUST stay before any [blocks.*] or [bridge] table, otherwise TOML
+# scopes it under that table.
 expressions = [
   "*.find:",
   "*.first:",
+  "*.findOrFail:",
   "*.count:",
   "*.exists:",
   "*.select:",
@@ -111,13 +90,9 @@ functions = [
   { name = "_db_query", params = ["string", "string"], returns = "string", description = "Execute SELECT query, returns JSON result with rows", expand_strings = true, hosts = ["server"] },
   { name = "_db_execute", params = ["string", "string"], returns = "i32", description = "Execute INSERT/UPDATE/DELETE, returns affected row count", expand_strings = true, hosts = ["server"] },
 
-  # Current Unix timestamp — needed by the ORM `now()` helper so projects that
-  # load frame.data without frame.server (data-only / job workers) still get
-  # a working timestamp source for created_at / updated_at columns and similar.
-  # Closes ORM-DSL-CODEGEN-FUNCTION-NOT-FOUND (603ad03b53df) for the now()-not-found
-  # half of the report. The bridge is shared with frame.server (same _time_now
-  # in clean-server) — both plugins declaring it is a duplicate signature, not
-  # a duplicate implementation.
+  # Current Unix timestamp for `now()` / `time.now()`, so projects that load
+  # frame.data without frame.server still have a timestamp source. Same bridge
+  # as frame.server's declaration.
   { name = "_time_now", params = [], returns = "i64", description = "Current Unix timestamp in seconds since epoch.", hosts = ["all"] },
 
   # Transactions
@@ -125,7 +100,7 @@ functions = [
   { name = "_db_commit", params = [], returns = "i32", description = "Commit the current database transaction; returns 1 on success, 0 on error", hosts = ["server"] },
   { name = "_db_rollback", params = [], returns = "i32", description = "Rollback the current database transaction; returns 1 on success, 0 on error", hosts = ["server"] },
 
-  # Configuration - called once at startup from a data: config block
+  # Connection pool configuration (called by the host bootstrap).
   # Parameter: JSON object with keys: engine, host, port, database, user, password, pool_max, pool_idle_timeout_ms
   { name = "_db_configure", params = ["string"], returns = "i32", description = "Configure the database connection pool from JSON config object; returns 0 on success, -1 on error", expand_strings = true, hosts = ["server"] },
 
@@ -161,34 +136,33 @@ functions = [
 # Block-level keywords that start a declaration
 blocks = ["data", "migrate"]
 
-# Keywords used within plugin context
+# Keywords used within plugin context (frame-data.ebnf)
 keywords = [
-  { name = "find", description = "Query records from a model", context = "expression" },
-  { name = "first", description = "Get first matching record", context = "expression" },
-  { name = "exists", description = "Check if any records match the condition (returns 1/0)", context = "expression" },
-  { name = "findOrFail", description = "Find first matching record or raise NOT_FOUND error", context = "expression" },
-  { name = "count", description = "Count matching records", context = "expression" },
-  { name = "insert", description = "Insert new record(s)", context = "expression" },
-  { name = "insert_id", description = "Insert new record and return the new row's pk (DAT-Q014)", context = "expression" },
-  { name = "update", description = "Update existing record(s)", context = "expression" },
-  { name = "upsert", description = "Insert-or-update keyed by match: columns (DAT-Q015)", context = "expression" },
-  { name = "delete", description = "Delete record(s)", context = "expression" },
-  { name = "match", description = "Conflict-target columns for upsert: (DAT-Q015, DAT-C009)", context = "block" },
-  { name = "on_insert", description = "Assignments applied only on the INSERT branch of an upsert: (DAT-D005)", context = "block" },
-  { name = "migrate", description = "Run model schema migration (expression) or define a versioned migration file (block)", context = "both" },
-  { name = "where", description = "Filter query conditions", context = "block" },
-  { name = "order", description = "Sort query results", context = "block" },
-  { name = "limit", description = "Limit number of results", context = "block" },
-  { name = "offset", description = "Skip number of results", context = "block" },
-  { name = "include", description = "Include related models (eager loading)", context = "block" },
-  { name = "join", description = "Join related tables", context = "block" },
+  { name = "table", description = "Table name of a data model (DAT-M018)", context = "block" },
+  { name = "fields", description = "Persisted fields of a data model: `<type> <name> [primary] [generated] [required] [unique] [default: v] [as \"column\"]` (DAT-M015)", context = "block" },
+  { name = "indexes", description = "Indexes of a data model: `field`, `(a, b)`, optional `unique` (DAT-M019)", context = "block" },
+  { name = "relations", description = "Relations: `<name>: has_many|has_one|belongs_to <Model> on <fk>` (DAT-M020)", context = "block" },
+  { name = "queries", description = "Query methods of a data model, called as `<entity>.data.<method>()` (DAT-A006)", context = "block" },
+  { name = "find", description = "Query records from a model; returns list<Model>", context = "expression" },
+  { name = "first", description = "First matching record; returns Model? (null when none)", context = "expression" },
+  { name = "findOrFail", description = "First matching record; raises NOT_FOUND when none", context = "expression" },
+  { name = "count", description = "Count matching records; returns integer", context = "expression" },
+  { name = "exists", description = "Whether any record matches; returns boolean", context = "expression" },
+  { name = "paginate", description = "Offset pagination; returns PagedResult<Model>", context = "expression" },
+  { name = "cursor", description = "Cursor pagination; returns CursorResult<Model>", context = "expression" },
+  { name = "migrate", description = "Create a model's table (`Model.migrate()`) or declare a versioned migration (`migrate \"name\":`)", context = "both" },
+  { name = "where", description = "Filter conditions, one per line, AND-ed", context = "block" },
+  { name = "order", description = "Sort: `order: field [asc|desc]`", context = "block" },
+  { name = "limit", description = "Maximum number of results", context = "block" },
+  { name = "offset", description = "Number of results to skip", context = "block" },
+  { name = "include", description = "Eager-load related models (LEFT JOIN)", context = "block" },
+  { name = "join", description = "Join a model under an alias: `Model as alias [left|right]:` + `on:`", context = "block" },
+  { name = "link", description = "Many-to-many traversal through a junction model", context = "block" },
   { name = "group", description = "Group results by field", context = "block" },
   { name = "having", description = "Filter grouped results", context = "block" },
-  { name = "select", description = "Select specific fields", context = "block" },
-  { name = "up", description = "SQL to apply when running the migration forward", context = "block" },
-  { name = "down", description = "SQL to apply when rolling back the migration", context = "block" },
-  { name = "paginate", description = "Offset-based pagination clause: paginate: page perPage", context = "block" },
-  { name = "cursor", description = "Cursor-based pagination clause: cursor: after perPage by field", context = "block" },
+  { name = "select", description = "Fetch only the listed columns", context = "block" },
+  { name = "up", description = "SQL applied when running the migration forward", context = "block" },
+  { name = "down", description = "SQL applied when rolling the migration back", context = "block" },
 ]
 
 # Custom types provided by the plugin
@@ -203,61 +177,45 @@ types = [
 
 # Built-in functions/expressions
 functions = [
-  { name = "transaction", signature = "transaction: block", description = "Execute block in transaction" },
-  { name = "db.query", signature = "db.query: sql, params", description = "Execute raw SQL query; returns JSON result object", maps_to = "_db_query", params = ["string", "string"], returns = "string" },
-  { name = "db.queryAs", signature = "db.queryAs(Model): sql, params", description = "Execute raw SQL and map to model", maps_to = "_db_query", params = ["string", "string"], returns = "string" },
+  { name = "transaction", signature = "transaction: block", description = "Run the block in one database transaction; any error rolls it back (DAT-T002). Transactions cannot be nested (DAT-T003)." },
+  { name = "db.query", signature = "db.query(sql, params)", description = "Execute raw SQL with a JSON params array; returns the JSON result object", maps_to = "_db_query", params = ["string", "string"], returns = "string" },
+  { name = "db.queryAs", signature = "db.queryAs(Model):\n\tsql: \"...\"\n\tparams: [...]", description = "Execute raw SQL and map the rows to list<Model>" },
   { name = "db.execute", signature = "db.execute(sql, params)", description = "Execute INSERT/UPDATE/DELETE; returns affected row count or -1 on error", maps_to = "_db_execute", params = ["string", "string"], returns = "integer" },
-  { name = "db.begin", signature = "db.begin()", description = "Begin a database transaction; returns 1 on success, 0 on error", maps_to = "_db_begin", params = [], returns = "integer" },
-  { name = "db.commit", signature = "db.commit()", description = "Commit the current database transaction; returns 1 on success, 0 on error", maps_to = "_db_commit", params = [], returns = "integer" },
-  { name = "db.rollback", signature = "db.rollback()", description = "Rollback the current database transaction; returns 1 on success, 0 on error", maps_to = "_db_rollback", params = [], returns = "integer" },
-  { name = "Model.exists", signature = "Model.exists:\n\twhere:\n\t\tcondition", description = "Check if record exists matching conditions (returns 1/0)" },
-  { name = "Model.findOrFail", signature = "Model.findOrFail:\n\twhere:\n\t\tcondition", description = "Find first matching record or raise a NOT_FOUND error" },
-  { name = "migrate", signature = "migrate \"name\":\n\tup:\n\t\tSQL\n\tdown:\n\t\tSQL", description = "Define a versioned schema migration" },
-  { name = "Model.validate", signature = "Model.validate(fieldName, value)", description = "Validate a field value against model constraints (min, max, email, range). Returns empty string if valid, error message if invalid." },
-  { name = "Model.save", signature = "Model.save()", description = "Insert or update the model instance" },
-  { name = "Model.delete", signature = "Model.delete()", description = "Delete the model instance by ID" },
-  { name = "Model.find", signature = "Model.find:\n\twhere:\n\t\tcondition", description = "Query records with optional where, order, limit, offset, link clauses" },
-  { name = "Model.first", signature = "Model.first:\n\twhere:\n\t\tcondition", description = "Get first matching record (adds LIMIT 1)" },
+  { name = "db.begin", signature = "db.begin()", description = "Begin a database transaction; returns false on failure", maps_to = "_db_begin", params = [], returns = "boolean" },
+  { name = "db.commit", signature = "db.commit()", description = "Commit the current database transaction; returns false on failure", maps_to = "_db_commit", params = [], returns = "boolean" },
+  { name = "db.rollback", signature = "db.rollback()", description = "Roll back the current database transaction; returns false on failure", maps_to = "_db_rollback", params = [], returns = "boolean" },
+  { name = "Database.save", signature = "Database.save(entity)", description = "Insert the entity when its id is unset (then set id), update it otherwise (DAT-S001)" },
+  { name = "Database.delete", signature = "Database.delete(entity)", description = "Delete the entity's row; no error when it is already gone (DAT-S003)" },
+  { name = "Database.deleteOrFail", signature = "Database.deleteOrFail(entity)", description = "Delete the entity's row; raises NOT_FOUND when no row matched (DAT-S004)" },
+  { name = "Database.saveAll", signature = "Database.saveAll(entities)", description = "Save every entity of the list; returns how many were saved (DAT-S005)" },
+  { name = "Database.deleteAll", signature = "Database.deleteAll(entities)", description = "Delete every entity of the list; returns how many rows were removed (DAT-S006)" },
+  { name = "Model.find", signature = "Model.find:\n\twhere:\n\t\tcondition", description = "Query records with optional where, order, limit, offset, select, join, link, include, group, having clauses; returns list<Model>" },
+  { name = "Model.first", signature = "Model.first:\n\twhere:\n\t\tcondition", description = "First matching record or null" },
+  { name = "Model.findOrFail", signature = "Model.findOrFail:\n\twhere:\n\t\tcondition", description = "First matching record; raises NOT_FOUND when none" },
   { name = "Model.count", signature = "Model.count:\n\twhere:\n\t\tcondition", description = "Count matching records" },
-  { name = "Model.insert", signature = "Model.insert:\n\tfield = value", description = "Insert a new record with field assignments" },
-  { name = "Model.insert_id", signature = "Model.insert_id:\n\tfield = value", description = "Insert a new record and return the new row's pk as integer (DAT-Q014)" },
-  { name = "Model.update", signature = "Model.update:\n\tset:\n\t\tfield = value\n\twhere:\n\t\tcondition", description = "Update records matching the where clause" },
-  { name = "Model.upsert", signature = "Model.upsert:\n\tmatch:\n\t\tcol == value\n\tset:\n\t\tfield = value\n\ton_insert:\n\t\tfield = value", description = "Atomic INSERT-OR-UPDATE keyed by match: columns; set: applies in both branches; on_insert: applies only on the INSERT branch (DAT-Q015, DAT-D005)" },
-  { name = "Model.migrate", signature = "Model.migrate()", description = "Create table if not exists based on model definition" },
-  { name = "tenant_getId", signature = "tenant_getId()", description = "Get current tenant ID from session claims (requires frame.auth)" },
-  { name = "Model.paginate", signature = "Model.paginate:\n\twhere:\n\t\tcondition\n\tpaginate:\n\t\tpage 1\n\t\tperPage 20", description = "Offset-based paginated query returning PagedResult<Model> with totalCount, totalPages, currentPage, perPage, hasNext, hasPrev" },
-  { name = "Model.cursor", signature = "Model.cursor:\n\twhere:\n\t\tcondition\n\tcursor:\n\t\tperPage 20\n\t\tafter \"\"\n\t\tby \"id\"", description = "Cursor-based paginated query returning CursorResult<Model> with items, nextCursor, hasPrev, count" },
+  { name = "Model.exists", signature = "Model.exists:\n\twhere:\n\t\tcondition", description = "Whether any record matches (boolean)" },
+  { name = "Model.paginate", signature = "Model.paginate:\n\twhere:\n\t\tcondition\n\tpaginate:\n\t\tpage: 1\n\t\tperPage: 20", description = "Offset-based paginated query returning PagedResult<Model> with items, totalCount, totalPages, currentPage, perPage, hasNext, hasPrev" },
+  { name = "Model.cursor", signature = "Model.cursor:\n\twhere:\n\t\tcondition\n\tcursor:\n\t\tafter: \"\"\n\t\tperPage: 20\n\t\tby: id", description = "Cursor-based paginated query returning CursorResult<Model> with items, nextCursor, hasNext, hasPrev, count" },
+  { name = "Model.migrate", signature = "Model.migrate()", description = "Create the model's table and indexes if they do not exist (DAT-C005)" },
+  { name = "migrate", signature = "migrate \"name\":\n\tup:\n\t\t\"SQL\"\n\tdown:\n\t\t\"SQL\"", description = "Define a versioned schema migration (DAT-C006, DAT-C007)" },
+  { name = "tenant_getId", signature = "tenant_getId()", description = "Current tenant ID from the session (frame.auth); tenant-scoped models filter every query by it (DAT-I001)" },
   { name = "db.paginate", signature = "db.paginate(tableName, whereJson, page, perPage)", description = "Low-level offset pagination bridge; prefer Model.paginate: block", maps_to = "_db_paginate", params = ["string", "string", "integer", "integer"], returns = "string" },
   { name = "db.cursorPage", signature = "db.cursorPage(tableName, whereJson, perPage, after, byField)", description = "Low-level cursor pagination bridge; prefer Model.cursor: block", maps_to = "_db_cursor_page", params = ["string", "string", "integer", "string", "string"], returns = "string" },
-  # ORM `now()` helper — current Unix timestamp in seconds. Mirrors frame.server's
-  # declaration (same bridge, same signature) so projects that load frame.data
-  # without frame.server can still use now() for created_at / updated_at column
-  # defaults. Closes the now()-not-found half of ORM-DSL-CODEGEN-FUNCTION-NOT-FOUND
-  # (603ad03b53df).
   { name = "time.now", signature = "time.now()", description = "Current Unix timestamp in seconds since epoch", maps_to = "_time_now", params = [], returns = "integer" },
-  { name = "now", signature = "now()", description = "Alias for time.now() — current Unix timestamp in seconds; the canonical default for created_at/updated_at columns in ORM models", maps_to = "_time_now", params = [], returns = "integer" },
-  # Raw-INSERT helper — Clean wrapper emitted via __preamble (no maps_to). Provides
-  # the working migration target requested by FRAME-DATA-NO-INSERT-RETURNING-ID-BRIDGE
-  # for apps issuing raw db.query INSERTs. Appends ` RETURNING id` to the SQL if not
-  # present and returns the inserted row's id. Engines: PostgreSQL, SQLite, MySQL
-  # 8.0.21+, MariaDB 10.5+. For older MySQL/MariaDB, use Model.save() or Model.insert:
-  # which drive the row materialisation through the engine-aware path.
-  { name = "insertReturningId", signature = "insertReturningId(sql, params)", description = "Execute an INSERT and return the new row id. Auto-appends ` RETURNING id` when the SQL doesn't already contain RETURNING. Returns 0 if the engine does not support RETURNING." },
+  { name = "now", signature = "now()", description = "Alias for time.now() — current Unix timestamp in seconds", maps_to = "_time_now", params = [], returns = "integer" },
 ]
 
 # Auto-completion suggestions
 completions = [
-  { trigger = "data ", insert = "data ${1:ModelName}:\n\t${2:field}: ${3:type}" },
+  { trigger = "data ", insert = "data ${1:ModelName}:\n\tfields:\n\t\t${2:string} ${3:name} required" },
   { trigger = ".find:", insert = "find:\n\twhere:\n\t\t${1:condition}" },
+  { trigger = ".first:", insert = "first:\n\twhere:\n\t\t${1:condition}" },
   { trigger = ".exists:", insert = "exists:\n\twhere:\n\t\t${1:condition}" },
   { trigger = ".findOrFail:", insert = "findOrFail:\n\twhere:\n\t\t${1:condition}" },
-  { trigger = ".insert:", insert = "insert:\n\t${1:field} = ${2:value}" },
-  { trigger = ".insert_id:", insert = "insert_id:\n\t${1:field} = ${2:value}" },
-  { trigger = ".upsert:", insert = "upsert:\n\tmatch:\n\t\t${1:col} == ${2:value}\n\tset:\n\t\t${3:field} = ${4:value}\n\ton_insert:\n\t\t${5:field} = ${6:value}" },
   { trigger = "transaction:", insert = "transaction:\n\t${1:// transaction code}" },
-  { trigger = "migrate ", insert = "migrate \"${1:001_migration_name}\":\n\tup:\n\t\t${2:CREATE TABLE ...}\n\tdown:\n\t\t${3:DROP TABLE ...}" },
-  { trigger = ".paginate:", insert = "paginate:\n\twhere:\n\t\t${1:condition}\n\tpaginate:\n\t\tpage ${2:1}\n\t\tperPage ${3:20}" },
-  { trigger = ".cursor:", insert = "cursor:\n\twhere:\n\t\t${1:condition}\n\tcursor:\n\t\tperPage ${2:20}\n\t\tafter ${3:\"\"}\n\t\tby ${4:\"id\"}" },
+  { trigger = "migrate ", insert = "migrate \"${1:001_migration_name}\":\n\tup:\n\t\t\"${2:CREATE TABLE ...}\"\n\tdown:\n\t\t\"${3:DROP TABLE ...}\"" },
+  { trigger = ".paginate:", insert = "paginate:\n\twhere:\n\t\t${1:condition}\n\tpaginate:\n\t\tpage: ${2:1}\n\t\tperPage: ${3:20}" },
+  { trigger = ".cursor:", insert = "cursor:\n\twhere:\n\t\t${1:condition}\n\tcursor:\n\t\tafter: ${2:\"\"}\n\t\tperPage: ${3:20}\n\t\tby: ${4:id}" },
 ]
 
 [paths]
@@ -278,7 +236,7 @@ severity = "warn"
 
 restricted_functions = [
   { name = "_db_query", use_instead = "Model.find: or db.query:", message = "Use ORM query blocks instead of raw _db_query()" },
-  { name = "_db_execute", use_instead = "Model.insert:/update:/delete:", message = "Use ORM mutation blocks instead of raw _db_execute()" },
+  { name = "_db_execute", use_instead = "Database.save / Database.delete", message = "Use Database.save / Database.delete instead of raw _db_execute()" },
 ]
 
 required_blocks = [
@@ -292,12 +250,12 @@ block_folder_rules = [
 ]
 
 [ai]
-description = "ORM and database plugin. Use ORM blocks (Model.find, Model.insert, etc.) for all CRUD. Reserve db.query/db.queryAs for complex aggregations that ORM cannot express. Never call _db_query or _db_execute directly."
+description = "ORM and database plugin. Read with the query DSL (Model.find:, first:, findOrFail:, count:, exists:, paginate:, cursor:) or an entity's queries: methods; write with Database.save / Database.delete. Reserve db.query/db.queryAs for queries the DSL cannot express. Never call _db_query or _db_execute directly."
 constraints = [
-  "Always use ORM blocks for CRUD — never call _db_query or _db_execute directly",
+  "Always use the query DSL and Database.save/delete — never call _db_query or _db_execute directly",
   "data model files belong in app/data/models/, migrations in app/data/migrations/",
   "Every multi-step mutation must be wrapped in transaction: to ensure atomicity",
-  "Always include tenant_id in every model and every query when building a multi-tenant app",
+  "In a multi-tenant app give every model a tenantId field — frame.data then scopes every query, update and delete to tenant_getId()",
 ]
 
 [[ai.patterns]]
@@ -348,17 +306,7 @@ use_when = "a business operation writes to more than one row or table and must e
 anti_pattern = "issuing the writes as separate top-level Model.insert / Model.update statements — if a later write fails, earlier writes are already committed and the database is left in an inconsistent state. Wrap the whole sequence in a transaction: block; any error inside the block triggers automatic rollback."
 example = "patterns/atomic-transaction.cln"
 
-[[ai.patterns]]
-name = "upsert"
-use_when = "a row must exist with the given key: insert if missing, update if present (import from external source, idempotent sync, incrementing counters)"
-anti_pattern = "querying with Model.find + branching to Model.insert or Model.update — that pattern has a race condition between the read and the write. Use Model.upsert: with match: for the conflict key, set: for values applied in both branches, and on_insert: for defaults that must only run on the INSERT branch (created_at, generated ids)."
-example = "patterns/upsert.cln"
 
-[[ai.patterns]]
-name = "field-validation"
-use_when = "user-supplied values must be checked against model constraints (min/max, email format, range) before insert or update — typically inside an endpoint handler or form: block"
-anti_pattern = "re-implementing the validation rules in application code — the model schema already declares them; call Model.validate(fieldName, value) which returns empty string on success or the error message on failure. Never bypass validation by writing directly to the underlying column."
-example = "patterns/field-validation.cln"
 
 [build]
 built_with_compiler = "0.33.169"

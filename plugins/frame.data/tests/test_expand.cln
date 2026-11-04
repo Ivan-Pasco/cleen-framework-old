@@ -1,163 +1,66 @@
-// Tests for frame.data plugin
-// Fixed: block name is "data" (not "model"); assertions updated to match actual generated code
-// Fixed: added type declarations for local variables; added void return types to test functions
+// Plugin-internal tests for frame.data: the plugin-time helpers that turn
+// the data/query DSL into SQL and Clean source. scripts/test-plugins.sh
+// combines this file with src/main.cln. Runtime behaviour (SQL against a
+// real database) is covered by tests/framework/unit/plugins/data/.
+// Fixed: called expand_block(), which v3 typed emission removed; the tests
+// now exercise the helpers behind expand_block_typed.
 
 start:
-	test_model_expansion()
-	test_model_generates_find_method()
-	test_model_generates_first_method()
-	test_model_generates_save_method()
-	test_model_name_extracted_from_json()
-	test_transaction_expansion()
-	test_query_expansion()
-	test_model_validation_missing_name()
-	test_model_validation_missing_fields()
-	test_unknown_block_passthrough()
-	// v1.2.0 — spec gap closure
-	test_insert_id_emits_returning_id()
-	test_upsert_emits_on_conflict_do_update()
-	test_upsert_missing_match_errors()
-	test_upsert_missing_set_errors()
-	test_datetime_arith_lowers_to_interval()
-	test_bare_now_lowers_to_sql_now()
-	test_json_path_lowers_to_json_extract()
-	test_json_path_lhs_lowers_to_json_set()
-	test_join_alias_emits_inner_join_with_alias()
-	test_join_alias_left_emits_left_join()
-	test_unknown_model_verb_emits_error()
+	integer failures = 0
+	failures = failures + check(validate_block("data", "User", "").contains("at least one field is required"), "validate: empty data block")
+	failures = failures + check(validate_block("data", "", "fields:\n\tstring name").contains("model name is required"), "validate: missing model name")
+	failures = failures + check(validate_block("data", "User", "fields:\n\tstring name\nrelations:\n\tposts: has_lots Post on userId").contains("invalid cardinality"), "validate: relation cardinality")
+	failures = failures + check(validate_block("data", "User", "fields:\n\tstring name\nindexes:\n\temail").contains("email"), "validate: index on unknown column")
+	failures = failures + check(validate_block("migrate", "\"001\"", "up:\n\t\"CREATE TABLE t (id INTEGER)\"").contains("down:"), "validate: migrate needs down:")
+	failures = failures + check(validate_block("data", "User", "fields:\n\tstring name required") == "", "validate: valid data block")
+
+	failures = failures + check(default_table_name("User") == "users", "table: User -> users")
+	failures = failures + check(default_table_name("UserData") == "users", "table: UserData -> users")
+	failures = failures + check(default_table_name("AccessTokenData") == "access_tokens", "table: AccessTokenData -> access_tokens")
+	failures = failures + check(default_table_name("Category") == "categories", "table: Category -> categories")
+
+	failures = failures + check(sql_lit("SELECT * FROM \{\{T:User\}\} WHERE x = 1") == "\"SELECT * FROM \" + __User_table() + \" WHERE x = 1\"", "sql_lit: table marker")
+	failures = failures + check(clean_str("a\"b\{c\}") == "\"a\\\"b\\\{c\\\}\"", "clean_str: escapes")
+
+	string lit_where = build_where_expr("name == \"O'Brien\"", "")
+	failures = failures + check(lit_where == "\"name = 'O''Brien'\"", "where: literal quote doubled")
+	string var_where = build_where_expr("name == who", "")
+	failures = failures + check(var_where.contains("(who).toString().replace(\"'\", \"''\")"), "where: runtime value quoted")
+	failures = failures + check(build_where_expr("deletedAt == null", "") == "\"deletedAt IS NULL\"", "where: == null")
+	failures = failures + check(build_where_expr("status in [\"a\", \"b\"]", "").contains("IN ('a', 'b')"), "where: in list")
+	failures = failures + check(build_where_expr("a == 1 or b == 2", "").startsWith("\"(\""), "where: or grouped")
+	failures = failures + check(build_where_expr("props.color == \"red\"", "").contains("JSON_EXTRACT(props, '$.color')"), "where: json path")
+	failures = failures + check(build_where_expr("c.name == \"x\"", "c").contains("c.name = 'x'"), "where: join alias kept")
+	failures = failures + check(build_where_expr("expiresAt > time.now().add_seconds(900)", "").contains("NOW() + INTERVAL '900 seconds'"), "where: datetime arithmetic")
+
+	string find_expr = query_expr("Post", "find", "where:\n\tviews > 10\norder: views desc\nlimit: n")
+	failures = failures + check(find_expr.startsWith("__parse_as_Post(_db_query("), "find: materialized as list<Post>")
+	failures = failures + check(find_expr.contains("__Post_table()"), "find: table through __Post_table()")
+	failures = failures + check(find_expr.contains(" ORDER BY views DESC"), "find: order")
+	failures = failures + check(find_expr.contains("(n).toString()"), "find: limit expression")
+	failures = failures + check(query_expr("Post", "first", "order: id desc").contains(" LIMIT 1"), "first: LIMIT 1")
+	failures = failures + check(query_expr("Post", "findOrFail", "").startsWith("__find_or_fail_as_Post("), "findOrFail helper")
+	failures = failures + check(query_expr("Post", "count", "") == "__Post_count(\"\")", "count helper")
+	failures = failures + check(query_expr("Post", "paginate", "paginate:\n\tpage: p\n\tperPage: 10").contains(", p, 10))"), "paginate: page/perPage")
+	failures = failures + check(query_expr("Post", "cursor", "cursor:\n\tafter: c\n\tperPage: 5\n\tby: id").contains(", 5, c, \"id\")"), "cursor: by identifier quoted")
+	string join_expr = query_expr("Post", "find", "join:\n\tUser as author left:\n\t\ton:\n\t\t\tauthor.id == Post.authorId")
+	failures = failures + check(join_expr.contains("LEFT JOIN \" + __User_table() + \" author ON author.id = \" + __Post_table() + \".authorId"), "join: aliased left join")
+
+	failures = failures + check(rewrite_query_method_body("return find:\n\twhere:\n\t\tx == 1\n", "Post").startsWith("return __parse_as_Post("), "queries: model-less find")
+	failures = failures + check(rewrite_query_method_body("return db.query(\"SELECT 1\", \"[]\")\n", "Post") == "", "queries: plain body untouched")
+
+	failures = failures + check(has_nested_transaction("a = 1\ntransaction:\n\tb = 2"), "transaction: nesting detected")
+	failures = failures + check(migration_sql("\"CREATE TABLE a (id INTEGER)\"\n\"CREATE INDEX i ON a (id)\"") == "CREATE TABLE a (id INTEGER); CREATE INDEX i ON a (id)", "migrate: string-literal statements")
+	failures = failures + check(migration_sql("createTable(\"a\")").startsWith("ERR:"), "migrate: schema helper rejected")
+
+	if failures == 0
+		printl("PASS: frame-data-plugin-helpers")
+	else
+		printl("FAIL: frame-data-plugin-helpers (" + failures.toString() + " failed)")
 
 functions:
-	void test_model_expansion()
-		string result = expand_block("data", "User", "string email\nstring name")
-		assert(result.contains("class User"))
-		assert(result.contains("_db_query"))
-		assert(result.contains("_db_execute"))
-		assert(result.contains("boolean save()"))
-
-	void test_model_generates_find_method()
-		string result = expand_block("data", "Post", "string title")
-		// Fixed: find() now returns list<Post> per spec (04_frame_data.md §3.2), not string
-		assert(result.contains("list<Post> find("))
-		assert(result.contains("_db_query"))
-
-	void test_model_generates_first_method()
-		string result = expand_block("data", "Comment", "string content")
-		assert(result.contains("string first("))
-
-	void test_model_generates_save_method()
-		string result = expand_block("data", "Tag", "string name")
-		assert(result.contains("boolean save()"))
-		assert(result.contains("_db_execute"))
-
-	void test_model_name_extracted_from_json()
-		// Compiler passes attributes as JSON {"ModelName":true}; extract_model_name must handle it
-		string result = expand_block("data", "{\"Item\":true}", "string label")
-		assert(result.contains("class Item"))
-		assert(not result.contains("class {"))
-
-	void test_transaction_expansion()
-		string result = expand_block("transaction", "", "user.save()")
-		assert(result.contains("_db_begin()"))
-		assert(result.contains("_db_commit"))
-		assert(result.contains("_db_rollback"))
-
-	void test_query_expansion()
-		string result = expand_block("db.query", "", "sql:\n\tSELECT * FROM users")
-		assert(result.contains("_db_query"))
-
-	void test_model_validation_missing_name()
-		string result = validate_block("data", "", "string field")
-		assert(result.contains("model name is required"))
-
-	void test_model_validation_missing_fields()
-		string result = validate_block("data", "User", "")
-		assert(result.contains("at least one field is required"))
-
-	void test_unknown_block_passthrough()
-		// Bare (non-dotted) block names belong to other plugins — passthrough.
-		string result = expand_block("unknown", "", "original body")
-		assert(result == "original body")
-
-	// --- v1.2.0 spec gap closure ---
-
-	void test_insert_id_emits_returning_id()
-		// DAT-Q014: insert_id: lowers to an INSERT … RETURNING id call wrapped
-		// in the preamble-emitted insertReturningId() helper.
-		string result = expand_block("User.insert_id", "", "email = userEmail\nname = userName")
-		assert(result.contains("INSERT INTO users"))
-		assert(result.contains("RETURNING id"))
-		assert(result.contains("insertReturningId"))
-
-	void test_upsert_emits_on_conflict_do_update()
-		// DAT-Q015: upsert: lowers to INSERT … ON CONFLICT (cols) DO UPDATE SET …
-		string body = "match:\n\temail == userEmail\nset:\n\tname = userName\non_insert:\n\tcreated_at = now()"
-		string result = expand_block("User.upsert", "", body)
-		assert(result.contains("INSERT INTO users"))
-		assert(result.contains("ON CONFLICT (email) DO UPDATE SET"))
-		assert(result.contains("RETURNING *"))
-
-	void test_upsert_missing_match_errors()
-		// DAT-D005: upsert without match: is a compile-time error
-		string result = expand_block("User.upsert", "", "set:\n\tname = userName")
-		assert(result.contains("error("))
-		assert(result.contains("match:"))
-
-	void test_upsert_missing_set_errors()
-		// DAT-D005: upsert without set: is a compile-time error
-		string result = expand_block("User.upsert", "", "match:\n\temail == userEmail")
-		assert(result.contains("error("))
-		assert(result.contains("set:"))
-
-	void test_datetime_arith_lowers_to_interval()
-		// DAT-Q019: time.now().add_seconds(900) inside insert: lowers to
-		// (NOW() + INTERVAL '900 seconds') — inlined in the SQL, not bound.
-		string result = expand_block("Session.insert", "", "token = sessionToken\nexpires_at = time.now().add_seconds(900)")
-		assert(result.contains("NOW() + INTERVAL '900 seconds'"))
-
-	void test_bare_now_lowers_to_sql_now()
-		// FRAME-DATA-SET-BLOCK-EPOCH-NOT-LOWERED: bare now() and time.now()
-		// must lower to SQL NOW() so MySQL DATETIME columns receive a
-		// server-evaluated timestamp, not a quoted integer epoch.
-		string lowered_bare = lower_datetime_arith("now()")
-		assert(lowered_bare == "NOW()")
-		string lowered_ns = lower_datetime_arith("time.now()")
-		assert(lowered_ns == "NOW()")
-		// Inside an update: set: block, the generated SET clause must contain
-		// the literal NOW() rather than ".toString()" concatenation.
-		string set_expr = build_set_expr("updated_at = now()")
-		assert(set_expr.contains("NOW()"))
-		assert(not set_expr.contains(".toString()"))
-
-	void test_json_path_lowers_to_json_extract()
-		// DAT-Q016: where: with col.field lowers to JSON_EXTRACT for the read.
-		// We exercise this by extracting just the select projection path.
-		string result = parse_select_clause("id\nprops.color\ntags[0]")
-		assert(result.contains("JSON_EXTRACT(props, '$.color')"))
-		assert(result.contains("JSON_EXTRACT(tags, '$[0]')"))
-
-	void test_json_path_lhs_lowers_to_json_set()
-		// DAT-Q016: set: with col.field LHS lowers to JSON_SET on writes.
-		string set_expr = build_set_expr("props.color = userColor")
-		assert(set_expr.contains("JSON_SET(props, '$.color'"))
-
-	void test_join_alias_emits_inner_join_with_alias()
-		// DAT-Q017: aliased join lowers to INNER JOIN <table> <alias> ON …
-		string body = "join:\n\tUser as author:\n\t\ton:\n\t\t\tauthor.id == author_id\nwhere:\n\tauthor.active == true"
-		string result = expand_block("Post.find", "", body)
-		assert(result.contains("INNER JOIN users author"))
-		assert(result.contains("author.id = author_id"))
-
-	void test_join_alias_left_emits_left_join()
-		// DAT-Q017: inline `left` keyword between alias and `:` selects LEFT JOIN.
-		string body = "join:\n\tUser as author left:\n\t\ton:\n\t\t\tauthor.id == author_id"
-		string result = expand_block("Post.find", "", body)
-		assert(result.contains("LEFT JOIN users author"))
-
-	void test_unknown_model_verb_emits_error()
-		// Unknown <Model>.<verb>: now produces a runtime error() call instead
-		// of silently passing the body through. The error message lists the
-		// known verbs so the user can fix the typo.
-		string result = expand_block("User.completely_fake_op", "", "nonsense = stuff")
-		assert(result.contains("error("))
-		assert(result.contains("completely_fake_op"))
-		assert(result.contains("User"))
+	integer check(boolean ok, string name)
+		if ok
+			return 0
+		printl("FAIL: " + name)
+		return 1

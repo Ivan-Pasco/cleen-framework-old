@@ -1,0 +1,168 @@
+// Fixture for scene-runtime.test.mjs: one scene using every declaration
+// kind, compiled with the plugin in this directory and run against the
+// browser runtime.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("boot")
+
+canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
+
+	assets:
+		image "sky" src="images/sky.png"
+		spritesheet "hero" src="sprites/hero.png" frameWidth=48 frameHeight=64
+		sound "jump" src="audio/jump.wav"
+		music "theme" src="audio/theme.ogg"
+		font "pixel" src="fonts/pixel.woff2"
+
+	layers:
+		layer "background" z=0
+		layer "world" z=10
+		layer "hud" z=100
+
+	state:
+		number heroX = 40.0
+		number heroY = 200.0
+		number heroVX = 0.0
+		number pathT = 0.0
+		integer lives = 3
+		boolean attacking = false
+
+	animSprite "heroIdle":
+		sheet = "hero"
+		frames = 0..3
+		fps = 8
+		loop = true
+
+	animSprite "heroAttack":
+		sheet = "hero"
+		frames = 4..9
+		fps = 14
+		loop = false
+
+	particles "dust":
+		lifetime = 0.3..0.8
+		speed = 20..60
+		angle = -160..-20
+		color = "#c8b89a"
+		size = 3
+		emitter:
+			rate = 25
+			burst = 6
+		overLifetime:
+			size = 1.0 -> 0.2
+			alpha = 1.0 -> 0.0
+		forces:
+			gravity = 120
+			drag = 0.95
+			wind x=8 y=0
+
+	tween "slideIn":
+		heroX from=-50.0 to=heroX + 100.0
+		heroY to=180.0
+		duration = 0.6
+		ease = "easeOutBack"
+		delay = 0.1
+
+	tween "bob":
+		heroY from=180.0 to=170.0
+		duration = 0.4
+		repeat = -1
+		yoyo = true
+		ease = "snap"
+
+	tween "follow":
+		pathT to=1.0
+		duration = 3.0
+		along = "loop"
+		orient = true
+
+	timeline "intro":
+		at 0.0:
+			tween "slideIn"
+		after gap=0.2:
+			tween "bob"
+		together stagger=0.1:
+			tween "follow"
+			tween "bob"
+
+	timeline "outro":
+		at 0.5:
+			animate heroY from=0.0 to=10.0 duration=1.0 ease="easeInQuad" delay=0.5
+		after gap=0.25:
+			tween "slideIn"
+		onComplete:
+			attacking = true
+
+	animState "heroFSM":
+		initial = "idle"
+		state "idle":
+			play animSprite "heroIdle"
+		state "attack":
+			play animSprite "heroAttack"
+		state "hurt":
+			play animSprite "heroAttack"
+			onComplete "idle"
+		transitions:
+			"idle" -> "attack" when attacking
+			"idle" -> "idle" when heroVX > 100.0
+			"attack" onComplete "idle"
+
+	path "loop":
+		moveTo x=0 y=0
+		lineTo x=200 y=0
+		curveTo x=200 y=100 cx=260 cy=50
+		curveTo x=0 y=100 cp1x=150 cp1y=140 cp2x=50 cp2y=140
+		arcTo x=0 y=50 radius=50 startAngle=90 endAngle=270
+		closed = true
+
+	gradient "skyFade" linear x1=0 y1=0 x2=0 y2=360:
+		stop 0.0 color="#0b1020"
+		stop 1.0 color="#3a4a7a"
+
+	gradient "sun" radial cx=500 cy=80 r=60:
+		stop 0.0 color="#ffe08a"
+		stop 1.0 color="#ff9a3c"
+
+	customEase "snap" x1=0.68 y1=-0.55 x2=0.265 y2=1.55
+
+	camera:
+		followX = heroX
+		followY = heroY - 40.0
+		smoothing = 0.1
+		deadzoneWidth = 60
+		deadzoneHeight = 40
+		boundsX = 0
+		boundsY = 0
+		boundsWidth = 2000
+		boundsHeight = 360
+		zoom = 1.5
+
+	init:
+		play timeline "intro"
+		start animState "heroFSM"
+
+	draw:
+		canvas.rect x=0 y=0 width=640 height=360 gradient="skyFade"
+		canvas.circle x=500 y=80 radius=60 gradient="sun"
+		on layer "world":
+			canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
+		on layer "hud":
+			canvas.text value="Lives: " + lives.toString() x=10 y=20 size=14 color="#ffffff" font="pixel"
+
+	onFrame: param="dt"
+		heroX = heroX + heroVX * dt
+
+
+	onPointerDown: param="px,py"
+		heroVX = 200.0
+		attacking = true
+		emit particles "dust" x=px y=py
+
+	onKeyDown: param="key"
+		if key == "ArrowLeft"
+			heroVX = -50.0
+			return
+		lives = lives - 1

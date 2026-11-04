@@ -4,6 +4,9 @@
 //   Without boundary validation, invalid data reaches business logic and
 //   causes confusing internal errors. Validate at the endpoint, return 400
 //   immediately with a field-level error so the client can correct the input.
+//   The envelope is {"ok":false,"err":{"code","message","field"}}
+//   (frame-server-semantics.md SRV-I002); badRequest(message) builds it
+//   without the field member.
 
 plugins:
 	frame.server
@@ -16,36 +19,36 @@ endpoints:
 
 		// Validate required fields at the boundary — fail fast with 400
 		if name.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"name\", \"message\": \"name is required\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"name is required\",\"field\":\"name\"}}")
 
 		if email.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"email\", \"message\": \"email is required\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"email is required\",\"field\":\"email\"}}")
 
 		// Email format check
 		if email.indexOf("@") == -1
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"email\", \"message\": \"email must contain @\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"email must contain @\",\"field\":\"email\"}}")
 
 		// Type coercion check — age must be a positive integer
 		integer age_int = age.toInteger()
 		if age_int <= 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"age\", \"message\": \"age must be a positive integer\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"age must be a positive integer\",\"field\":\"age\"}}")
 
 		if age_int > 150
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"age\", \"message\": \"age must be 150 or less\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"age must be 150 or less\",\"field\":\"age\"}}")
 
 		// Only reach service logic once all inputs are validated
 		return jsonResponse("{\"id\": \"new-user-id\", \"name\": \"" + name + "\", \"email\": \"" + email + "\", \"age\": " + age_int.toString() + "}")
 
 	PUT "/users/:id":
-		string id = param("id")
+		string id = req.param("id")
 
 		// Path param must be a positive integer
 		integer id_int = id.toInteger()
 		if id_int <= 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"id\", \"message\": \"id must be a positive integer\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"id must be a positive integer\",\"field\":\"id\"}}")
 
 		string name = req.body_field("name")
 		if name.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"name\", \"message\": \"name is required\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"name is required\",\"field\":\"name\"}}")
 
 		return jsonResponse("{\"id\": " + id_int.toString() + ", \"name\": \"" + name + "\", \"updated\": true}")

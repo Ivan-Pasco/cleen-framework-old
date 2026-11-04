@@ -1,51 +1,53 @@
-// Tests for frame.server plugin
-// Fixed: functions were declared at top level — spec (grammar.ebnf) requires functions: block
-// Fixed: added type declarations and void return types — spec requires explicit types
+// Tests for the frame.server plugin's parsing and validation helpers.
+// scripts/test-plugins.sh splices src/main.cln between this start: and the
+// functions: below, then type-checks the result. The expansion entry point
+// (expand_block_typed) calls compiler-provided typed-emission bridges and is
+// exercised end to end by tests/framework/unit/plugins/server/.
+// Grammar: frame-server.ebnf §2 route_declaration, §3.1 guard_inline,
+//          §3.2 cache_modifier, §3.3 middleware_modifier, §10.1 redirect_rule
 
 start:
-	test_server_expansion()
-	test_route_expansion()
-	test_middleware_expansion()
-	test_route_validation_missing_method()
-	test_route_validation_missing_path()
-	test_route_validation_invalid_method()
-	test_server_validation_invalid_port()
-	test_unknown_block_passthrough()
+	test_route_header_scanning()
+	test_modifier_parsing()
+	test_validation()
+	test_return_wrapping()
+	test_reindent()
 
 functions:
-	void test_server_expansion()
-		string result = expand_block("server", "{\"port\": \"3000\"}", "// body")
-		assert(result.contains("_http_listen"))
-		assert(result.contains("3000"))
-		assert(result.contains("start:"))
+	void test_route_header_scanning()
+		string body = "\tGET \"/a\":\n\t\tstring INPUT = \"x\"\n\tPUT \"/b\" [admin]:\n\t\treturn \"ok\"\n"
+		integer first = next_route_pos(body)
+		assert(route_method_at(body, first) == "GET")
+		string after_first = body.substring(first + 4, body.length())
+		assert(route_method_at(after_first, next_route_pos(after_first)) == "PUT")
+		assert(find_method_pos("string INPUT \"x\"", "PUT") == -1)
+		assert(route_region("\t\treturn 1\n\tGET \"/x\":\n").trim() == "return 1")
+		assert(sanitize_route_id("/users/:id") == "_users__id")
 
-	void test_route_expansion()
-		string result = expand_block("route", "{\"method\": \"GET\", \"path\": \"/hello\"}", "return {}")
-		assert(result.contains("_http_route"))
-		assert(result.contains("GET"))
-		assert(result.contains("/hello"))
+	void test_modifier_parsing()
+		string mods = "[admin, editor] cache(\"5m\") middleware(RateLimit, Auth)"
+		assert(parse_guard_roles(mods) == "admin,editor")
+		assert(parse_cache_arg(mods) == "\"5m\"")
+		assert(parse_middleware_list(mods) == "RateLimit,Auth")
+		assert(duration_to_seconds("5m") == 300)
+		assert(duration_to_seconds("2h") == 7200)
+		assert(duration_to_seconds("1d") == 86400)
 
-	void test_middleware_expansion()
-		string result = expand_block("middleware", "{}", "return next(request)")
-		assert(result.contains("_http_middleware"))
-		assert(result.contains("next"))
+	void test_validation()
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\" cache(300):\n\t\treturn \"a\"\n") == "")
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\" [admin:\n").contains("closed with ]"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\" cache(\"xm\"):\n").contains("invalid cache()"))
+		assert(validate_block("endpoints", "{}", "\tLIVE \"/ws\"\n").contains("must end with ':'"))
+		assert(validate_block("routes", "{}", "\tredirect: \"/old\" → \"/new\"\n") == "")
+		assert(validate_block("routes", "{}", "\tredirect: \"/old\" \"/new\"\n").contains("separator"))
 
-	void test_route_validation_missing_method()
-		string result = validate_block("route", "{\"path\": \"/\"}", "")
-		assert(result.contains("method attribute is required"))
+	void test_return_wrapping()
+		assert(wrap_returns_with_json("return \"hi\"\n", false) == "return __route_default_body(\"hi\")\n")
+		assert(wrap_returns_with_json("return json(x)\n", false) == "return json(x)\n")
+		assert(wrap_returns_with_json("return value\n", true) == "return value\n")
+		assert(wrap_returns_with_json("return \"plain\"\n", true) == "return __route_default_body(\"plain\")\n")
+		assert(handler_streams("feed.emit(\"x\")\n"))
 
-	void test_route_validation_missing_path()
-		string result = validate_block("route", "{\"method\": \"GET\"}", "")
-		assert(result.contains("path attribute is required"))
-
-	void test_route_validation_invalid_method()
-		string result = validate_block("route", "{\"method\": \"INVALID\", \"path\": \"/\"}", "")
-		assert(result.contains("must be one of"))
-
-	void test_server_validation_invalid_port()
-		string result = validate_block("server", "{\"port\": \"99999\"}", "")
-		assert(result.contains("port must be a number"))
-
-	void test_unknown_block_passthrough()
-		string result = expand_block("unknown", "{}", "original body")
-		assert(result == "original body")
+	void test_reindent()
+		assert(reindent_block("\t\t// note\n\t\tstring a = \"x\"\n\t\t\tprintl(a)\n") == "string a = \"x\"\n\tprintl(a)\n")
+		assert(reindent_block("\t\t// only a comment\n") == "")

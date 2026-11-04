@@ -44,11 +44,25 @@ endpoints:
 		laptop.categoryId = cat.id
 		Database.save(laptop)
 
-		// Multi-table INNER JOIN is ORM-inexpressible today — raw SQL is justified.
-		string joined = db.query("SELECT products.title, categories.name FROM products INNER JOIN categories ON products.category_id = categories.id", "")
-		boolean ok_shape = joined.length() > 0
+		// Raw multi-table INNER JOIN.
+		// Fixed: joined on `products.category_id`, but the column is named
+		// after the field, `categoryId` (DAT-M017), and only checked that some
+		// text came back — a failed query also answers with JSON text.
+		string joined = db.query("SELECT products.title, categories.name FROM products INNER JOIN categories ON products.categoryId = categories.id ORDER BY products.title", "")
+		boolean ok_shape = json.get(joined, "data.rows.1.title") == "phone" and json.get(joined, "data.rows.0.name") == "electronics"
 
-		if ok_shape
+		// The same join through the query DSL (frame-data.ebnf §5.6, DAT-Q017).
+		list<Product> inCategory = Product.find:
+			join:
+				Category as c:
+					on:
+						c.id == Product.categoryId
+			where:
+				c.name == "electronics"
+			order: title
+		boolean ok_dsl = inCategory.length() == 2 and inCategory[0].title == "laptop"
+
+		if ok_shape and ok_dsl
 			printl("PASS: data-joins")
 		else
 			printl("FAIL: data-joins")

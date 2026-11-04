@@ -21,10 +21,19 @@
 (function() {
   'use strict';
 
-  // String buffer for WASM string returns
-  const STRING_BUFFER_SIZE = 65536;
-  const STRING_BUFFER_OFFSET = 1024 * 1024; // 1MB offset
   const WASM_PAGE_SIZE = 65536;
+
+  // string_matches pattern table (function-registry.toml string_matches).
+  const STRING_PATTERNS = [
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/,                                   // 0 email
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s]+$/,                            // 1 url
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, // 2 uuid
+    /^\+?[0-9][0-9 ()-]{5,}[0-9]$/,                                     // 3 phone
+    /^\d{4}-\d{2}-\d{2}$/,                                             // 4 date
+    /^[+-]?\d+$/,                                                       // 5 integer
+    /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/,                          // 6 number
+    /^[a-zA-Z0-9]+$/,                                                   // 7 alphanumeric
+  ];
 
   // Standard tier fallback per platform-architecture/MEMORY_POLICY.md §3
   const CANVAS_TIER_INITIAL_PAGES = 256;
@@ -139,7 +148,6 @@
       this.bridge = new CanvasBridge();
       this.memory = null;
       this.instance = null;
-      this.stringAllocOffset = STRING_BUFFER_OFFSET;
       this._initialPages = 0;
       this._maxPages = 0;
       this._growCount = 0;
@@ -224,14 +232,13 @@
           memory: this.memory,
           ...bridgeImports.env,
           ...stdlibImports
-        }
+        },
+        memory_runtime: this.createMemoryRuntimeImports()
       };
 
       try {
         const { instance } = await WebAssembly.instantiate(wasmBuffer, imports);
-
-        this.instance = instance;
-        this.bridge.setWasmInstance(instance);
+        this.attachInstance(instance);
 
         if (instance.exports.__heap_ptr && typeof instance.exports.__heap_ptr.value === 'number') {
           this._heapPtr = instance.exports.__heap_ptr.value;
@@ -250,6 +257,69 @@
         console.error('[CleanCanvas] Failed to load WASM:', err);
         throw err;
       }
+    }
+
+    /**
+     * Wire an instantiated module: a module that defines its own memory
+     * (what the compiler emits) is read and written through that memory, and
+     * every host allocation comes from the module heap.
+     */
+    attachInstance(instance) {
+      this.instance = instance;
+      if (instance.exports.memory instanceof WebAssembly.Memory) {
+        this.memory = instance.exports.memory;
+        this._lastBufferSize = this.memory.buffer.byteLength;
+      }
+      this.bridge.setWasmInstance(instance, (size) => this._heapAlloc(size));
+    }
+
+    /**
+     * Allocate `size` bytes on the module heap (HOST_BRIDGE / BOXED_ANY_ABI §6:
+     * the module's malloc export, else its `__heap_ptr` bump pointer, kept in
+     * sync so module and host allocations never overlap). 8-byte aligned;
+     * grows memory when needed.
+     */
+    _heapAlloc(size) {
+      const exports = this.instance ? this.instance.exports : {};
+      if (typeof exports.malloc === 'function') {
+        const p = exports.malloc(size);
+        if (!p) throw new Error('malloc(' + size + ') failed');
+        return p;
+      }
+      const heap = exports.__heap_ptr;
+      if (!heap || typeof heap.value !== 'number') {
+        throw new Error('module exports neither malloc nor __heap_ptr; the host cannot allocate');
+      }
+      const ptr = (heap.value + 7) & ~7;
+      const end = ptr + Math.max(size, 0);
+      const have = this.memory.buffer.byteLength;
+      if (end > have) {
+        this.memory.grow(Math.ceil((end - have) / WASM_PAGE_SIZE));
+      }
+      heap.value = end;
+      this._heapPtr = end;
+      this._checkMemoryGrowth();
+      return ptr;
+    }
+
+    /**
+     * memory_runtime imports (HOST_BRIDGE "Memory Runtime"). The compiler
+     * passes (type_id, size) to mem_alloc — the same reading clean-server
+     * uses; the module heap is a bump arena, so retain / release / scopes
+     * have nothing to free.
+     */
+    createMemoryRuntimeImports() {
+      const self = this;
+      return {
+        mem_alloc(typeId, size) {
+          void typeId;
+          return self._heapAlloc(size);
+        },
+        mem_retain(ptr) { void ptr; },
+        mem_release(ptr) { void ptr; },
+        mem_scope_push() {},
+        mem_scope_pop() {},
+      };
     }
 
     /**
@@ -320,6 +390,24 @@
           return 0;
         },
 
+        print_boolean(value) {
+          console.log(value ? 'true' : 'false');
+        },
+
+        // Runtime error handler: LP message; logs and returns 0 (registry).
+        error(msgPtr) {
+          console.error('[CleanCanvas] ' + self._readLP(msgPtr));
+          return 0;
+        },
+
+        // input(prompt): LP prompt, LP result ('' when the page cannot prompt).
+        input(promptPtr) {
+          const promptText = self._readLP(promptPtr);
+          const answer = (typeof window !== 'undefined' && typeof window.prompt === 'function')
+            ? window.prompt(promptText) : null;
+          return self._writeLP(answer == null ? '' : answer);
+        },
+
         printl(ptr, len) {
           const str = self.readString(ptr, len);
           console.log(str);
@@ -355,20 +443,29 @@
         // ================================================================
 
         _alloc_string(len) {
-          const ptr = self.stringAllocOffset;
-          self.stringAllocOffset += len + 8; // 8 byte alignment
-          return ptr;
+          return self._heapAlloc(len);
         },
 
-        string_concat(ptr1, len1, ptr2, len2, outPtr) {
-          const str1 = self.readString(ptr1, len1);
-          const str2 = self.readString(ptr2, len2);
-          const result = str1 + str2;
-          return self.writeString(result, outPtr);
+        // LP-pointer convention (HOST_BRIDGE "String Operations").
+        string_concat(aPtr, bPtr) {
+          return self._writeLP(self._readLP(aPtr) + self._readLP(bPtr));
         },
 
-        _string_length(ptr, len) {
-          return len;
+        'string.concat'(aPtr, bPtr) {
+          return self._writeLP(self._readLP(aPtr) + self._readLP(bPtr));
+        },
+
+        // -1 / 0 / 1; 0 means equal (codegen tests it with i32.eqz).
+        string_compare(aPtr, bPtr) {
+          const a = self._readLP(aPtr);
+          const b = self._readLP(bPtr);
+          return a < b ? -1 : (a > b ? 1 : 0);
+        },
+
+        _state_reset_all() {},
+
+        _state_reset_named(namePtr) {
+          void namePtr;
         },
 
         // ================================================================
@@ -386,7 +483,6 @@
         math_cosh(x) { return Math.cosh(x); },
         math_tanh(x) { return Math.tanh(x); },
         math_sqrt(x) { return Math.sqrt(x); },
-        math_cbrt(x) { return Math.cbrt(x); },
         math_pow(x, y) { return Math.pow(x, y); },
         math_exp(x) { return Math.exp(x); },
         math_ln(x) { return Math.log(x); },
@@ -400,11 +496,7 @@
         math_sign(x) { return Math.sign(x); },
         math_min(x, y) { return Math.min(x, y); },
         math_max(x, y) { return Math.max(x, y); },
-        math_clamp(x, min, max) { return Math.max(min, Math.min(max, x)); },
-        math_lerp(a, b, t) { return a + (b - a) * t; },
         math_random() { return Math.random(); },
-        math_random_range(min, max) { return Math.random() * (max - min) + min; },
-        math_random_int(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; },
 
         // Constants
         math_pi() { return Math.PI; },
@@ -458,29 +550,28 @@
         // TYPE CONVERSION
         // ================================================================
 
-        int_to_string(value, outPtr) {
-          const str = value.toString();
-          return self.writeString(str, outPtr);
+        // Conversions return / take LP strings (registry).
+        int_to_string(value) {
+          return self._writeLP(String(value));
         },
 
-        int64_to_string(value, outPtr) {
-          const str = (typeof value === 'bigint' ? value : BigInt(value)).toString();
-          return self.writeString(str, outPtr);
+        // i64 parameters arrive as BigInt.
+        int64_to_string(value) {
+          return self._writeLP((typeof value === 'bigint' ? value : BigInt(value)).toString());
         },
 
-        float_to_string(value, outPtr) {
-          const str = value.toString();
-          return self.writeString(str, outPtr);
+        float_to_string(value) {
+          return self._writeLP(self._formatFloat(value));
         },
 
-        string_to_int(ptr, len) {
-          const str = self.readString(ptr, len);
-          return parseInt(str, 10) || 0;
+        string_to_int(ptr) {
+          const v = parseInt(self._readLP(ptr).trim(), 10);
+          return Number.isFinite(v) ? v | 0 : 0;
         },
 
-        string_to_float(ptr, len) {
-          const str = self.readString(ptr, len);
-          return parseFloat(str) || 0.0;
+        string_to_float(ptr) {
+          const v = parseFloat(self._readLP(ptr).trim());
+          return Number.isFinite(v) ? v : 0.0;
         },
 
         // ================================================================
@@ -543,14 +634,12 @@
           return haystack.indexOf(needle);
         },
 
-        string_matches(strPtr, patternId) {
-          // patternId is a compile-time integer pattern ID. Without the
-          // compiler's pattern table available at runtime, we fall back to
-          // "always matches" — which is the same fail-open behavior the
-          // registry tolerates for unimplemented validators on hosts that
-          // can't reach the compile-time table.
-          void self._readLP(strPtr); void patternId;
-          return 1;
+        // (str_ptr, str_len, pattern_id) — registry pattern table:
+        // 0=email 1=url 2=uuid 3=phone 4=date 5=integer 6=number 7=alphanumeric.
+        string_matches(strPtr, strLen, patternId) {
+          const pattern = STRING_PATTERNS[patternId];
+          if (!pattern) return 0;
+          return pattern.test(self.readString(strPtr, strLen)) ? 1 : 0;
         },
 
         string_repeat(strPtr, strLen, count) {
@@ -851,21 +940,21 @@
       return new Uint8Array(this.memory.buffer, ptr + 4, len).slice();
     }
 
+    // Length-prefixed string on the module heap; returns its pointer.
     _writeLP(str) {
-      if (!this.memory) return 0;
-      this._checkMemoryGrowth();
       const bytes = new TextEncoder().encode(str || '');
-      // Allocate from the loader's string buffer (same region used by
-      // _alloc_string), keeping the offset 4-byte aligned.
-      const ptr = this.stringAllocOffset;
-      const dv = new DataView(this.memory.buffer);
-      dv.setUint32(ptr, bytes.length, true);
-      const view = new Uint8Array(this.memory.buffer, ptr + 4, bytes.length);
-      view.set(bytes);
-      const total = 4 + bytes.length;
-      const pad = (4 - (total % 4)) % 4;
-      this.stringAllocOffset += total + pad;
+      const ptr = this._heapAlloc(4 + bytes.length);
+      new DataView(this.memory.buffer).setUint32(ptr, bytes.length, true);
+      new Uint8Array(this.memory.buffer, ptr + 4, bytes.length).set(bytes);
       return ptr;
+    }
+
+    // Same text as clean-server's float_to_string (Rust f64 Display):
+    // 3 -> "3", 0.5 -> "0.5", infinities -> "inf" / "-inf".
+    _formatFloat(value) {
+      if (value === Infinity) return 'inf';
+      if (value === -Infinity) return '-inf';
+      return String(value);
     }
 
     // ======================================================================
@@ -884,17 +973,11 @@
     }
 
     _jsonMalloc(size) {
-      const ptr = this.instance.exports.malloc(size);
-      if (!ptr) throw new Error('JSON bridge: malloc(' + size + ') failed');
-      return ptr;
+      return this._heapAlloc(size);
     }
 
     _jsonAllocString(str) {
-      const bytes = new TextEncoder().encode(str);
-      const ptr = this._jsonMalloc(4 + bytes.length);
-      this._jsonView().setUint32(ptr, bytes.length, true);
-      new Uint8Array(this.memory.buffer, ptr + 4, bytes.length).set(bytes);
-      return ptr;
+      return this._writeLP(str);
     }
 
     // Throws on an invalid tag — no silent "null" fallback (D5).

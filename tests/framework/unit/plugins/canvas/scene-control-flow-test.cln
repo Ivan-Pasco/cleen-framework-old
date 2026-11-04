@@ -1,0 +1,140 @@
+// Test: frame.canvas — drawing commands inside control flow and scoped
+// drawing blocks keep their structure when the scene body is expanded.
+// Spec: foundation/spec/framework/grammar/frame-canvas.ebnf §17 (canvas.*
+//       calls), §18 (on layer, canvas.group / clip / alpha / shadow / blur /
+//       glow / blendMode scoped blocks), §20 (animation control statements);
+//       core grammar if / else if / else, while, iterate.
+//
+// The draw: body mixes plugin-built bridge calls with user statements inside
+// loops, branches and nested scoped blocks. Each user statement counts how
+// often it ran, so a drawing command that drags a loop body out of its loop,
+// or a scoped block that drops its children, shows up as a wrong count.
+// Canvas bridges are browser-hosted no-op stubs on clean-server.
+//
+// Regressions covered: scoped canvas.* blocks (group, clip, alpha, ...)
+// dropped their child statements; canvas.ellipse called a bridge that does
+// not exist; canvas.sprite / canvas.image / path commands were passed to the
+// statement parser as plain Clean code.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas control flow: start")
+
+state:
+	integer failures = 0
+	integer loopBody = 0
+	integer iterateBody = 0
+	integer steppedSum = 0
+	integer thenBranch = 0
+	integer elseIfBranch = 0
+	integer elseBranch = 0
+	integer groupChildren = 0
+	integer nestedChildren = 0
+	integer layerChildren = 0
+	integer afterAll = 0
+
+canvasScene: id="flow" width=400 height=300
+
+	assets:
+		spritesheet "hero" src="sprites/hero.png" frameWidth=32 frameHeight=32
+		image "logo" src="images/logo.png"
+
+	tween "pulse":
+		pulse from=0.0 to=1.0
+		duration = 0.5
+
+	init:
+		runFrames()
+
+	draw:
+		canvas.clear color="#000000"
+		integer i = 0
+		while i < 4
+			canvas.circle x=10.0 + i.toNumber() * 20.0 y=50 radius=4 color="#ffffff"
+			loopBody = loopBody + 1
+			i = i + 1
+		iterate n in 1 to 3
+			canvas.rect x=n.toNumber() * 10.0 y=0 width=5 height=5 color="#ff0000" filled=false
+			iterateBody = iterateBody + 1
+		iterate k in 6 to 2 step -2
+			if k == 4
+				continue
+			canvas.circle x=k.toNumber() y=0 radius=1 color="#ffffff"
+			steppedSum = steppedSum + k
+		if loopBody == 4
+			canvas.ellipse x=50 y=50 radiusX=10 radiusY=5 color="#00ff00"
+			thenBranch = thenBranch + 1
+		else if loopBody == 8
+			canvas.triangle x1=0 y1=0 x2=10 y2=10 x3=20 y3=0 color="#0000ff"
+			elseIfBranch = elseIfBranch + 1
+		else
+			canvas.line fromX=0 fromY=0 toX=100 toY=100 stroke=2 color="#ffffff"
+			elseBranch = elseBranch + 1
+		canvas.group x=100 y=100 rotation=15 scaleX=2.0 scaleY=2.0 alpha=0.8:
+			canvas.sprite "hero" x=0 y=0 clip=2
+			groupChildren = groupChildren + 1
+			canvas.alpha value=0.5:
+				canvas.clip x=0 y=0 width=50 height=50:
+					canvas.image src="logo" x=0 y=0 width=40 height=40
+					nestedChildren = nestedChildren + 1
+			groupChildren = groupChildren + 1
+		canvas.shadow blur=6 offsetX=2 offsetY=2 color="#000000":
+			canvas.glow color="#ffcc00" blur=8:
+				canvas.blur radius=1:
+					canvas.blendMode mode="multiply":
+						canvas.text value="nested" x=10 y=10 size=12 color="#ffffff"
+						nestedChildren = nestedChildren + 1
+		on layer "hud":
+			canvas.beginPath
+			canvas.moveTo x=0 y=0
+			canvas.lineTo x=10 y=10
+			canvas.curveTo cpX=5 cpY=0 x=20 y=20
+			canvas.arc x=20 y=20 radius=5 startAngle=0 endAngle=180
+			canvas.closePath
+			canvas.fill color="#334455"
+			canvas.stroke color="#ffffff" width=2
+			layerChildren = layerChildren + 1
+		afterAll = afterAll + 1
+
+	onFrame: param="dt"
+		if loopBody > 100
+			play tween "pulse"
+
+functions:
+	void runFrames()
+		_frame_callback(0)
+		expectEqualInt(loopBody, 4, "while body (with a drawing command) ran 4 times")
+		expectEqualInt(iterateBody, 3, "iterate body ran 3 times")
+		expectEqualInt(steppedSum, 8, "iterate with a negative step and continue visited 6 and 2")
+		expectEqualInt(thenBranch, 1, "if branch taken on frame 1")
+		expectEqualInt(elseIfBranch + elseBranch, 0, "other branches skipped on frame 1")
+		expectEqualInt(groupChildren, 2, "canvas.group kept both child statements")
+		expectEqualInt(nestedChildren, 2, "nested scoped blocks kept their children")
+		expectEqualInt(layerChildren, 1, "on layer kept its child statements")
+		expectEqualInt(afterAll, 1, "statement after the scoped blocks ran once")
+
+		_frame_callback(0)
+		expectEqualInt(loopBody, 8, "while body ran 4 more times on frame 2")
+		expectEqualInt(elseIfBranch, 1, "else if branch taken on frame 2")
+
+		_frame_callback(0)
+		expectEqualInt(elseBranch, 1, "else branch taken on frame 3")
+		expectEqualInt(afterAll, 3, "draw ran once per frame")
+
+		if failures == 0
+			printl("PASS: canvas-scene-control-flow")
+		else
+			printl("FAIL: canvas-scene-control-flow (" + failures.toString() + " assertion(s) failed)")
+
+	// Assertion helper — same contract as assertEqualInt in
+	// tests/framework/utils/assertions.cln (copied: no module import system yet).
+	boolean expectEqualInt(integer actual, integer expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected.toString())
+			printl("  Actual:   " + actual.toString())
+			failures = failures + 1
+			return false
+		return true

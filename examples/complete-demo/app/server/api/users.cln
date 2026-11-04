@@ -7,7 +7,11 @@ endpoints:
 				id desc
 			limit:
 				50
-		return json(users)
+		// Never send password_hash to the client.
+		list<any> rows = []
+		for u in users
+			rows.add({ "id": u.id, "email": u.email, "username": u.username, "is_active": u.is_active })
+		return json(rows)
 
 	POST "/api/users":
 		any body = json.tryTextToData(body())
@@ -34,7 +38,7 @@ endpoints:
 		User user = User()
 		user.email = email
 		user.username = username
-		user.password_hash = password
+		user.password_hash = auth.hashPassword(password)
 		user.is_active = true
 		if not Database.save(user)
 			return badRequest("Insert failed")
@@ -53,7 +57,7 @@ endpoints:
 		if user == null
 			return notFound()
 
-		return json(user)
+		return json({ "id": user.id, "email": user.email, "username": user.username, "is_active": user.is_active })
 
 	DELETE "/api/users/:id":
 		string userId = param("id")
@@ -80,16 +84,17 @@ endpoints:
 		if passwordField == null
 			return badRequest("Password required")
 
-		string email = emailField.toString()
+		string loginEmail = emailField.toString()
 		string password = passwordField.toString()
 
 		User user = User.first:
 			where:
-				email == email
-				password_hash == password
+				email == loginEmail
 				is_active == true
-
-		if user == null
+		onError:
 			return unauthorized()
 
-		return json({ "ok": true, "user": user })
+		if not auth.verifyPassword(password, user.password_hash)
+			return unauthorized()
+
+		return json({ "ok": true, "user": { "id": user.id, "email": user.email, "username": user.username } })

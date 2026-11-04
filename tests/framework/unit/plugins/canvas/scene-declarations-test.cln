@@ -1,0 +1,193 @@
+// Test: frame.canvas — scene-level declarations register before init: runs.
+// Spec: foundation/spec/framework/grammar/frame-canvas.ebnf §3 (assets), §4
+//       (layers), §6 (tween), §7 (timeline at / after / together), §8
+//       (animState with `when` and `onComplete` transitions), §9 (animSprite),
+//       §10 (particles), §11 (path), §12 (gradient), §13 (customEase), §14
+//       (camera); frame-canvas-semantics.md CVS-S010 (canonical order),
+//       CVS-S012, CVS-A003 (transitions checked every frame, first match wins).
+//
+// Every declaration kind expands into registration bridge calls in start:,
+// ahead of init:, with attribute values as expressions (a tween `to=` may
+// name a state variable, a camera follows one). The browser bridges are no-op
+// stubs on clean-server: the test proves the whole expansion type-checks and
+// runs, that init: sees the state, and that the per-frame animState and
+// camera updates run each frame.
+//
+// Regressions covered: registration arguments were emitted as string
+// literals for number / integer parameters (SEM001); timeline / animState /
+// particles bodies were sent to the runtime as raw DSL text instead of JSON;
+// a `tween "x"` step inside a timeline was taken for a new sub-block; the
+// sub-block order check matched keywords anywhere in the body.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas declarations: start")
+
+state:
+	integer failures = 0
+	integer initRuns = 0
+	integer frames = 0
+
+canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
+
+	assets:
+		image "sky" src="images/sky.png"
+		spritesheet "hero" src="sprites/hero.png" frameWidth=48 frameHeight=64
+		sound "jump" src="audio/jump.wav"
+		music "theme" src="audio/theme.ogg"
+		font "pixel" src="fonts/pixel.woff2"
+
+	layers:
+		layer "background" z=0
+		layer "world" z=10
+		layer "hud" z=100
+
+	state:
+		number heroX = 40.0
+		number heroY = 200.0
+		number heroVX = 0.0
+		number pathT = 0.0
+		integer lives = 3
+		boolean attacking = false
+
+	animSprite "heroIdle":
+		sheet = "hero"
+		frames = 0..3
+		fps = 8
+		loop = true
+
+	animSprite "heroAttack":
+		sheet = "hero"
+		frames = 4..9
+		fps = 14
+		loop = false
+
+	particles "dust":
+		lifetime = 0.3..0.8
+		speed = 20..60
+		angle = -160..-20
+		color = "#c8b89a"
+		size = 3
+		emitter:
+			rate = 25
+			burst = 6
+		overLifetime:
+			size = 1.0 -> 0.2
+			alpha = 1.0 -> 0.0
+		forces:
+			gravity = 120
+			drag = 0.95
+			wind x=8 y=0
+
+	tween "slideIn":
+		heroX from=-50.0 to=heroX + 100.0
+		heroY to=180.0
+		duration = 0.6
+		ease = "easeOutBack"
+		delay = 0.1
+
+	tween "bob":
+		heroY from=180.0 to=170.0
+		duration = 0.4
+		repeat = -1
+		yoyo = true
+		ease = "snap"
+
+	tween "follow":
+		pathT to=1.0
+		duration = 3.0
+		along = "loop"
+		orient = true
+
+	timeline "intro":
+		at 0.0:
+			tween "slideIn"
+		after gap=0.2:
+			tween "bob"
+		together stagger=0.1:
+			tween "follow"
+			tween "bob"
+
+	animState "heroFSM":
+		initial = "idle"
+		state "idle":
+			play animSprite "heroIdle"
+		state "attack":
+			play animSprite "heroAttack"
+		transitions:
+			"idle" -> "attack" when attacking
+			"idle" -> "idle" when heroVX > 100.0
+			"attack" onComplete "idle"
+
+	path "loop":
+		moveTo x=0 y=0
+		lineTo x=200 y=0
+		curveTo x=200 y=100 cx=260 cy=50
+		curveTo x=0 y=100 cp1x=150 cp1y=140 cp2x=50 cp2y=140
+		arcTo x=0 y=50 radius=50 startAngle=90 endAngle=270
+		closed = true
+
+	gradient "skyFade" linear x1=0 y1=0 x2=0 y2=360:
+		stop 0.0 color="#0b1020"
+		stop 1.0 color="#3a4a7a"
+
+	gradient "sun" radial cx=500 cy=80 r=60:
+		stop 0.0 color="#ffe08a"
+		stop 1.0 color="#ff9a3c"
+
+	customEase "snap" x1=0.68 y1=-0.55 x2=0.265 y2=1.55
+
+	camera:
+		followX = heroX
+		followY = heroY - 40.0
+		smoothing = 0.1
+		deadzoneWidth = 60
+		deadzoneHeight = 40
+		boundsX = 0
+		boundsY = 0
+		boundsWidth = 2000
+		boundsHeight = 360
+		zoom = 1.5
+
+	init:
+		initRuns = initRuns + 1
+		expectTrue(heroX == 40.0 and lives == 3 and attacking == false, "state holds its declared values in init:")
+		play timeline "intro"
+		start animState "heroFSM"
+		runFrames()
+
+	draw:
+		canvas.rect x=0 y=0 width=640 height=360 gradient="skyFade"
+		canvas.circle x=500 y=80 radius=60 gradient="sun"
+		on layer "world":
+			canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
+		on layer "hud":
+			canvas.text value="Lives: {lives}" x=10 y=20 size=14 color="#ffffff" font="pixel"
+
+	onFrame: param="dt"
+		frames = frames + 1
+		heroX = heroX + heroVX * dt
+
+functions:
+	void runFrames()
+		_frame_callback(0)
+		_frame_callback(0)
+		expectTrue(initRuns == 1, "init: ran once")
+		expectTrue(frames == 2, "onFrame ran each frame")
+		_anim_states_update(0)
+		_camera_follow(0)
+		if failures == 0
+			printl("PASS: canvas-scene-declarations")
+		else
+			printl("FAIL: canvas-scene-declarations (" + failures.toString() + " assertion(s) failed)")
+
+	// Assertion helper — same contract as assertTrue in
+	// tests/framework/utils/assertions.cln (copied: no module import system yet).
+	boolean expectTrue(boolean condition, string message)
+		if condition == false
+			printl("FAIL: " + message)
+			failures = failures + 1
+			return false
+		return true

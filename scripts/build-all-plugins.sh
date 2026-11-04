@@ -1,47 +1,42 @@
 #!/bin/bash
-# Build all Frame plugins
-set -e
+# Build every Frame plugin from source (plugins/*/build.sh).
+#
+# Environment:
+#   CLEEN_CLN   compiler (default: ~/.cleen/bin/cln — plain `cln` on PATH is a
+#               different toolchain). Passed to each build.sh as CLN_COMPILER.
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGINS_DIR="$SCRIPT_DIR/../plugins"
+CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
 
-echo "Building Frame plugins..."
+if [ ! -x "$CLN" ]; then
+    echo "Compiler not found at: $CLN (set CLEEN_CLN to override)" >&2
+    exit 1
+fi
+
+echo "Building Frame plugins with $("$CLN" --version)"
 echo "========================="
-echo ""
 
-# Track success/failure
 BUILT=0
 FAILED=0
 
 for plugin_dir in "$PLUGINS_DIR"/*/; do
     plugin_name=$(basename "$plugin_dir")
-    echo "Building $plugin_name..."
-
-    cd "$plugin_dir"
-    if [ -f "build.sh" ]; then
-        if bash build.sh; then
-            echo "  ✓ $plugin_name built successfully"
-            ((BUILT++))
-        else
-            echo "  ✗ $plugin_name build failed"
-            ((FAILED++))
-        fi
-    else
-        echo "  ⚠ $plugin_name has no build.sh, attempting direct compile..."
-        if cln compile src/main.cln -o plugin.wasm; then
-            echo "  ✓ $plugin_name built successfully"
-            ((BUILT++))
-        else
-            echo "  ✗ $plugin_name build failed"
-            ((FAILED++))
-        fi
+    if [ ! -f "$plugin_dir/build.sh" ]; then
+        echo "  ✗ $plugin_name has no build.sh"
+        FAILED=$((FAILED + 1))
+        continue
     fi
-    echo ""
+    if (cd "$plugin_dir" && CLN_COMPILER="$CLN" bash build.sh); then
+        echo "  ✓ $plugin_name"
+        BUILT=$((BUILT + 1))
+    else
+        echo "  ✗ $plugin_name build failed"
+        FAILED=$((FAILED + 1))
+    fi
 done
 
 echo "========================="
 echo "Build complete: $BUILT succeeded, $FAILED failed"
-
-if [ $FAILED -gt 0 ]; then
-    exit 1
-fi
+[ "$FAILED" -eq 0 ]

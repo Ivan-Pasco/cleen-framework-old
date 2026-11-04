@@ -1,0 +1,45 @@
+// Test: frame.server — server: handle: global error handler.
+// Grammar: frame-server.ebnf §1 error_handle_field / error_handle_clause —
+// `any <identifier>:` catches every handler error; `<identifier>.message`
+// is the error text (forwarded by clean-server in X-Clean-Error).
+// Semantic: frame-server-semantics.md SRV-B004 (req is in scope inside the
+// `handle:` body), SRV-I002 (error envelope must be valid JSON).
+//
+// Before the fix the emitted handler took a `message` parameter, so the
+// server could not call it (it invokes handlers with no arguments) and every
+// error fell through to the default 500; only the identifier `err` was
+// recognised; and `req.*` inside the handler failed CONC002.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+	handle:
+		any e:
+			string path = req.path()
+			string body = httpError(500, "caught: " + e.message)
+			integer failures = 0
+			if path != "/test"
+				printl("FAIL: server-global-error-handler (req.path() = " + path + ")")
+				failures = failures + 1
+			if e.message.length() == 0
+				printl("FAIL: server-global-error-handler (empty error message)")
+				failures = failures + 1
+			if body.contains("\n")
+				printl("FAIL: server-global-error-handler (raw newline in JSON envelope)")
+				failures = failures + 1
+			if body.contains("\"code\":\"HTTP_ERROR\"") == false
+				printl("FAIL: server-global-error-handler (envelope: " + body + ")")
+				failures = failures + 1
+			if failures == 0
+				printl("PASS: server-global-error-handler")
+			return body
+
+endpoints:
+	GET "/test":
+		error("boom")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-global-error-handler server ready")

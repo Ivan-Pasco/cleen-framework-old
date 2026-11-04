@@ -1,299 +1,110 @@
-# Frame - Full-Stack Framework for Clean Language
+# Frame — Full-Stack Framework for Clean Language
 
-**Version 2.0**
+Frame is the full-stack framework for Clean Language. Every part of it is a
+Clean Language **plugin**: Clean source in `plugins/<name>/src/main.cln`,
+compiled to `plugin.wasm`, described by `plugin.toml`. When an application
+declares a plugin, the compiler loads it from `~/.cleen/plugins/`, lets it
+expand its DSL blocks (`endpoints:`, `data`, `component:`, ...) into ordinary
+Clean code, and compiles the result to WebAssembly. At run time the
+application's bridge calls (`db.query`, `http.respond`, ...) are served by
+`clean-server` (or, for browser targets, by the plugin's runtime JS).
 
-Frame is the official full-stack framework for Clean Language, providing a unified programming model for building web applications that compile to WebAssembly.
+This repository is the **old toolchain** (`cln` 0.33.x, `clean-server` 1.9.x),
+kept in maintenance use. Its specs live in `../foundation/spec/framework/`.
 
-## What's New in Version 2.0
+## Plugins
 
-Frame 2.0 introduces a **plugin-based architecture** where framework functionality is provided by Clean Language plugins rather than Rust crates:
+| Plugin | Blocks | Purpose |
+|--------|--------|---------|
+| `frame.server` | `endpoints:`, `middleware:`, `routes:`, `server:` | HTTP routing, request/response, SSE, WebSockets, mail |
+| `frame.data` | `data`, `migrate:` | Models, queries, transactions, migrations |
+| `frame.auth` | `auth:`, `login:`, `roles:` | Sessions, JWT, password hashing, role guards, CSRF |
+| `frame.ui` | `component:`, `page:`, `html:`, `ui:`, `styles:` | Components, server-rendered pages, browser runtime |
+| `frame.client` | `load:`, `form:`, `send:` | Browser-side HTTP, forms, live data |
+| `frame.canvas` | `canvasScene:` | Canvas scenes, drawing, audio, input (browser) |
+| `frame.jobs` | `jobs:` | Background jobs, retries, cron schedules |
+| `frame.locale` | `locale:` | Translations, plural forms, formatting |
+| `frame.mcp` | `mcp:` | MCP server: tools, resources and prompts for AI agents |
+| `frame.storage` | — | `storage.write/read/exists/delete` for binary files |
 
-| Component | v1 (Rust Crates) | v2 (Clean Plugins) |
-|-----------|------------------|-------------------|
-| Web Server | `frame-server` | `frame.server` |
-| ORM/Database | `frame-data` | `frame.data` plugin |
-| Authentication | `frame-auth` | `frame.auth` plugin |
-| UI Components | `frame-ui` | `frame.ui` plugin |
-| CLI | `frame-cli` | `cleen` (external) |
-
-This enables:
-- **Self-hosting**: Framework extends itself using Clean Language
-- **Simpler authoring**: Write plugins in Clean, not Rust
-- **Sandboxed execution**: Plugins run in WASM sandbox
-- **Easy distribution**: Single `.wasm` file + manifest
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     CLEAN LANGUAGE SOURCE                                │
-│                      (with import: block)                                │
-│                                                                          │
-│   import:                                                                │
-│       frame.server                                                          │
-│       frame.data                                                         │
-│                                                                          │
-│   server: port=3000                                                      │
-│       route: method="GET" path="/users"                                  │
-│           return User.all()                                              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          COMPILER                                        │
-│                                                                          │
-│   1. Parse source file                                                   │
-│   2. Load plugins from ~/.cleen/plugins/                                 │
-│   3. Expand framework blocks via plugin.expand_block()                   │
-│   4. Continue normal compilation → WASM                                  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        HOST BRIDGE                                       │
-│                      (Rust runtime)                                      │
-│                                                                          │
-│   Provides: HTTP, Database, Crypto, Auth, File I/O, etc.                │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## Quick Start
-
-### Installation
+## Quick start
 
 ```bash
-# Install Clean Manager (cleen)
-curl -sSL https://cleanlanguage.org/install.sh | bash
-
-# Install the compiler
-cleen install cln
-
-# Install Frame plugins
-cleen plugin install frame.server frame.data frame.auth frame.ui
+# Old-toolchain manager, compiler, server and plugins
+~/.cleen/bin/cleen install latest
+~/.cleen/bin/cleen server install
+~/.cleen/bin/cleen frame install latest
 ```
 
-### Create a Simple Server
+A project's root `main.cln` is a package manifest; the compiler discovers the
+files under `app/`:
 
 ```clean
-// main.cln
-import:
-    frame.server
-    frame.data
+package: TodoApp
+    version: "1.0.0"
 
-model: name="User" table="users"
-    string email
-    string name
-
-server: port=3000
-    route: method="GET" path="/users"
-        return json(User.all())
-
-    route: method="POST" path="/users"
-        user = User()
-        user.email = request.body("email")
-        user.name = request.body("name")
-        user.save()
-        return json(user)
+    target: server
+        plugins: [frame.ui, frame.data, frame.server]
+        entry: app/ui/web/pages/index.html
 ```
 
-### Compile and Run
+```clean
+// app/data/models/Todo.cln
+data Todo:
+	fields:
+		integer id primary generated
+		string title required
+		integer completed default: 0
+```
+
+```clean
+// app/server/api/todos/index.cln
+endpoints:
+	GET "/api/todos":
+		list<Todo> results = Todo.find:
+			order: id desc
+
+		return json(results)
+```
 
 ```bash
-# Compile with plugins
-cln compile main.cln -o app.wasm --plugins
-
-# Run with host bridge
-./host-bridge run app.wasm
+cd examples/todo-app
+~/.cleen/bin/cln compile main.cln -o app.wasm --plugins
+DATABASE_URL=sqlite::memory: ~/.cleen/bin/clean-server app.wasm --port 3000
 ```
 
-## Project Structure
+See [examples/](examples/) for complete applications.
+
+## Repository layout
 
 ```
-clean-framework/
-├── host-bridge/              # Runtime imports (Rust crate)
-│   └── src/
-├── plugins/                  # Clean Language plugins
-│   ├── frame.server/
-│   │   ├── plugin.toml
-│   │   ├── src/main.cln
-│   │   ├── build.sh
-│   │   └── README.md
-│   ├── frame.data/
-│   ├── frame.auth/
-│   └── frame.ui/
-├── examples/
-│   ├── todo-app/
-│   └── api-server/
-├── scripts/
-│   ├── build-all-plugins.sh
-│   ├── install-plugins.sh
-│   └── test-plugins.sh
-└── documents/
-    └── specification/
+plugins/<name>/        plugin source, plugin.toml, build.sh, committed plugin.wasm
+examples/              example applications (all compile with the current toolchain)
+tests/framework/       framework test suites (runtime, unit, integration, e2e)
+tests/cln/bugfixes/    regression tests for fixed framework bugs
+scripts/               build, install and test scripts (see scripts/README.md)
 ```
 
-## Official Plugins
-
-### frame.server
-
-Web server DSL with routing and middleware.
-
-**Blocks:** `server`, `route`, `middleware`
-
-```clean
-import:
-    frame.server
-
-server: port=3000
-    middleware:
-        _log_info("Request: " + request.path)
-        return next(request)
-
-    route: method="GET" path="/hello"
-        return {"message": "Hello World"}
-```
-
-### frame.data
-
-ORM with automatic CRUD methods.
-
-**Blocks:** `model`, `query`, `transaction`
-
-```clean
-import:
-    frame.data
-
-model: name="Post" table="posts"
-    string title
-    string content
-    boolean published = false
-```
-
-### frame.auth
-
-Authentication with JWT and sessions.
-
-**Blocks:** `auth`, `protected`, `login`
-
-```clean
-import:
-    frame.auth
-
-auth: strategy="jwt" secret=env.get("JWT_SECRET")
-
-protected:
-    route: method="GET" path="/profile"
-        return request.user
-```
-
-### frame.ui
-
-UI components with SSR and hydration.
-
-**Blocks:** `component`, `layout`, `page`
-
-```clean
-import:
-    frame.ui
-
-component: name="Counter" client="on"
-    state:
-        integer count = 0
-
-    render()
-        return "<button onclick=\"increment()\">" + count().toString() + "</button>"
-
-    increment()
-        setCount(count() + 1)
-```
-
-## Host Bridge
-
-The Host Bridge provides runtime capabilities to WASM modules:
-
-| Namespace | Functions |
-|-----------|-----------|
-| `_http_*` | listen, route, middleware, request |
-| `_db_*` | query, insert, update, delete, transaction |
-| `_auth_*` | create_token, verify_token, hash_password |
-| `_file_*` | read, write, exists, delete |
-| `_env_*` | get, set |
-| `_log_*` | info, warn, error |
-| `_crypto_*` | random, hash, sign, verify |
-| `_time_*` | now, sleep |
-
-## Building from Source
+## Building and testing
 
 ```bash
-# Clone the repository
-git clone https://github.com/clean-language/frame
-cd frame
-
-# Build host-bridge
-cargo build --release
-
-# Build all plugins
-./scripts/build-all-plugins.sh
-
-# Install plugins locally
-./scripts/install-plugins.sh
+./scripts/build-all-plugins.sh      # rebuild every plugin.wasm with ~/.cleen/bin/cln
+./scripts/install-plugins.sh        # install this checkout's plugins into ~/.cleen/plugins
+./scripts/run-framework-tests.sh    # run every framework suite inside clean-server
+./scripts/test-plugins.sh           # compile-check plugins/*/tests
+./scripts/smoke-examples.sh         # compile, boot and request every example
+./scripts/install-hooks.sh          # pre-commit / pre-push hooks
 ```
 
-## Plugin Development
+Test rules: [tests/CONVENTIONS.md](tests/CONVENTIONS.md).
 
-Create your own plugins to extend the framework:
+## Specifications
 
-```bash
-# Create plugin scaffold
-cleen plugin create my-plugin
-
-# Edit src/main.cln
-# Implement expand_block function
-
-# Build
-cleen plugin build
-
-# Install locally
-cleen plugin install ./
-```
-
-### Plugin API
-
-```clean
-// Required: expand_block function
-expand_block(block_name: string, attributes: string, body: string) -> string
-    // Return Clean Language source code
-    return generated_code
-
-// Optional: validate_block function
-validate_block(block_name: string, attributes: string, body: string) -> string
-    // Return empty string if valid, error message otherwise
-    return ""
-```
-
-## Documentation
-
-- [Architecture Overview](documents/ARCHITECTURE.md)
-- [Frame Overview](documents/specification/01_frame_overview.md)
-- [Compiler Plugins](documents/specification/10_compiler_plugins.md)
-- [Plugin System](documents/specification/07_frame_plugins.md)
-- [Server/Routing](documents/specification/03_frame_server.md)
-- [ORM/Data](documents/specification/04_frame_data.md)
-- [Authentication](documents/specification/06_frame_auth.md)
-- [UI Components](documents/specification/05_frame_ui.md)
-- [Host Bridge Contracts](documents/specification/frame_bridge_contracts.md)
-
-## Examples
-
-- [Todo App](examples/todo-app/) - Full-stack todo with SSR and REST API
-- [API Server](examples/api-server/) - REST API with authentication
+- Plugin grammars: `../foundation/spec/framework/grammar/frame-*.ebnf`
+- Plugin semantics: `../foundation/spec/framework/frame-*-semantics.md`
+- Plugin contract: `../foundation/spec/framework/plugin-contract.md`
+- Bridge functions: `../foundation/spec/platform/function-registry.toml`, `HOST_BRIDGE.md`
 
 ## License
 
-MIT OR Apache-2.0
-
-## Links
-
-- [Clean Language](https://cleanlanguage.org)
-- [Clean Language Compiler](https://github.com/clean-language/cln)
-- [Clean Manager](https://github.com/clean-language/cleen)
+MIT

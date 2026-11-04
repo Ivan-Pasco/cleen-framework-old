@@ -1,0 +1,61 @@
+// Test: frame.data — paginate:/cursor: clause values in the grammar form.
+// Spec: frame-data.ebnf §5.3 — `page: <expr>`, `perPage: <expr>`,
+// `after: <expr>`, `by: <identifier>`; DAT-Q021 result fields.
+// Regression: only the `page 1` / `by "id"` spelling was read; the
+// grammar's `page: 2` was ignored (page 1, 20 per page) and `by: id` read a
+// variable named `id`.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Item:
+	fields:
+		integer id primary generated
+		string name required
+		integer rank required
+
+endpoints:
+	GET "/test":
+		Item.migrate()
+		iterate i in 1 to 25
+			Item item = Item()
+			item.name = "item-" + i.toString()
+			item.rank = 100 - i
+			Database.save(item)
+
+		integer wanted = 2
+		PagedResult<Item> page2 = Item.paginate:
+			where:
+				rank > 0
+			paginate:
+				page: wanted
+				perPage: 10
+		boolean ok_page = page2.currentPage == 2 and page2.perPage == 10 and page2.items.length() == 10
+		boolean ok_flags = page2.hasNext and page2.hasPrev and page2.totalPages == 3 and page2.totalCount == 25
+
+		CursorResult<Item> first = Item.cursor:
+			cursor:
+				after: ""
+				perPage: 5
+				by: id
+		boolean ok_cursor = first.items.length() == 5 and first.nextCursor == "5" and first.hasNext and not first.hasPrev
+
+		CursorResult<Item> second = Item.cursor:
+			cursor:
+				after: first.nextCursor
+				perPage: 5
+				by: id
+		boolean ok_second = second.items.length() == 5 and second.items[0].name == "item-6" and second.hasPrev
+
+		if ok_page and ok_flags and ok_cursor and ok_second
+			printl("PASS: data-pagination-clause-form")
+		else
+			printl("FAIL: data-pagination-clause-form page=" + ok_page.toString() + " flags=" + ok_flags.toString() + " cursor=" + ok_cursor.toString() + " second=" + ok_second.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-pagination-clause-form server ready")

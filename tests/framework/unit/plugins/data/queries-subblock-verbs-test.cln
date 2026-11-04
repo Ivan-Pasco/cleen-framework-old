@@ -1,0 +1,83 @@
+// Test: frame.data — queries: sub-block methods built on every query verb.
+// Spec: DAT-A003 (find / first / findOrFail / count / exists bodies),
+// DAT-A004 (single `return <verb>:` statement), DAT-A006 (`<entity>.data.<method>`).
+// Regression: only `return first:` was rewritten; `return find:`, `count:`,
+// `exists:` and `findOrFail:` failed plugin expansion with SYN001.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Post:
+	fields:
+		integer id primary generated
+		string title required
+		integer viewCount required
+
+	queries:
+		list<Post> popular(integer minViews)
+			return find:
+				where:
+					viewCount >= minViews
+				order: viewCount desc
+		integer countPopular(integer minViews)
+			return count:
+				where:
+					viewCount >= minViews
+		boolean hasTitle(string t)
+			return exists:
+				where:
+					title == t
+		Post byTitle(string t)
+			return findOrFail:
+				where:
+					title == t
+		Post? latest()
+			return Post.first:
+				order: id desc
+
+start:
+	printl("[boot] data-queries-subblock-verbs server ready")
+
+// The entity declares every field of its data class (DAT-P004).
+class PostEntity
+	public:
+		Post data
+		integer id
+		string title
+		integer viewCount
+
+endpoints:
+	GET "/test":
+		Post.migrate()
+		Post a = Post()
+		a.title = "A"
+		a.viewCount = 5
+		Database.save(a)
+		Post b = Post()
+		b.title = "B"
+		b.viewCount = 50
+		Database.save(b)
+		Post c = Post()
+		c.title = "C"
+		c.viewCount = 20
+		Database.save(c)
+
+		PostEntity posts = PostEntity()
+		list<Post> pop = posts.data.popular(10)
+		boolean ok_find = pop.length() == 2 and pop[0].title == "B" and pop[1].title == "C"
+		boolean ok_count = posts.data.countPopular(10) == 2 and posts.data.countPopular(100) == 0
+		boolean ok_exists = posts.data.hasTitle("B") and not posts.data.hasTitle("Z")
+		Post found = posts.data.byTitle("A")
+		boolean ok_fof = found.viewCount == 5
+		Post last = posts.data.latest()
+		boolean ok_first = last.title == "C"
+
+		if ok_find and ok_count and ok_exists and ok_fof and ok_first
+			printl("PASS: data-queries-subblock-verbs")
+		else
+			printl("FAIL: data-queries-subblock-verbs find=" + ok_find.toString() + " count=" + ok_count.toString() + " exists=" + ok_exists.toString() + " findOrFail=" + ok_fof.toString() + " first=" + ok_first.toString())
+		return json({ok: true})

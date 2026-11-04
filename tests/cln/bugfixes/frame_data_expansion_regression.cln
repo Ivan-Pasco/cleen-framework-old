@@ -2,12 +2,15 @@
 // Component: framework/frame.data
 // Grammar: (data DSL — plugin-owned) v2 `fields:` sub-block, colon-form `name: type [constraints]`
 // Fixed in: framework v2.12.175
-// Expected output: compiles cleanly with no SYN001 fragment errors and no PLUGIN013.
+// Expected output:
+//   PASS: frame_data_expansion_regression
+//   (reaching start: proves the file compiled with no SYN001 fragment errors
+//   and no PLUGIN013)
 //   Regression guard for FRAME-DATA-DSL-NO-USABLE-PATH-3012 (dashboard #543847a2):
 //   the v2 field-name tokenizer used to keep the trailing colon on the name
 //   (e.g. field_name = "id:"), which then emitted `id:.toString()` inside the
 //   plugin-generated __to_update_params body and failed _emit_stmt_from_source.
-//   The v2 type stub also hard-coded `string`, causing a SEM001 unification error
+//   The v2 type mapping also hard-coded `string`, causing a SEM001 unification error
 //   for `id: integer`. Both are covered by this test — multi-field and single-field.
 
 plugins:
@@ -23,4 +26,4 @@ data User:
 		email: string unique
 
 start:
-	print("compiled")
+	printl("PASS: frame_data_expansion_regression")

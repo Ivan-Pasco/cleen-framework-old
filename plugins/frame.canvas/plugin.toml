@@ -1,7 +1,7 @@
 [plugin]
 name = "frame.canvas"
 version = "3.0.1"
-description = "Canvas animation and rendering plugin for Clean Language — drawing, tweens, timelines, state machines, particles, path animation, audio, sprites, input, and effects. v3.0.0: plugin contracts v3 typed-emission complete — full typed AST emission, all 32 draw commands, 8 multi-instance expanders, 14 DSL body commands, DSL parsers, attribute helpers, scene state loops, validation, and complete dispatcher."
+description = "Canvas animation and rendering plugin for Clean Language — drawing, tweens, timelines, state machines, particles, path animation, audio, sprites, input, collision, camera and scene management. A canvasScene: block expands to typed functions (Plugin Contracts v3) driven by the browser runtime in runtime/."
 author = "Clean Language Team"
 license = "MIT"
 
@@ -26,10 +26,9 @@ tier = "canvas"
 
 [lifecycle]
 # Plugin Contracts v3 — typed-emission.md §7. Under atomic-migration, every
-# declared slot MUST be a typed variant. frame.canvas emits scene stubs and
-# helpers inline from expand_block_typed; module_helpers is a no-op placeholder
-# — same shape as the v1 slot (see v1 comment in main.v1.cln for context on
-# why per-scene state prevents a static module_helpers emission).
+# declared slot MUST be a typed variant. frame.canvas emits every declaration
+# per scene from expand_block_typed (scene state is per scene), so
+# emit_module_helpers_typed emits nothing.
 module_helpers_are_roots = true
 module_helpers = "emit_module_helpers_typed"
 
@@ -175,7 +174,7 @@ keywords = [
   # gradient keywords
   { name = "linear", description = "Linear gradient type attribute: gradient \"name\" linear x1= y1= x2= y2=:", context = "config" },
   { name = "radial", description = "Radial gradient type attribute: gradient \"name\" radial cx= cy= r=:", context = "config" },
-  { name = "stop", description = "Color stop in a gradient: stop 0.0 \"#color\"", context = "block" },
+  { name = "stop", description = "Color stop in a gradient: stop 0.0 color=\"#color\"", context = "block" },
   { name = "gradient", description = "Apply a named gradient as fill: gradient=\"gradientName\" on shape calls", context = "config" },
 
   # customEase keyword
@@ -197,8 +196,8 @@ keywords = [
   { name = "clip", description = "Spritesheet frame index for canvas.sprite", context = "config" },
   { name = "tint", description = "Tint color applied to a sprite (hex or rgba string)", context = "config" },
   { name = "tintStrength", description = "Tint blend strength (0.0 = no tint, 1.0 = full tint)", context = "config" },
-  { name = "anchorX", description = "Horizontal anchor for sprite rotation/scaling (0.0–1.0, default 0.5)", context = "config" },
-  { name = "anchorY", description = "Vertical anchor for sprite rotation/scaling (0.0–1.0, default 0.5)", context = "config" },
+  { name = "anchorX", description = "Horizontal anchor for sprite rotation/scaling (0.0–1.0; x/y are the top-left corner by default, CVS-C006)", context = "config" },
+  { name = "anchorY", description = "Vertical anchor for sprite rotation/scaling (0.0–1.0; x/y are the top-left corner by default, CVS-C006)", context = "config" },
   { name = "scaleX", description = "Horizontal scale factor for sprite or group", context = "config" },
   { name = "scaleY", description = "Vertical scale factor for sprite or group", context = "config" },
   { name = "rotation", description = "Rotation angle in degrees for sprite or group", context = "config" },
@@ -226,6 +225,8 @@ keywords = [
   { name = "pause", description = "Pause a named tween or timeline", context = "expression" },
   { name = "stop", description = "Stop a named tween or timeline", context = "expression" },
   { name = "seek", description = "Seek a timeline to a time position in seconds", context = "expression" },
+  { name = "resume", description = "Resume a paused tween", context = "expression" },
+  { name = "emit", description = "One-shot particle burst: emit particles \"name\" x= y=", context = "expression" },
   { name = "start", description = "Start an animation state machine", context = "expression" },
   { name = "on", description = "Route draw calls to a named layer: on layer \"name\":", context = "expression" },
 ]
@@ -255,7 +256,7 @@ functions = [
   { name = "canvas.line", signature = "canvas.line fromX=${x1} fromY=${y1} toX=${x2} toY=${y2} stroke=${1} color=\"${color}\"", description = "Draw line segment" },
   { name = "canvas.triangle", signature = "canvas.triangle x1=${x1} y1=${y1} x2=${x2} y2=${y2} x3=${x3} y3=${y3} color=\"${color}\" filled=${true}", description = "Draw triangle" },
   { name = "canvas.ellipse", signature = "canvas.ellipse x=${x} y=${y} radiusX=${rx} radiusY=${ry} color=\"${color}\" filled=${true}", description = "Draw ellipse" },
-  { name = "canvas.text", signature = "canvas.text \"${text}\" x=${x} y=${y} size=${16} color=\"${color}\" font=\"${fontName}\" align=\"${left}\" baseline=\"${top}\"", description = "Draw text; font= references a named font asset from assets: block" },
+  { name = "canvas.text", signature = "canvas.text value=\"${text}\" x=${x} y=${y} size=${16} color=\"${color}\" font=\"${fontName}\" align=\"${left}\" baseline=\"${top}\"", description = "Draw text; font= references a named font asset from assets: block" },
   { name = "canvas.image", signature = "canvas.image src=\"${name}\" x=${x} y=${y} width=${w} height=${h}", description = "Draw image asset by name" },
   { name = "canvas.sprite", signature = "canvas.sprite \"${name}\" x=${x} y=${y}\ncanvas.sprite \"${name}\" x=${x} y=${y} clip=${0}\ncanvas.sprite \"${name}\" x=${x} y=${y} state=\"${fsm}\"\ncanvas.sprite \"${name}\" x=${x} y=${y} sheet=\"${run}\" clip=${2}", description = "Draw sprite — static, by clip index, by FSM state, or by sheet+clip. Supports tint=, tintStrength=, alpha=, scaleX=, scaleY=, rotation=, anchorX=, anchorY=, flipX=, flipY=", maps_to = "_sprite_draw" },
 
@@ -271,7 +272,7 @@ functions = [
   { name = "canvas.shadow", signature = "canvas.shadow blur=${10} offsetX=${2} offsetY=${2} color=\"${rgba(0,0,0,0.5)}\":\n\t// drawing commands", description = "Apply drop shadow to all drawing inside the block" },
   { name = "canvas.blur", signature = "canvas.blur radius=${4}:\n\t// drawing commands", description = "Apply blur filter to all drawing inside the block" },
   { name = "canvas.glow", signature = "canvas.glow color=\"${color}\" blur=${12}:\n\t// drawing commands", description = "Apply glow (bloom) to all drawing inside the block" },
-  { name = "canvas.blend", signature = "canvas.blend mode=\"${multiply}\":\n\t// drawing commands", description = "Apply blend mode to all drawing inside the block (multiply, screen, overlay, …)" },
+  { name = "canvas.blendMode", signature = "canvas.blendMode mode=\"${multiply}\":\n\t// drawing commands", description = "Apply blend mode to all drawing inside the block (multiply, screen, overlay, …)" },
 
   # Drawing — layers
   { name = "on layer", signature = "on layer \"${name}\":\n\t// drawing commands", description = "Route draw calls to a named layer" },
@@ -300,12 +301,12 @@ functions = [
   { name = "audio.music.pause", signature = "audio.music.pause", description = "Pause current music track", maps_to = "_audio_music_pause" },
   { name = "audio.music.resume", signature = "audio.music.resume", description = "Resume paused music track", maps_to = "_audio_music_resume" },
   { name = "audio.music.fadeOut", signature = "audio.music.fadeOut duration=${1.0}", description = "Fade out current music track over duration seconds", maps_to = "_audio_music_fade_out" },
-  { name = "audio.music.crossfade", signature = "audio.music.crossfade \"${newTrack}\" duration=${1.5}", description = "Crossfade from current track to a new one", maps_to = "_audio_music_crossfade" },
+  { name = "audio.music.crossfade", signature = "audio.music.crossfade \"${newTrack}\" duration=${1.5}\naudio.music.crossfade \"${fromTrack}\" to=\"${toTrack}\" duration=${1.5}", description = "Crossfade to a new track (from the current one, or from a named track with to=)", maps_to = "_audio_music_crossfade" },
   { name = "audio.masterVolume", signature = "audio.masterVolume value=${0.8}", description = "Set master volume (0–1)", maps_to = "_audio_set_master_volume" },
 
   # Input polling
-  { name = "input.mouseX", signature = "input.mouseX()", description = "Get mouse X position", maps_to = "_input_mouse_x" },
-  { name = "input.mouseY", signature = "input.mouseY()", description = "Get mouse Y position", maps_to = "_input_mouse_y" },
+  { name = "input.mouseX", signature = "input.mouseX", description = "Get mouse X position", maps_to = "_input_mouse_x" },
+  { name = "input.mouseY", signature = "input.mouseY", description = "Get mouse Y position", maps_to = "_input_mouse_y" },
   { name = "input.keyDown", signature = "input.keyDown(\"${key}\")", description = "Check if key is currently held (returns 1/0)", maps_to = "_input_key_down" },
   { name = "input.keyJustPressed", signature = "input.keyJustPressed(\"${key}\")", description = "Check if key was pressed this frame (returns 1/0)", maps_to = "_input_key_just_pressed" },
   { name = "input.keyJustReleased", signature = "input.keyJustReleased(\"${key}\")", description = "Check if key was released this frame (returns 1/0)", maps_to = "_input_key_just_released" },
@@ -315,7 +316,7 @@ functions = [
   { name = "pause tween", signature = "pause tween \"${name}\"", description = "Pause a running tween", maps_to = "_tween_pause" },
   { name = "stop tween", signature = "stop tween \"${name}\"", description = "Stop and reset a tween", maps_to = "_tween_stop" },
   { name = "resume tween", signature = "resume tween \"${name}\"", description = "Resume a paused tween", maps_to = "_tween_resume" },
-  { name = "animate", signature = "animate ${varName} to=${value} duration=${0.5} easing=${ease.easeOut}", description = "Inline animate: animates a state variable to a target value", maps_to = "_tween_animate" },
+  { name = "animate", signature = "animate ${varName} to=${value} duration=${0.5} ease=\"${easeOutQuad}\"", description = "Inline animate: animates a state variable to a target value", maps_to = "_tween_animate" },
 
   # Timeline control
   { name = "play timeline", signature = "play timeline \"${name}\"", description = "Play a named timeline from the beginning", maps_to = "_timeline_play" },
@@ -382,7 +383,7 @@ completions = [
   { trigger = "animSprite \"", insert = "animSprite \"${1:name}\":\n\tsheet = \"${2:spritesheetName}\"\n\tframes = ${3:0}..${4:7}\n\tfps = ${5:12}\n\tloop = ${6:true}" },
   { trigger = "particles \"", insert = "particles \"${1:name}\":\n\temitter:\n\t\trate = ${2:60}\n\t\tshape = \"${3:point}\"\n\tlifetime = ${4:0.5}..${5:1.5}\n\tspeed = ${6:100}..${7:300}\n\tangle = ${8:-180}..${9:180}\n\tcolor = \"${10:#ffffff}\"\n\toverLifetime:\n\t\tsize = 1.0..0.0\n\t\talpha = 1.0..0.0" },
   { trigger = "path \"", insert = "path \"${1:name}\":\n\tmoveTo x=${2:0} y=${3:0}\n\tcurveTo x=${4:300} y=${5:200} cx=${6:100} cy=${7:-50}" },
-  { trigger = "gradient \"", insert = "gradient \"${1:name}\" linear x1=${2:0} y1=${3:0} x2=${4:800} y2=${5:0}:\n\tstop 0.0 \"${6:#3b82f6}\"\n\tstop 1.0 \"${7:#8b5cf6}\"" },
+  { trigger = "gradient \"", insert = "gradient \"${1:name}\" linear x1=${2:0} y1=${3:0} x2=${4:800} y2=${5:0}:\n\tstop 0.0 color=\"${6:#3b82f6}\"\n\tstop 1.0 color=\"${7:#8b5cf6}\"" },
   { trigger = "customEase \"", insert = "customEase \"${1:snap}\" x1=${2:0.68} y1=${3:-0.55} x2=${4:0.265} y2=${5:1.55}" },
   { trigger = "camera:", insert = "camera:\n\tfollowX = ${1:playerX}\n\tfollowY = ${2:playerY}\n\tsmoothing = ${3:0.08}\n\tdeadzoneWidth = ${4:200}\n\tdeadzoneHeight = ${5:100}" },
 
@@ -787,10 +788,11 @@ block_folder_rules = [
 ]
 
 [ai]
-description = "Canvas animation plugin. All game/animation logic lives inside canvasScene: blocks. Use onFrame: for per-frame updates with deltaTime. Use tween/timeline for animations — never animate manually in onFrame. Use layers: for draw order."
+description = "Canvas animation plugin. All game/animation logic lives inside canvasScene: blocks. Use onFrame: param=\"dt\" for per-frame updates with the delta time. Use tween/timeline for animations — never animate manually in onFrame. Use layers: for draw order."
 constraints = [
   "All scene logic belongs inside canvasScene: — never put game logic in endpoints: or functions: at file level",
-  "Always use deltaTime() in onFrame: for frame-rate-independent movement",
+  "Multiply movement by the onFrame: param= delta time (onFrame: param=\"dt\" ... x = x + speed * dt) for frame-rate-independent movement (CVS-L001, CVS-L005)",
+  "state: holds integer, number and boolean variables, each with an initial value (CVS-X008)",
   "Use tween: or timeline: for animations — never manually increment values in onFrame to animate",
   "Declare all assets in the assets: block — never hardcode src paths in draw calls",
   "Use layers: to control draw order — never rely on call order for z-depth",
@@ -799,7 +801,7 @@ constraints = [
 [[ai.patterns]]
 name = "game-loop"
 use_when = "any scene that moves, animates, or responds to input over time"
-anti_pattern = "updating positions by a fixed pixel amount per frame — if the frame rate drops, movement slows; always multiply movement by deltaTime() to get frame-rate-independent physics"
+anti_pattern = "updating positions by a fixed pixel amount per frame — if the frame rate drops, movement slows; always multiply movement by the onFrame: delta time (param=\"dt\") to get frame-rate-independent physics"
 example = "patterns/game-loop.cln"
 
 [[ai.patterns]]

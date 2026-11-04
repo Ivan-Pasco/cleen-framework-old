@@ -44,7 +44,7 @@ functions:
 		integer i = count - 1
 		while i >= 0
 			string idx = i.toString()
-			string status_str = json.get(request_log, idx + ".status")
+			string status_str = _json_get(request_log, idx + ".status")
 			integer status = status_str.toInteger() onError 0
 			if status >= 500
 				return status
@@ -55,7 +55,7 @@ functions:
 		integer i = 0
 		while i < 200
 			string idx = i.toString()
-			string probe = json.get(arr, idx + ".status")
+			string probe = _json_get(arr, idx + ".status")
 			if probe.length() == 0
 				return i
 			i = i + 1

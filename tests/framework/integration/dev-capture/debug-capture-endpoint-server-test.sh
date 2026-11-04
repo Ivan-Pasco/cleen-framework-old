@@ -24,9 +24,10 @@ WORK_DIR="$(mktemp -d)"
 SERVER_PID=""
 trap 'rm -rf "$WORK_DIR"; [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null' EXIT
 
-CLEAN_SERVER="${CLEAN_SERVER:-$HOME/Documents/Dev/Clean Language/clean-server/target/release/clean-server}"
+CLEAN_SERVER="${CLEAN_SERVER:-${CLEEN_SERVER:-$HOME/.cleen/bin/clean-server}}"
 CLN="${CLN:-$HOME/.cleen/bin/cln}"
-PORT=3000
+# Passed to clean-server with --port (port 3000 is often taken locally).
+PORT="${CLEEN_TEST_PORT:-${PORT:-3475}}"
 TIMEOUT=5
 
 PASS_COUNT=0
@@ -80,10 +81,10 @@ fi
 start_server() {
     local dev_flag="$1"
     if [ "$dev_flag" = "on" ]; then
-        CLEAN_DEV=1 "$CLEAN_SERVER" "$WORK_DIR/main.wasm" > "$WORK_DIR/server.log" 2>&1 &
+        CLEAN_DEV=1 "$CLEAN_SERVER" "$WORK_DIR/main.wasm" --port "$PORT" > "$WORK_DIR/server.log" 2>&1 &
     else
         unset CLEAN_DEV
-        "$CLEAN_SERVER" "$WORK_DIR/main.wasm" > "$WORK_DIR/server.log" 2>&1 &
+        "$CLEAN_SERVER" "$WORK_DIR/main.wasm" --port "$PORT" > "$WORK_DIR/server.log" 2>&1 &
     fi
     SERVER_PID=$!
     for i in $(seq 1 20); do

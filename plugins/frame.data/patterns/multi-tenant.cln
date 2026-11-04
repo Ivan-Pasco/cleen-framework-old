@@ -1,61 +1,57 @@
 // Pattern: multi-tenant
 // Use when: one database instance serves multiple isolated customer organisations
-// Anti-pattern: DON'T omit tenant scoping.
-//   Without a tenant_id on every model and every query, one tenant can read
-//   another tenant's data. Always add tenant_id as a FK field and always
-//   filter by it using tenant_getId() — which reads from the authenticated
-//   session, not from user-supplied input.
+// Anti-pattern: DON'T scope by hand with a tenant id taken from the request.
+//   Give every tenant-owned model a `tenantId` field. frame.data then fills
+//   it from the session on insert (tenant_getId(), frame.auth) and adds
+//   `tenantId = <session tenant>` to every query, update and delete of that
+//   model (DAT-I001). Without a session the tenant is empty, so other
+//   tenants' rows stay invisible (DAT-C004).
 
 plugins:
-	frame.data
 	frame.auth
+	frame.data
 
-// Every tenant-scoped model carries tenant_id
+auth:
+	session:
+		cookie = "app.sid"
+
 data Project:
-	id: integer pk auto
-	tenant_id: integer: tenant      // frame.data enforces this is always filtered
-	name: string
-	description: string nullable
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		string tenantId                 // filled from the session on insert
+		string name required
+		string summary
+
+	indexes:
+		(tenantId, name)
 
 data ProjectMember:
-	id: integer pk auto
-	tenant_id: integer: tenant
-	project_id: integer             // FK to Project
-	user_id: integer
-	role: string                    // "owner", "editor", "viewer"
-	joined_at: datetime auto
+	fields:
+		integer id primary generated
+		string tenantId
+		integer projectId required
+		integer userId required
+		string role required            // "owner", "editor", "viewer"
+
+	relations:
+		project: belongs_to Project on projectId
 
 functions:
-	// Always read tenant_id from the session — never from user input
-	list<pairs> list_projects()
-		integer tid = tenant_getId()
+	// Only the session tenant's projects are returned — no tenant filter needed.
+	list<Project> listProjects()
 		return Project.find:
-			where:
-				tenant_id == tid
-			order:
-				name asc
+			order: name asc
 
-	// Creating a record: inject tenant_id from session, not from caller
-	integer create_project(string name, string description)
-		integer tid = tenant_getId()
-		integer result = Project.insert:
-			tenant_id = tid
-			name = name
-			description = description
-		return result
+	// tenantId is taken from the session, never from the caller.
+	integer createProject(string name, string summary)
+		Project project = Project()
+		project.name = name
+		project.summary = summary
+		Database.save(project)
+		return project.id
 
-	// Fetching a single record: always verify tenant_id matches session
-	pairs get_project(integer project_id)
-		integer tid = tenant_getId()
+	// A project id from another tenant simply matches no row.
+	Project? getProject(integer projectId)
 		return Project.first:
 			where:
-				id == project_id
-				tenant_id == tid    // without this line, any tenant can read any project
-
-	// Cross-tenant admin queries (internal tooling only, never exposed to tenants)
-	list<pairs> admin_list_all_projects()
-		return Project.find:
-			order:
-				tenant_id asc
-				name asc
+				id == projectId

@@ -1,0 +1,169 @@
+// Test: frame.canvas — scene lifecycle: init:, onFrame:, draw:, event and
+// lifecycle handlers.
+// Spec: foundation/spec/framework/frame-canvas-semantics.md CVS-S012 (state is
+//       initialised before init: runs), CVS-L005 (onFrame param= names the
+//       delta-time variable), CVS-L007 (return in onFrame: ends that frame's
+//       update), CVS-L002/L003 (update, then draw, every frame);
+//       foundation/spec/framework/grammar/frame-canvas.ebnf §15, §16, §19.
+//
+// The plugin appends the scene's start-up (canvas creation, registrations,
+// state, init:) to start:, so init: is the last thing start: runs; it drives
+// the generated per-frame and handler entry points the browser runtime would
+// call and prints the verdict. Canvas bridges are browser-hosted, so on
+// clean-server they are no-op stubs: the test observes the generated control
+// flow through file-level state, not pixels.
+//
+// Regressions covered: handlers received the delta time / pointer position
+// under fixed names instead of param=; key handlers declared a key parameter
+// the runtime never passes; a `return` in onFrame: skipped draw: and the
+// state store; _frame_callback re-requested the animation loop every frame.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas lifecycle: start")
+
+state:
+	integer failures = 0
+	string trace = ""
+	integer frameUpdates = 0
+	integer drawRuns = 0
+	number lastElapsed = -1.0
+	number downX = 0.0
+	number downY = 0.0
+	number moveSum = 0.0
+	integer upCalls = 0
+	integer keyDownCalls = 0
+	integer keyUpCalls = 0
+	string lastKeyDown = "unset"
+	integer lifecycleCalls = 0
+	boolean skipRestOfFrame = false
+	integer lateUpdates = 0
+
+canvasScene: id="lifecycle" width=320 height=200 fps=30 background="#101010"
+
+	state:
+		integer level = 3
+		number speed = 2.5
+		boolean paused = false
+
+	init:
+		// CVS-S012: state holds its declared values when init: starts.
+		expectEqualInt(level, 3, "integer state is initialised before init:")
+		expectTrue(speed == 2.5, "number state is initialised before init:")
+		expectTrue(paused == false, "boolean state is initialised before init:")
+		trace = trace + "I"
+		runScene()
+
+	draw:
+		canvas.clear color="#101010"
+		drawRuns = drawRuns + 1
+		trace = trace + "D"
+
+	onFrame: param="elapsed"
+		frameUpdates = frameUpdates + 1
+		lastElapsed = elapsed
+		trace = trace + "F"
+		if skipRestOfFrame
+			return
+		lateUpdates = lateUpdates + 1
+
+	onPointerDown: param="mx,my"
+		downX = mx
+		downY = my
+
+	onPointerMove:
+		moveSum = moveSum + px + py
+
+	onPointerUp: param="ux,uy"
+		upCalls = upCalls + 1
+
+	onKeyDown: param="k"
+		keyDownCalls = keyDownCalls + 1
+		lastKeyDown = k
+
+	onKeyUp:
+		keyUpCalls = keyUpCalls + 1
+
+	onExit:
+		lifecycleCalls = lifecycleCalls + 1
+
+	onPause:
+		lifecycleCalls = lifecycleCalls + 10
+
+	onResume:
+		lifecycleCalls = lifecycleCalls + 100
+
+functions:
+	void runScene()
+		// Two full frames: update (onFrame) then draw, each frame.
+		_frame_callback(0)
+		_frame_callback(0)
+		expectEqualInt(frameUpdates, 2, "onFrame ran once per frame")
+		expectEqualInt(drawRuns, 2, "draw ran once per frame")
+		expectEqual(trace, "IFDFD", "init first, then update before draw every frame")
+		expectTrue(lastElapsed >= 0.0, "onFrame param=\"elapsed\" carries the delta time")
+		expectEqualInt(lateUpdates, 2, "onFrame runs to the end without a return")
+
+		// CVS-L007: return ends the frame's update; draw still runs.
+		skipRestOfFrame = true
+		_frame_callback(0)
+		expectEqualInt(frameUpdates, 3, "onFrame ran on the third frame")
+		expectEqualInt(lateUpdates, 2, "statements after return were skipped")
+		expectEqualInt(drawRuns, 3, "draw ran after onFrame returned early")
+
+		// Pointer handlers receive the position under their param= names.
+		_on_pointer_down(0, 12.5, 40.0)
+		expectTrue(downX == 12.5, "onPointerDown param=\"mx,my\" receives x")
+		expectTrue(downY == 40.0, "onPointerDown param=\"mx,my\" receives y")
+		_on_pointer_move(0, 1.0, 2.0)
+		_on_pointer_move(0, 3.0, 4.0)
+		expectTrue(moveSum == 10.0, "onPointerMove default params px,py")
+		_on_pointer_up(0, 5.0, 6.0)
+		expectEqualInt(upCalls, 1, "onPointerUp ran")
+
+		// Key handlers take only the canvas id; the key comes from the event.
+		_on_key_down(0)
+		_on_key_up(0)
+		expectEqualInt(keyDownCalls, 1, "onKeyDown ran")
+		expectEqualInt(keyUpCalls, 1, "onKeyUp ran")
+		expectTrue(lastKeyDown != "unset", "onKeyDown param=\"k\" was assigned")
+
+		_on_pause(0)
+		_on_resume(0)
+		_on_exit(0)
+		expectEqualInt(lifecycleCalls, 111, "onPause, onResume and onExit each ran once")
+
+		if failures == 0
+			printl("PASS: canvas-scene-lifecycle")
+		else
+			printl("FAIL: canvas-scene-lifecycle (" + failures.toString() + " assertion(s) failed)")
+
+	// Assertion helpers — same contract as tests/framework/utils/assertions.cln
+	// (copied: there is no module import system yet; renamed because the
+	// compiler reserves assertEqual).
+	boolean expectEqual(string actual, string expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected)
+			printl("  Actual:   " + actual)
+			failures = failures + 1
+			return false
+		return true
+
+	boolean expectEqualInt(integer actual, integer expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected.toString())
+			printl("  Actual:   " + actual.toString())
+			failures = failures + 1
+			return false
+		return true
+
+	boolean expectTrue(boolean condition, string message)
+		if condition == false
+			printl("FAIL: " + message)
+			failures = failures + 1
+			return false
+		return true

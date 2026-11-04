@@ -16,5 +16,6 @@ endpoints:
 			return unauthorized()
 		if not auth.verifyPassword(password, user.password_hash)
 			return unauthorized()
-		string token = auth.session.create(user.id, "{\"role\": \"" + user.role + "\"}")
-		return jsonResponse("{\"ok\": true, \"token\": \"" + token + "\"}")
+		// auth.setSession stores the session and sets the session cookie.
+		auth.setSession("{\"user_id\":" + user.id.toString() + ",\"role\":\"" + user.role + "\"}")
+		return jsonResponse("{\"ok\": true}")

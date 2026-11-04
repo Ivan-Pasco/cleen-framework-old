@@ -1,55 +1,54 @@
 // Pattern: content-addressed-artifact
-// Use when: persisting an uploaded binary (tarball, image, PDF) whose canonical
-//   name is derived from a hash of its contents. Content addressing gives you
-//   automatic deduplication, immutable URLs, and cache-safety without any
-//   coordination between concurrent uploaders.
+// Use when: persisting an uploaded artifact (JSON report, generated document,
+//   export) whose canonical name is derived from a hash of its contents.
+//   Content addressing gives you automatic deduplication, immutable URLs, and
+//   cache-safety without any coordination between concurrent uploaders.
 // Anti-pattern: DON'T use a client-supplied filename as the storage path.
 //   Client-supplied names cause collisions between users, allow overwrites of
 //   other users' artifacts, and open path-traversal escape holes even when the
 //   host rejects '..'. Always hash the bytes first and compose the destination
 //   path from the hash — client metadata belongs in a database record that
 //   points at the hash, not in the filesystem path.
+//
+// storage.write takes the bytes as a string (frame-storage.ebnf
+// bytes_expression), so this pattern reads the body with req.body(), which
+// suits text payloads. Raw binary bodies arrive from req.body_bytes() as an
+// integer handle (type-system.md §9b), which storage.write's string parameter
+// does not accept today.
 
 plugins:
 	frame.server
 	frame.storage
 
 endpoints:
-	POST /api/v1/reports/tarball-upload:
-		// 1. Read the raw request body (opaque bytes; the compiler routes the
-		//    binary payload directly from _req_body_bytes without a UTF-8
-		//    detour). The wire format is [4-byte LE length][bytes].
-		string body = request.bodyBytes()
+	POST "/api/v1/artifacts":
+		// 1. Request body; the same string is hashed and written, so the
+		//    stored bytes are exactly the bytes that were hashed.
+		string body = req.body()
 
-		// 2. Reject empty uploads at the app layer. The host also enforces
-		//    a per-request write size cap, but early rejection is faster.
+		// 2. Reject empty uploads at the app layer. The host also enforces a
+		//    per-call write size cap (STORAGE-H003).
 		if body.length() == 0
-			response.status(400)
-			return "{\"error\":\"empty upload\"}"
+			return badRequest("empty upload")
 
-		// 3. Compute the content hash. crypto.sha256_bytes returns lowercase
-		//    hex; the same hash forms both the storage path and the client
-		//    receipt that goes back in the response body.
-		string hash = crypto.sha256_bytes(body)
+		// 3. Hash the content. The same lowercase hex hash is both the
+		//    storage path and the receipt returned to the client.
+		string hash = crypto.hash_sha256(body)
 
-		// 4. Compose the destination path from the hash. NEVER concatenate a
-		//    client-supplied filename here — the whole point of content
-		//    addressing is that only the bytes decide the path.
-		string dest = "tarballs/" + hash + ".tar.gz"
+		// 4. Compose the destination from the hash only — never from a
+		//    client-supplied filename.
+		string dest = "artifacts/" + hash + ".json"
 
-		// 5. If the artifact already exists, we're done — content-addressed
-		//    storage means identical bytes always land at the same path, so
-		//    a duplicate upload is a no-op.
+		// 5. Identical bytes always land at the same path, so a duplicate
+		//    upload is a no-op (STORAGE-F003).
 		if storage.exists(dest)
-			return "{\"sha256\":\"" + hash + "\",\"deduplicated\":true}"
+			return json({sha256: hash, deduplicated: true})
 
-		// 6. Persist. storage.write returns 0 on success, non-zero error code
-		//    on failure — 1=permission, 2=disk full, 3=invalid path,
-		//    4=parent not dir, 5=generic I/O. The host writes atomically
-		//    (tmp + rename) so a partial write never leaves a corrupt file.
+		// 6. Persist. 0 = success; 1=permission, 2=disk full, 3=invalid path,
+		//    4=parent not a directory, 5=I/O (STORAGE-F001). The host writes
+		//    atomically (tmp + rename), so readers never see a partial file.
 		integer rc = storage.write(dest, body)
 		if rc != 0
-			response.status(500)
-			return "{\"error\":\"storage failed\",\"code\":" + rc.toString() + "}"
+			return status(500, "storage failed with code " + rc.toString())
 
-		return "{\"sha256\":\"" + hash + "\",\"deduplicated\":false}"
+		return json({sha256: hash, deduplicated: false})

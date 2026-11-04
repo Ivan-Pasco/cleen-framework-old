@@ -1,0 +1,60 @@
+// Test: frame.data — tenant-scoped models.
+// Spec: DAT-I001 (a model with a tenant field is filtered by the session
+// tenant), DAT-C004 (no authenticated tenant -> empty tenant, rows of other
+// tenants stay invisible).
+// Regression: INSERT on a tenant model sent one more parameter than it had
+// placeholders, and the filter used a `tenant_id` column the model did not
+// declare.
+
+plugins:
+	frame.server
+	frame.auth
+	frame.data
+
+server:
+	port: 3400
+
+// tenant_getId() comes from frame.auth, which emits it with its auth: block.
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+data Note:
+	fields:
+		integer id primary generated
+		string tenantId
+		string body required
+
+endpoints:
+	GET "/test":
+		Note.migrate()
+		// No session in this request: the session tenant is "".
+		Note mine = Note()
+		mine.body = "mine"
+		Database.save(mine)
+		boolean ok_insert = mine.id > 0
+
+		// A row of another tenant, written with raw SQL.
+		db.execute("INSERT INTO notes (tenantId, body) VALUES ('other', 'theirs')", "[]")
+
+		integer visible = Note.count
+		list<Note> all = Note.find:
+			order: id
+		boolean ok_scope = visible == 1 and all.length() == 1 and all[0].body == "mine"
+		boolean theirs = Note.exists:
+			where:
+				body == "theirs"
+		boolean ok_hidden = not theirs
+
+		string raw = db.query("SELECT COUNT(*) AS n FROM notes", "[]")
+		boolean ok_stored = json.get(raw, "data.rows.0.n") == "2"
+
+		if ok_insert and ok_scope and ok_hidden and ok_stored
+			printl("PASS: data-tenant-scope")
+		else
+			printl("FAIL: data-tenant-scope insert=" + ok_insert.toString() + " scope=" + ok_scope.toString() + " hidden=" + ok_hidden.toString() + " stored=" + ok_stored.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-tenant-scope server ready")

@@ -10,28 +10,16 @@
 // plugin.toml, which maps storage.* Clean-language names to the underlying
 // _fs_* WASM imports that the host runtime implements.
 //
-// The typed-emission lifecycle slot is declared purely to satisfy the
-// atomic-migration requirement: every plugin declaring expansion_version =
-// "3.0.0" must export a typed variant for each lifecycle slot it uses.
-// This plugin uses only module_helpers, which emits nothing.
-
-// ============================================================================
-// TYPED EMISSION BRIDGE DECLARATIONS (Plugin Contracts v3)
-// ============================================================================
-// foundation/spec/plugins/contracts/typed-emission.md §2.3, §3, §5
-//
-// Only _emit_error is needed — every other typed-emission bridge is unused
-// because this plugin never emits AST nodes. The import is declared so the
-// slot can report a hypothetical diagnostic without an ImportError.
-
-external:
-	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
+// The typed-emission lifecycle slot exists because every plugin declaring
+// expansion_version = "3.0.0" must export a typed variant for each lifecycle
+// slot it declares. This plugin declares only module_helpers, which emits
+// nothing, so it imports no typed-emission bridges.
 
 // ============================================================================
 // V3 LIFECYCLE SLOT: emit_module_helpers_typed
 // ============================================================================
-// foundation/spec/plugins/contracts/typed-emission.md §7
-// foundation/spec/plugins/contracts/lifecycle.md §3.1
+// foundation/spec/framework/contracts/typed-emission.md §7
+// foundation/spec/framework/contracts/lifecycle.md §3.1
 //
 // frame.storage has no module-scope helpers to emit. The storage.* functions
 // are bridge aliases resolved from plugin.toml [aliases]; they need no

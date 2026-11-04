@@ -4,7 +4,7 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Dashboard - Clean Framework Demo</title>
-	<link rel="stylesheet" href="../../public/css/style.css">
+	<link rel="stylesheet" href="/public/css/style.css">
 </head>
 <body>
 	<nav class="navbar">
@@ -22,56 +22,43 @@
 			<p>Registered users from the database</p>
 		</header>
 
-		<!-- Stats cards - Data bound by frame.data at runtime -->
+		<!-- Data comes from the companion load() in dashboard.cln. -->
 		<div class="stats-grid">
 			<div class="stat-card">
-				<div class="stat-value">{{ stats.totalUsers }}</div>
+				<div class="stat-value">{ totalUsers }</div>
 				<div class="stat-label">Total Users</div>
 			</div>
 			<div class="stat-card">
-				<div class="stat-value">{{ stats.activeUsers }}</div>
+				<div class="stat-value">{ activeUsers }</div>
 				<div class="stat-label">Active Users</div>
-			</div>
-			<div class="stat-card">
-				<div class="stat-value">{{ stats.newToday }}</div>
-				<div class="stat-label">New Today</div>
 			</div>
 		</div>
 
-		<!-- Users table - Rendered by frame.ui with data from frame.data -->
 		<section class="card">
 			<div class="card-header">
 				<h2>Registered Users</h2>
-				<button class="btn btn-small" cl-action="refreshUsers">Refresh</button>
 			</div>
 
-			<div class="loading" cl-if="isLoading">Loading users...</div>
-
-			<div class="empty-state" cl-if="!isLoading && users.length == 0">
+			<div class="empty-state" cl-if="noUsers">
 				<p>No users registered yet.</p>
 				<a href="/register" class="btn btn-primary">Be the first!</a>
 			</div>
 
-			<table class="data-table" cl-if="!isLoading && users.length > 0">
+			<table class="data-table" cl-if="hasUsers">
 				<thead>
 					<tr>
 						<th>ID</th>
 						<th>Username</th>
 						<th>Email</th>
-						<th>Registered</th>
 						<th>Status</th>
 					</tr>
 				</thead>
 				<tbody>
 					<tr cl-iterate="user in users">
-						<td>{{ user.id }}</td>
-						<td>
-							<span class="user-avatar">{{ user.username | first | upper }}</span>
-							{{ user.username }}
-						</td>
-						<td>{{ user.email }}</td>
-						<td>{{ user.created_at | formatDate }}</td>
-						<td><span class="badge badge-success" cl-if="user.is_active">Active</span></td>
+						<td>{ user.id }</td>
+						<td>{ user.username }</td>
+						<td>{ user.email }</td>
+						<td><span class="badge badge-success" cl-if="user.active">Active</span></td>
 					</tr>
 				</tbody>
 			</table>

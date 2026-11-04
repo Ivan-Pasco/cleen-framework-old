@@ -2,12 +2,10 @@
 
 Authoritative rules for every test file under `tests/`. Read before adding or modifying a test.
 
-The overall test architecture — layers, hook cadence, plugin coverage
-matrix, remediation plan — lives in
-[../system-documents/testing/TEST_STRATEGY.md](../system-documents/testing/TEST_STRATEGY.md).
-This document is the *rulebook*; the strategy doc is the *plan*. Both are
-enforced by `scripts/check-test-placeholders.py` and by the
-`test-policy` CI job.
+The suite layout and how the runner drives a test are described in
+[framework/README.md](./framework/README.md). These rules are enforced by
+`scripts/check-test-placeholders.py`, the git hooks and the `test-policy`
+and `test` CI workflows.
 
 ## 1. Tests are `.cln` only
 
@@ -15,7 +13,7 @@ No Rust tests, no JS tests, no shell-based assertions. The runner (`scripts/run-
 
 ## 2. Real bridge only — no mocks
 
-Every test must call real bridge functions via the same `clean-server` runtime that ships to users. The legacy `tests/framework/utils/bridge_mocks.cln` is **deprecated** and must not be referenced by new tests. Mocks let bridge drift go undetected; the whole point of this suite is to catch that drift.
+Every test must call real bridge functions via the same `clean-server` runtime that ships to users. The old `bridge_mocks.cln` helper has been removed and the placeholder guard rejects any reference to it. Mocks let bridge drift go undetected; the whole point of this suite is to catch that drift.
 
 If a test needs an isolated database, use SQLite `:memory:` (the framework default for tests). PostgreSQL integration tests run only in CI via the workflow.
 
@@ -23,7 +21,7 @@ If a test needs an isolated database, use SQLite `:memory:` (the framework defau
 
 Application-facing code — including tests — uses dot notation: `db.query(...)`, `http.respond(...)`, `auth.signToken(...)`. Never use the underscore form (`_db_query`, `_http_respond`) in test source. Underscores are the internal host bridge identifiers; tests live at the application layer.
 
-The historical `tests/comprehensive-test/crud-test.cln` predates this rule and still uses underscores. New tests must use dot notation. When converting placeholder tests, convert to dot notation in the same pass.
+When converting an older test, convert it to dot notation in the same pass.
 
 ## 4. Assertion style
 
@@ -47,6 +45,7 @@ Every test file ends with a single `PASS: <suite-name>` or `FAIL: <suite-name>` 
   - `tests/framework/unit/bridge/` — host bridge contract test
   - `tests/framework/integration/` — cross-plugin test
   - `tests/framework/e2e/` — full app boot + HTTP roundtrip
+  - `tests/cln/bugfixes/` — regression test for a fixed bug (`// Fixed in:` header)
   - `plugins/<plugin>/tests/` — plugin-internal compile/smoke test (one per plugin, optional)
 
 ## 6. Suite output contract
@@ -74,13 +73,12 @@ Install the hooks with `./scripts/install-hooks.sh`. Do not skip them with
 and every use requires a commit-message note.
 
 If a test genuinely cannot be written until an upstream fix ships, add the
-file to [PENDING.md](./PENDING.md) with the upstream error code. See
-strategy doc §5 for the process. `PENDING.md` is not a substitute for
+file to [PENDING.md](./PENDING.md) with the upstream issue. `PENDING.md` is not a substitute for
 writing the test; it is a licence to wait.
 
 ## 7. Bug discovery — report and stop
 
-If a test reveals a bug in the compiler, server, or a plugin, do **not** patch around it in the test. Call the `report_error` MCP tool, then stop work on that test until the upstream fix lands. The test stays in the repo with a comment naming the error code; the runner skips it (TODO: add `// SKIP: <code>` directive support) until the fix is verified locally.
+If a test reveals a bug in the compiler, server, or a plugin, do **not** patch around it in the test. File a GitHub issue (label `compiler-old`) in the repo that owns the fix, then stop work on that test until the upstream fix lands. The test stays in the repo, failing, with a comment naming the issue, and is listed in [PENDING.md](./PENDING.md).
 
 This is the explicit policy for this remediation effort: tests document reality. We do not have skipped or xfail tests accumulating silently.
 

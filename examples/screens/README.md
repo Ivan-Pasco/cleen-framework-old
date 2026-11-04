@@ -23,6 +23,7 @@ screens/
 │           └── screens/
 │               ├── Counter.cln   # Counter screen definition
 │               └── TodoList.cln  # TodoList screen definition
+├── public/css/style.css
 └── README.md
 ```
 
@@ -33,6 +34,7 @@ Screens are `screen Name:` blocks with screen-scoped state and functions.
 attributes name the screen function to call (UI-B006):
 
 ```clean
+// app/ui/web/screens/Counter.cln (excerpt)
 screen Counter:
 	state:
 		integer count = 0
@@ -42,13 +44,19 @@ screen Counter:
 		string render()
 			html:
 				<div class="counter-container">
-					<p id="counter-display">{label}: {count.toString()}</p>
-					<button onclick="increment">+</button>
+					<p class="counter-label" id="counter-display">{label}: {count.toString()}</p>
+					<div class="counter-buttons">
+						<button class="btn-decrement" onclick="decrement">-</button>
+						<button class="btn-increment" onclick="increment">+</button>
+						<button class="btn-reset" onclick="resetCount">Reset</button>
+					</div>
 				</div>
 
 		void increment()
 			count = count + 1
 			integer s = ui.updateElement("#counter-display", label + ": " + count.toString())
+
+		// decrement() and resetCount() follow the same pattern
 ```
 
 ### State Block
@@ -100,16 +108,19 @@ selects the hydration mode; the tag has no other attributes:
 
 ## Running the Example
 
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
+
 ```bash
-# Build the example
-frame build
-
-# Start the development server
-frame serve
-
-# Open in browser
-open http://localhost:3000
+cd examples/screens
+~/.cleen/bin/cln compile main.cln -o screens.wasm --plugins
+~/.cleen/bin/clean-server screens.wasm --port 3000
 ```
+
+Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
+
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh screens` from the framework root.
 
 ## Generated Output
 

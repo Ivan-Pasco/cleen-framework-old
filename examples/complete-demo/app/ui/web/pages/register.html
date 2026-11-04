@@ -4,7 +4,7 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Register - Clean Framework Demo</title>
-	<link rel="stylesheet" href="../../public/css/style.css">
+	<link rel="stylesheet" href="/public/css/style.css">
 </head>
 <body>
 	<nav class="navbar">
@@ -22,83 +22,30 @@
 				<p>Join us and start building amazing applications</p>
 			</div>
 
-			<!-- Form processed by frame.ui plugin with cl-* directives -->
-			<form class="form" action="/api/users/register" method="POST" cl-form="register">
+			<!-- Posted to POST /register (app/server/api/main.cln), which
+			     validates the fields, hashes the password and saves the user. -->
+			<form class="form" action="/register" method="POST">
 				<div class="form-group">
 					<label for="username">Username</label>
-					<input
-						type="text"
-						id="username"
-						name="username"
-						cl-bind="form.username"
-						cl-validate="required min=3 max=50"
-						placeholder="Choose a username"
-						required
-					>
-					<span class="error" cl-if="errors.username">{{ errors.username }}</span>
+					<input type="text" id="username" name="username" minlength="3" maxlength="50" placeholder="Choose a username" required>
 				</div>
 
 				<div class="form-group">
 					<label for="email">Email</label>
-					<input
-						type="email"
-						id="email"
-						name="email"
-						cl-bind="form.email"
-						cl-validate="required email"
-						placeholder="Enter your email"
-						required
-					>
-					<span class="error" cl-if="errors.email">{{ errors.email }}</span>
+					<input type="email" id="email" name="email" placeholder="Enter your email" required>
 				</div>
 
 				<div class="form-group">
 					<label for="password">Password</label>
-					<input
-						type="password"
-						id="password"
-						name="password"
-						cl-bind="form.password"
-						cl-validate="required min=8"
-						placeholder="Create a password"
-						required
-					>
-					<span class="error" cl-if="errors.password">{{ errors.password }}</span>
+					<input type="password" id="password" name="password" minlength="8" placeholder="Create a password" required>
 				</div>
 
 				<div class="form-group">
 					<label for="password_confirm">Confirm Password</label>
-					<input
-						type="password"
-						id="password_confirm"
-						name="password_confirm"
-						cl-bind="form.password_confirm"
-						cl-validate="required match=password"
-						placeholder="Confirm your password"
-						required
-					>
-					<span class="error" cl-if="errors.password_confirm">{{ errors.password_confirm }}</span>
+					<input type="password" id="password_confirm" name="password_confirm" minlength="8" placeholder="Confirm your password" required>
 				</div>
 
-				<div class="form-group">
-					<label class="checkbox-label">
-						<input type="checkbox" cl-bind="form.agree" required>
-						I agree to the Terms of Service
-					</label>
-				</div>
-
-				<div class="form-alert error" cl-if="submitError">
-					{{ submitError }}
-				</div>
-
-				<div class="form-alert success" cl-if="submitSuccess">
-					Registration successful! Redirecting to dashboard...
-				</div>
-
-				<button type="submit" class="btn btn-primary btn-block" cl-disabled="isSubmitting">
-					<span cl-if="!isSubmitting">Create Account</span>
-					<span cl-if="isSubmitting">Creating...</span>
-				</button>
+				<button type="submit" class="btn btn-primary btn-block">Create Account</button>
 			</form>
 
 			<p class="form-footer">

@@ -1,0 +1,51 @@
+// Test: frame.mcp — mcpJson(value) serializes a class instance by its
+// declared fields (mcp.md §10 "Model types are serialized using their
+// declared fields") and logging through mcp.log never reaches the response.
+// Runs inside clean-server; start: calls the generated dispatcher. HTTP on an
+// ephemeral port (port: 0) keeps the transport loop off the runner's stdin.
+
+plugins:
+	frame.mcp
+
+mcp "model-tools":
+	transport: http:
+		port: 0
+		host: "127.0.0.1"
+
+	tool "get_book":
+		description: "Return one book as JSON"
+		params:
+			title: string
+			pages: integer
+		mcp.log("debug", "building book " + params.title)
+		Book book = Book(params.title, params.pages)
+		return mcpJson(book)
+
+start:
+	string resp = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_book\",\"arguments\":{\"title\":\"Dune\",\"pages\":412}}}")
+	string text = json.get(resp, "result.content.0.text")
+	boolean ok_text = text == "{\"title\":\"Dune\",\"pages\":412}"
+	if not ok_text
+		printl("FAIL: mcpJson(model) text")
+		printl("  Expected: {\"title\":\"Dune\",\"pages\":412}")
+		printl("  Actual:   " + resp)
+	string init = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":\{\}}")
+	// MCP-D002: version defaults to 1.0.0; only tools are advertised (MCP-B005).
+	boolean ok_version = json.get(init, "result.serverInfo.version") == "1.0.0"
+	boolean ok_caps = init.indexOf("\"capabilities\":{\"tools\":{\"listChanged\":false}}") >= 0
+	if not ok_version or not ok_caps
+		printl("FAIL: initialize defaults")
+		printl("  Actual: " + init)
+	if ok_text and ok_version and ok_caps
+		printl("PASS: mcp-mcpjson-model")
+	else
+		printl("FAIL: mcp-mcpjson-model")
+
+class Book
+	public:
+		string title
+		integer pages
+
+	constructor(string titleParam, integer pagesParam)
+		title = titleParam
+		pages = pagesParam

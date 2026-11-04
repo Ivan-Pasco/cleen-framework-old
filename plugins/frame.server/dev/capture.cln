@@ -28,9 +28,9 @@ functions:
 		if snapshot.length() == 0
 			return http.respond(404, "text/plain", "")
 
-		string hint = req.param("wrong_output_hint")
-		string request_log = json.get(snapshot, "request_log")
-		string logs = json.get(snapshot, "last_log_lines")
+		string hint = req.query("wrong_output_hint")
+		string request_log = _json_get(snapshot, "request_log")
+		string logs = _json_get(snapshot, "last_log_lines")
 		string entry = "app/server/main.cln"
 
 		string pc = computePassCriteria(request_log, logs, hint, entry)

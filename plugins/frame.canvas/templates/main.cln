@@ -1,21 +1,20 @@
-// Main Canvas Scene
-// Game loop with init, update, and render phases
+// Main canvas scene: state, per-frame update, and drawing.
 
-plugins:
-	frame.canvas
+canvasScene: id="main" width=800 height=600 fps=60 background="#1a1a2e"
 
-canvasScene Main:
-	width: 800
-	height: 600
-	background: "#1a1a2e"
+	state:
+		number x = 400.0
+		number speed = 120.0
 
 	init:
-		// Initialize game state here
+		// One-time setup: runs after state: is initialised.
 
-	update:
-		// Update game logic here
-		// deltaTime() gives time since last frame
+	draw:
+		canvas.clear color="#1a1a2e"
+		canvas.text value="Hello Canvas!" x=x y=300 size=32 color="#ffffff" align="center"
 
-	render:
-		canvas.clear()
-		canvas.text("Hello Canvas!", 400, 300, 32, "#ffffff")
+	onFrame: param="dt"
+		// dt is the time since the last frame, in seconds.
+		x = x + speed * dt
+		if x > 700.0 or x < 100.0
+			speed = 0.0 - speed

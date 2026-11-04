@@ -1,65 +1,79 @@
 #!/bin/bash
-# Install all Frame plugins to ~/.cleen/plugins/
-set -e
+# Install the Frame plugins from this checkout into ~/.cleen/plugins/.
+#
+# Layout written for each plugin (matches what `cleen frame install` creates):
+#   ~/.cleen/plugins/<name>/<version>/   plugin.toml, plugin.wasm, ...  (read by the compiler)
+#   ~/.cleen/plugins/<name>/.active-version                             (pins <version>)
+#   ~/.cleen/plugins/<name>/             same files at the top level    (read by clean-server,
+#                                                                         e.g. frame.ui/runtime/loader.js)
+#
+# Usage: scripts/install-plugins.sh [plugin-name ...]   (default: every plugin)
+#
+# Environment:
+#   CLEEN_CLN           compiler used when a plugin.wasm is missing
+#                       (default: ~/.cleen/bin/cln — plain `cln` on PATH is a
+#                       different toolchain)
+#   CLEEN_PLUGINS_DIR   install root (default: ~/.cleen/plugins)
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGINS_DIR="$SCRIPT_DIR/../plugins"
-INSTALL_DIR="$HOME/.cleen/plugins"
+PLUGINS_DIR="$(cd "$SCRIPT_DIR/../plugins" && pwd)"
+INSTALL_DIR="${CLEEN_PLUGINS_DIR:-$HOME/.cleen/plugins}"
+CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
 
-echo "Installing Frame plugins..."
-echo "==========================="
-echo ""
+# Files and folders that make up an installed plugin. Anything else in a
+# plugin folder (scripts/, tests/, node_modules/) is development-only.
+PAYLOAD=(plugin.toml plugin.wasm build-manifest.json runtime patterns templates src)
 
-# Create install directory if needed
+if [ $# -gt 0 ]; then
+    PLUGINS=("$@")
+else
+    PLUGINS=()
+    for dir in "$PLUGINS_DIR"/*/; do
+        PLUGINS+=("$(basename "$dir")")
+    done
+fi
+
 mkdir -p "$INSTALL_DIR"
-
-# Track success/failure
 INSTALLED=0
 FAILED=0
 
-for plugin_dir in "$PLUGINS_DIR"/*/; do
-    plugin_name=$(basename "$plugin_dir")
-
-    # Read version from plugin.toml
-    if [ -f "$plugin_dir/plugin.toml" ]; then
-        VERSION=$(grep '^version' "$plugin_dir/plugin.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
-    else
-        VERSION="1.0.0"
+for plugin_name in "${PLUGINS[@]}"; do
+    plugin_dir="$PLUGINS_DIR/$plugin_name"
+    if [ ! -f "$plugin_dir/plugin.toml" ]; then
+        echo "  ✗ $plugin_name: no plugin.toml at $plugin_dir"
+        FAILED=$((FAILED + 1))
+        continue
     fi
 
-    TARGET_DIR="$INSTALL_DIR/$plugin_name/$VERSION"
+    version=$(grep -E '^version[[:space:]]*=' "$plugin_dir/plugin.toml" | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+    if [ -z "$version" ]; then
+        echo "  ✗ $plugin_name: no version in plugin.toml"
+        FAILED=$((FAILED + 1))
+        continue
+    fi
 
-    echo "Installing $plugin_name@$VERSION..."
-
-    # Check if plugin.wasm exists
     if [ ! -f "$plugin_dir/plugin.wasm" ]; then
-        echo "  ⚠ plugin.wasm not found, building first..."
-        cd "$plugin_dir"
-        if [ -f "build.sh" ]; then
-            bash build.sh > /dev/null 2>&1 || true
-        else
-            cln compile src/main.cln -o plugin.wasm > /dev/null 2>&1 || true
+        echo "  … $plugin_name: plugin.wasm missing, building"
+        if ! (cd "$plugin_dir" && CLN_COMPILER="$CLN" bash build.sh); then
+            echo "  ✗ $plugin_name: build failed"
+            FAILED=$((FAILED + 1))
+            continue
         fi
     fi
 
-    if [ -f "$plugin_dir/plugin.wasm" ]; then
-        mkdir -p "$TARGET_DIR"
-        cp "$plugin_dir/plugin.toml" "$TARGET_DIR/"
-        cp "$plugin_dir/plugin.wasm" "$TARGET_DIR/"
-        echo "  ✓ Installed to $TARGET_DIR"
-        ((INSTALLED++))
-    else
-        echo "  ✗ Failed - plugin.wasm not found"
-        ((FAILED++))
-    fi
-    echo ""
+    base="$INSTALL_DIR/$plugin_name"
+    mkdir -p "$base/$version"
+    for item in "${PAYLOAD[@]}"; do
+        [ -e "$plugin_dir/$item" ] || continue
+        rm -rf "${base:?}/$version/$item" "${base:?}/$item"
+        cp -R "$plugin_dir/$item" "$base/$version/$item"
+        cp -R "$plugin_dir/$item" "$base/$item"
+    done
+    printf '%s' "$version" > "$base/.active-version"
+    echo "  ✓ $plugin_name@$version -> $base/$version"
+    INSTALLED=$((INSTALLED + 1))
 done
 
-echo "==========================="
-echo "Installation complete: $INSTALLED succeeded, $FAILED failed"
-echo ""
-echo "Installed plugins are available at: $INSTALL_DIR"
-
-if [ $FAILED -gt 0 ]; then
-    exit 1
-fi
+echo "Installed $INSTALLED plugin(s), $FAILED failed."
+[ "$FAILED" -eq 0 ]

@@ -1,6 +1,6 @@
 [plugin]
 name = "frame.server"
-version = "2.9.7"
+version = "2.9.8"
 description = "HTTP endpoints, routing, middleware, and request/response helpers for Clean Language server-side applications. See CHANGELOG.md for release history."
 author = "Clean Language Team"
 license = "MIT"
@@ -28,10 +28,11 @@ emission_ops_hash = "60d06836a7068ee66a330e8c26ca59bc47cc44991b4f31d56e95e06c707
 # _emit_function flags also sets this per-function, providing dual coverage).
 module_helpers_are_roots = true
 
-# v3 typed variants — typed-emission.md §7.
+# v3 typed variants — typed-emission.md §7. Route registration happens in
+# expand_block_typed (statements emitted into start:), and handlers run user
+# code with no per-request prelude, so the server_init / per_request slots
+# are not declared.
 module_helpers = "emit_module_helpers_typed"
-server_init    = "emit_server_init_typed"
-per_request    = "emit_per_request_typed"
 
 [handles]
 blocks = ["endpoints", "middleware", "routes", "server"]
@@ -83,16 +84,22 @@ functions = [
   # HTTP Server - Server-config bridges (server-only; populate runtime config before _http_listen)
   { name = "_cors_configure", params = ["string", "string", "string", "i32", "boolean"], returns = "i32", description = "Configure CORS: origins, methods, headers (comma-separated; '' = Any), max_age_secs, allow_credentials", expand_strings = true, hosts = ["server"] },
   { name = "_rate_limit_configure", params = ["i32", "i32", "string"], returns = "i32", description = "Configure fixed-window rate limiting: per_window, window_secs, strategy ('ip' or 'user')", expand_strings = true, hosts = ["server"] },
-  { name = "_http_set_global_error_handler", params = ["string"], returns = "i32", description = "Register the WASM export name invoked when a route handler errors; server forwards error message in X-Clean-Error request header", expand_strings = true, hosts = ["server"] },
+  { name = "_http_set_global_error_handler", params = ["string"], returns = "i32", description = "Register the WASM export name invoked when a route handler errors; server forwards error message in X-Clean-Error request header", expand_strings = true, hosts = ["server"], registers_handler_at_arg = 0 },
 
   # HTTP Server - Route Registration (server-only; populates the router)
-  { name = "_http_route", params = ["string", "string", "string"], returns = "i32", description = "Register route: method, path, handler function name", expand_strings = true, hosts = ["server"] },
+  # Every bridge that registers a request handler declares the argument that
+  # carries the handler name (plugin-contract.md §3.6, registers_handler_at_arg)
+  # so the compiler treats that function as a request-context site (CONC002)
+  # and keeps it out of client builds. _http_ws_route carries three handlers
+  # (onConnect, onMessage, onClose); the field names one argument, so it marks
+  # onConnect — the handler that runs with the upgrade request in scope.
+  { name = "_http_route", params = ["string", "string", "string"], returns = "i32", description = "Register route: method, path, handler function name", expand_strings = true, hosts = ["server"], registers_handler_at_arg = 2 },
   { name = "_http_redirect_route", params = ["string", "string", "string", "i32"], returns = "i32", description = "Register static redirect: method, from-path, to-path, status (301/302/…). No WASM handler needed.", expand_strings = true, hosts = ["server"] },
-  { name = "_http_route_protected", params = ["string", "string", "string", "string"], returns = "i32", description = "Register protected route: method, path, handler name, required role", expand_strings = true, hosts = ["server"] },
+  { name = "_http_route_protected", params = ["string", "string", "string", "string"], returns = "i32", description = "Register protected route: method, path, handler name, required role", expand_strings = true, hosts = ["server"], registers_handler_at_arg = 2 },
   # §FEXT-4: SSE route registration — sets Content-Type: text/event-stream and keeps connection open
-  { name = "_http_sse_route", params = ["string", "string", "string"], returns = "i32", description = "Register SSE (STREAM) route: method, path, handler function name", expand_strings = true, hosts = ["server"] },
+  { name = "_http_sse_route", params = ["string", "string", "string"], returns = "i32", description = "Register SSE (STREAM) route: method, path, handler function name", expand_strings = true, hosts = ["server"], registers_handler_at_arg = 2 },
   # §15: WebSocket route registration — upgrades connection and invokes named handler functions
-  { name = "_http_ws_route", params = ["string", "string", "string", "string", "string"], returns = "void", description = "Register WebSocket route: method, path, onConnect handler, onMessage handler, onClose handler", expand_strings = true, hosts = ["server"] },
+  { name = "_http_ws_route", params = ["string", "string", "string", "string", "string"], returns = "void", description = "Register WebSocket route: method, path, onConnect handler, onMessage handler, onClose handler", expand_strings = true, hosts = ["server"], registers_handler_at_arg = 2 },
 
   # §15: WebSocket bridge functions (server-only; used inside LIVE endpoint handlers)
   { name = "_ws_send", params = ["i64", "string"], returns = "void", description = "Send message to a specific WebSocket client by ID", expand_strings = true, hosts = ["server"] },
@@ -260,18 +267,11 @@ functions = [
   # in any app that uses frame.server without frame.auth.
   { name = "_env_get", params = ["string"], returns = "ptr", description = "Get environment variable by name; returns empty string if unset or denied", expand_strings = true, hosts = ["server"] },
 
-  # Dev-mode capture — the _dev_snapshot bridge declaration lives in
-  # foundation/platform-architecture/function-registry.toml (@ layer 3, module
-  # env). Not re-declared here to avoid PLUGIN-REGISTRY-DRIFT rejection on
-  # cln 0.33.70, which shipped before that registry entry landed. The compiler
-  # resolves _dev_snapshot from its embedded registry; clean-server provides
-  # the runtime impl (dev_capture.rs, register_dev_capture_functions()).
-  # expand_server_typed still emits `_dev_snapshot()` calls into user code
-  # under the dev-capture route handler — those imports are generated at
-  # user-app codegen time from the registry, not from this plugin.toml.
-  # When cln releases with _dev_snapshot in its embedded registry, this
-  # declaration MAY be added back (with matching signature) but is not
-  # required for correctness.
+  # Dev-mode capture (server-only). Called by the GET /_debug/capture handler
+  # that expand_server_typed emits into every server app. Signature mirrors
+  # foundation/spec/platform/function-registry.toml (_dev_snapshot, layer 3):
+  # no params, returns a length-prefixed JSON string ("" unless CLEAN_DEV=1).
+  { name = "_dev_snapshot", params = [], returns = "ptr", description = "Return the raw dev-mode capture payload as a length-prefixed JSON string. Gated on CLEAN_DEV=1; returns LP empty string otherwise.", hosts = ["server"] },
 
   # Email - SMTP (server-only; reaches out to an SMTP relay)
   { name = "_email_configure", params = ["string", "i64", "boolean", "string", "string", "string"], returns = "void", description = "Configure SMTP connection: host, port, secure, username, password, from address. Called once during startup from a mail: config block.", expand_strings = true, hosts = ["server"] },
@@ -318,11 +318,12 @@ functions = [
   # render() and renderWith() moved to frame.ui (SSR is frame.ui's responsibility).
   { name = "json", signature = "json(data)", description = "Return JSON response with Content-Type: application/json", maps_to = "_res_json", params = ["string"], returns = "void" },
   { name = "html", signature = "html(content)", description = "Return HTML response" },
-  { name = "redirect", signature = "redirect(url, status)", description = "Redirect to URL (default 302)", maps_to = "_res_redirect", params = ["string", "integer"], returns = "void" },
+  { name = "redirect", signature = "redirect(url, status?)", description = "Redirect to URL (default 302)", maps_to = "_res_redirect", params = ["string", "integer"], returns = "void" },
   { name = "notFound", signature = "notFound(message?)", description = "Return 404 Not Found response" },
   { name = "badRequest", signature = "badRequest(message?)", description = "Return 400 Bad Request response" },
   { name = "unauthorized", signature = "unauthorized()", description = "Return 401 Unauthorized response" },
-  { name = "error", signature = "error(status, message)", description = "Return error response with given HTTP status" },
+  { name = "forbidden", signature = "forbidden()", description = "Return 403 Forbidden response" },
+  { name = "httpError", signature = "httpError(status, message)", description = "Return an error envelope with the given HTTP status (error is a reserved word, frame-server.ebnf §4)" },
   { name = "status", signature = "status(code, body)", description = "Return response with specific HTTP status code" },
   # Request accessors
   { name = "req.param", signature = "req.param(name)", description = "Get path parameter by name", maps_to = "_req_param", params = ["string"], returns = "string" },

@@ -1,123 +1,100 @@
 // Pattern: cms-page-content
 // Use when: a website serves the same pages in multiple languages and content
-//   is managed as a flat key-value table (Page × Language × field_key)
+//   is managed as a flat key-value table (Page × Language × fieldKey)
 // Anti-pattern: DON'T store all content in a JSON blob per language per page.
 //   A JSON blob can't be queried field-by-field, has no FK integrity, requires
-//   full deserialization to read one string, and makes "which fields are missing
-//   a translation?" unanswerable without parsing every row.
-//   DON'T use dot notation in field keys — use underscores ("hero_title", not "hero.title").
-//   DON'T hardcode any user-visible string in Clean code — all copy lives in page_fields.
+//   full deserialization to read one string, and makes "which fields are
+//   missing a translation?" unanswerable without parsing every row.
+//   DON'T use dot notation in field keys — use underscores ("hero_title").
+//   DON'T hardcode any user-visible string in Clean code — all copy lives in
+//   PageField rows.
 
 plugins:
 	frame.data
 
 // Language-neutral page registry — no content here
 data Page:
-	id: integer pk auto
-	slug: string unique
-	template: string
-	is_active: boolean default true
-	sort_order: integer default 0
+	fields:
+		integer id primary generated
+		string slug required unique
+		string template required
+		boolean isActive default: true
+		integer sortOrder default: 0
 
 data Language:
-	id: integer pk auto
-	code: string unique             // ISO 639-1: "en", "es", "fr"
-	name: string
-	is_default: boolean default false
-	is_active: boolean default true
+	fields:
+		integer id primary generated
+		string code required unique     // ISO 639-1: "en", "es", "fr"
+		string name required
+		boolean isDefault default: false
+		boolean isActive default: true
 
 // One row per (page × language × field).
-// field_key naming convention — underscores as path separators, never dots:
+// fieldKey naming — underscores as path separators, never dots:
 //   Scalars:  "hero_title", "hero_subtitle", "meta_description"
 //   Arrays:   "features_0_title", "features_0_description", "features_1_title"
 //   UI chrome lives on slug "ui": "nav_home", "footer_docs", "copy_toast"
 data PageField:
-	id: integer pk auto
-	page_id: integer                // FK to Page
-	language_id: integer            // FK to Language
-	field_key: string
-	field_value: string
-	sort_order: integer default 0
+	fields:
+		integer id primary generated
+		integer pageId required
+		integer languageId required
+		string fieldKey required
+		string fieldValue required
+
+	indexes:
+		(pageId, languageId, fieldKey) unique
+
+	relations:
+		page: belongs_to Page on pageId
+		language: belongs_to Language on languageId
 
 functions:
-	// Load all content for one page + language in a single query.
-	// This is the ONLY correct way to read page content — never query content_json blobs.
-	pairs<string, string> page_content(string slug, string lang)
+	// All content of one page in one language, in a single query.
+	pairs<string, string> pageContent(string slug, string lang)
 		list<PageField> rows = PageField.find:
 			join:
-				inner Page on PageField.page_id == Page.id
-				inner Language on PageField.language_id == Language.id
+				Page as p:
+					on:
+						p.id == PageField.pageId
+				Language as l:
+					on:
+						l.id == PageField.languageId
 			where:
-				Page.slug == slug
-				Language.code == lang
-				Page.is_active == true
-				Language.is_active == true
+				p.slug == slug
+				l.code == lang
+				p.isActive == true
+				l.isActive == true
 		pairs<string, string> fields = {}
 		iterate row in rows
-			fields.set(row.field_key, row.field_value)
+			fields.set(row.fieldKey, row.fieldValue)
 		return fields
 
-	// Scalar field access — call page_content once, then .get per field
-	string render_home(string lang)
-		pairs<string, string> c = page_content("home", lang)
-		string hero_title    = c.get("hero_title")
-		string hero_subtitle = c.get("hero_subtitle")
-		string cta_text      = c.get("hero_cta_text")
-		return hero_title
-
-	// Array fields: sentinel while loop — stop when the key returns empty string.
-	// Keys follow the pattern: "<array>_<index>_<field>", e.g. "features_0_title".
-	string render_feature_list(string lang)
-		pairs<string, string> c = page_content("home", lang)
-		string features_html = ""
+	// Array fields: read "<array>_<index>_<field>" keys until one is missing.
+	integer featureCount(string lang)
+		pairs<string, string> c = pageContent("home", lang)
 		integer i = 0
-		string feat_title = c.get("features_0_title") default ""
-		while feat_title != ""
-			string feat_desc = c.get("features_" + i.toString() + "_description") default ""
-			features_html = features_html + render_feature_card(feat_title, feat_desc)
+		string title = c.get("features_0_title") default ""
+		while title != ""
 			i = i + 1
-			feat_title = c.get("features_" + i.toString() + "_title") default ""
-		return features_html
+			title = c.get("features_" + i.toString() + "_title") default ""
+		return i
 
-	// Shared UI chrome: nav labels, footer links, toasts — all on slug "ui"
-	pairs<string, string> get_ui_chrome(string lang)
-		return page_content("ui", lang)
-
-	// Write path: update an existing field translation
-	integer update_field(integer page_id, integer language_id, string field_key, string field_value)
-		PageField.update:
-			set:
-				field_value = field_value
+	// Write path: update the field translation or create it.
+	boolean saveField(integer pageId, integer languageId, string fieldKey, string fieldValue)
+		PageField field = PageField.first:
 			where:
-				page_id == page_id
-				language_id == language_id
-				field_key == field_key
-		return 1
+				pageId == pageId
+				languageId == languageId
+				fieldKey == fieldKey
+		if field == null
+			field = PageField()
+			field.pageId = pageId
+			field.languageId = languageId
+			field.fieldKey = fieldKey
+		field.fieldValue = fieldValue
+		return Database.save(field)
 
-	// Write path: insert a new field translation
-	integer insert_field(integer page_id, integer language_id, string field_key, string field_value, integer sort_order)
-		PageField.insert:
-			page_id = page_id
-			language_id = language_id
-			field_key = field_key
-			field_value = field_value
-			sort_order = sort_order
-		return 1
-
-	// Adding a new language is a DATA operation — no code changes required:
-	//   1. Insert a row into Language (code, name, is_active)
-	//   2. For each page slug, insert PageField rows for the new language_id
-	//   3. Run the completeness check below to find missing fields
-	// Translation completeness requires LEFT JOIN — raw SQL only here
-	string missing_translations(integer target_language_id)
-		return db.query:
-			SELECT p.slug, f_en.field_key
-			FROM page_fields f_en
-			JOIN pages p ON f_en.page_id = p.id
-			LEFT JOIN page_fields f_target
-				ON f_en.page_id = f_target.page_id
-				AND f_en.field_key = f_target.field_key
-				AND f_target.language_id = ?
-			WHERE f_en.language_id = 1
-				AND f_target.id IS NULL
-			[target_language_id]
+	// Keys present in the default language but missing in `languageId`.
+	string missingTranslations(integer pageId, integer languageId, integer defaultLanguageId)
+		return db.query("SELECT d.fieldKey FROM page_fields d WHERE d.pageId = ? AND d.languageId = ? AND NOT EXISTS (SELECT 1 FROM page_fields t WHERE t.pageId = d.pageId AND t.languageId = ? AND t.fieldKey = d.fieldKey)", json.dataToText([pageId, defaultLanguageId, languageId]))

@@ -1,0 +1,71 @@
+// Test: frame.data — where: operators and `and`/`or` combinations.
+// Spec: frame-data.ebnf §5.1 (comparison_operator: == != < <= > >= like in),
+// DAT-Q009 (lines AND-ed; `or` inside a line), DAT-Q002 (findOrFail).
+// The NOT_FOUND path of findOrFail is not asserted: `onError` does not catch
+// error() in compiler 0.33.169 (the request traps instead).
+// Regression: `like` / `in` right-hand sides and `a or b` lines were passed
+// to SQL unparsed, and `Model.findOrFail:` was not handled at all (SEM001).
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Task:
+	fields:
+		integer id primary generated
+		string title required
+		string status required
+		integer priority required
+
+start:
+	printl("[boot] data-query-where-operators server ready")
+
+endpoints:
+	GET "/test":
+		Task.migrate()
+		Task t1 = Task()
+		t1.title = "alpha"
+		t1.status = "open"
+		t1.priority = 1
+		Database.save(t1)
+		Task t2 = Task()
+		t2.title = "beta"
+		t2.status = "done"
+		t2.priority = 2
+		Database.save(t2)
+		Task t3 = Task()
+		t3.title = "alpine"
+		t3.status = "blocked"
+		t3.priority = 3
+		Database.save(t3)
+
+		string prefix = "alp"
+		list<Task> liked = Task.find:
+			where:
+				title like prefix + "%"
+		boolean ok_like = liked.length() == 2
+
+		list<Task> listed = Task.find:
+			where:
+				status in ["open", "done"]
+		boolean ok_in = listed.length() == 2
+
+		list<Task> either = Task.find:
+			where:
+				status == "blocked" or priority == 1
+				title != "beta"
+		boolean ok_or = either.length() == 2
+
+		Task found = Task.findOrFail:
+			where:
+				title == "beta"
+		boolean ok_fof = found.priority == 2
+
+		if ok_like and ok_in and ok_or and ok_fof
+			printl("PASS: data-query-where-operators")
+		else
+			printl("FAIL: data-query-where-operators like=" + ok_like.toString() + " in=" + ok_in.toString() + " or=" + ok_or.toString() + " findOrFail=" + ok_fof.toString())
+		return json({ok: true})

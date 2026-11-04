@@ -1,42 +1,36 @@
 # Endpoints Test Example
 
-Tests the Clean Framework HTTP routing system.
+Exercises frame.server routing with static and parameterised routes.
 
 ## Project Structure
 
 ```
-app/
-└── server/
-    ├── main.cln                  → server entry (port 3000)
+endpoints-test/
+├── main.cln                      # Package manifest (target: server, entry app/server/main.cln)
+└── app/server/
+    ├── main.cln                  # server: port 3000
     └── api/
-        ├── hello.cln             → GET /api/hello
+        ├── hello.cln             # GET /api/hello
         └── users/
-            ├── index.cln         → GET|POST /api/users
-            └── [id].cln          → GET /api/users/:id
+            ├── index.cln         # GET, POST /api/users
+            └── [id].cln          # GET /api/users/:id
 ```
 
-## API Endpoints
+## Build and Run
 
-| Method | Route | Response |
-|--------|-------|----------|
-| GET | `/api/hello` | Hello World |
-| GET | `/api/users` | user list |
-| POST | `/api/users` | user created |
-| GET | `/api/users/:id` | User details for :id |
-
-## Running
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Scan
-frame scan
+cd examples/endpoints-test
+~/.cleen/bin/cln compile main.cln -o endpoints-test.wasm --plugins
+~/.cleen/bin/clean-server endpoints-test.wasm --port 3000
+```
 
-# Build
-frame build
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh endpoints-test` from the framework root.
 
-# Run
-frame serve
+## Test
 
-# Test
+```bash
 curl http://localhost:3000/api/hello
 curl http://localhost:3000/api/users
 curl -X POST http://localhost:3000/api/users

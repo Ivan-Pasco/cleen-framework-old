@@ -1,7 +1,7 @@
 [plugin]
 name = "frame.mcp"
 version = "2.0.0"
-description = "MCP server plugin — define AI-callable tools, resources, and prompts inside mcp: blocks. Handles the full MCP lifecycle: capability negotiation, JSON-RPC 2.0 dispatch, param deserialization, and stdio/HTTP+SSE transports. v2.0.0: plugin contracts v3 typed-emission migration — atomic switch from v1 string emission to v3 typed AST emission. Uses batch-spec builder API (§3.14) for preamble helpers, dispatchers, and __mcp_handle. User-authored tool/resource/prompt handler bodies pass through _emit_stmt_from_source (§3.11). Sticky-error context (§3.15) collapses per-bridge error scaffolding. See foundation/spec/plugins/contracts/typed-emission.md."
+description = "MCP server plugin — define AI-callable tools, resources, and prompts inside mcp: blocks. Handles the full MCP lifecycle: capability negotiation, JSON-RPC 2.0 dispatch (__mcp_handle), param validation and deserialization, and stdio/HTTP transports. Typed emission (plugin contracts v3): generated helpers are composed with _emit_stmt_from_source + batch.func2; user handler bodies pass through _emit_stmt_from_source. See foundation/spec/framework/contracts/typed-emission.md."
 author = "Clean Language Team"
 license = "MIT"
 
@@ -14,15 +14,15 @@ abi_version = "1.0.0"
 # Plugin Contracts v3 — typed-emission.md §2.1.
 # Atomic migration: this plugin.wasm is v3-only. No v1 exports are present.
 # emission_ops_hash verified against SHA-256 of
-# foundation/spec/plugins/contracts/typed-emission-ops.toml at compiler 0.30.417.
+# foundation/spec/framework/contracts/typed-emission-ops.toml at compiler 0.30.417.
 expansion_version = "3.0.0"
 emission_ops_hash = "60d06836a7068ee66a330e8c26ca59bc47cc44991b4f31d56e95e06c707eeaf0"
 
 [lifecycle]
 # Plugin Contracts v3 — typed-emission.md §7. All three slots MUST be typed
-# variants under atomic-migration. frame.mcp emits its per-file preamble and
-# dispatcher inline from expand_block_typed; module_helpers, server_init, and
-# per_request are no-op placeholders.
+# variants under atomic-migration. frame.mcp emits its helpers, handlers,
+# dispatcher and transport loop from expand_block_typed, so these slots
+# contribute nothing and return 0.
 module_helpers_are_roots = true
 module_helpers = "emit_module_helpers_typed"
 server_init = "emit_server_init_typed"
@@ -50,19 +50,27 @@ version = 3
 # Bridge function declarations — MCP-specific functions provided by the runtime.
 # String params use (ptr i32, len i32) pairs when expand_strings = true.
 #
-# Plugin Contracts v2 — foundation/spec/plugins/contracts/bridge-host-classes.md §2.
+# Plugin Contracts v2 — foundation/spec/framework/contracts/bridge-host-classes.md §2.
 # MCP transports require stdin/stdout/network I/O and live in a long-running
 # server process; they never run in a browser. Every bridge is tagged
 # hosts=["server"] to match the authoritative registry at
-# foundation/platform-architecture/function-registry.toml.
+# foundation/spec/platform/function-registry.toml.
 [bridge]
 functions = [
-  { name = "_mcp_stdio_read",  params = [],                    returns = "ptr",  description = "Read one newline-delimited JSON-RPC 2.0 message from stdin. Blocks until a complete message is available. Returns empty string on EOF.", hosts = ["server"] },
-  { name = "_mcp_stdio_write", params = ["string"],            returns = "i32", description = "Write one newline-terminated JSON-RPC 2.0 message to stdout.", expand_strings = true, hosts = ["server"] },
-  { name = "_mcp_http_serve",  params = ["i32", "string"], returns = "i32", description = "Bind and start HTTP+SSE listener on the given port and host. Blocks until the server stops.", expand_strings = true, hosts = ["server"] },
-  { name = "_mcp_http_accept", params = [],                    returns = "ptr",  description = "Wait for the next HTTP request; returns it as a JSON string containing method, headers, and body.", hosts = ["server"] },
-  { name = "_mcp_sse_send",    params = ["string", "string"],  returns = "i32", description = "Send an SSE event to a connected client identified by clientId.", expand_strings = true, hosts = ["server"] },
-  { name = "_mcp_log",         params = ["string", "string"],  returns = "i32", description = "Write a structured log entry to stderr (never pollutes the stdio transport). level is debug, info, warn, or error.", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_stdio_read",   params = [],                   returns = "ptr", description = "Read one newline-delimited JSON-RPC 2.0 message from stdin. Blocks until a full line is available. Returns empty string on EOF.", hosts = ["server"] },
+  { name = "_mcp_stdio_write",  params = ["string"],           returns = "i32", description = "Write one JSON-RPC 2.0 message plus newline to stdout and flush. Used by the stdio transport loop.", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_http_serve",   params = ["i32", "string"],    returns = "i32", description = "Start the HTTP+SSE listener on the given port and host (POST /mcp for JSON-RPC, GET /sse). Returns 1 immediately; the listener runs in the background.", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_http_accept",  params = [],                   returns = "ptr", description = "Block until the next POST /mcp request arrives and return its raw JSON-RPC body.", hosts = ["server"] },
+  { name = "_mcp_http_respond", params = ["string"],           returns = "i32", description = "Deliver the response body to the client of the most recent _mcp_http_accept. Each accept is followed by exactly one respond (an empty body for notifications).", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_sse_send",     params = ["string", "string"], returns = "i32", description = "Send a raw SSE event to the connected client identified by clientId.", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_log",          params = ["string", "string"], returns = "i32", description = "Write [frame.mcp] level: message to stderr only (never pollutes the stdio transport). level is debug, info, warn, or error.", expand_strings = true, hosts = ["server"] },
+]
+
+# mcp.log is the one bridge application code calls (mcp.md §13.1); the
+# transport bridges are emitted by the plugin only (MCP-X002).
+[aliases]
+functions = [
+  { clean_name = "mcp.log", bridge_name = "_mcp_log" },
 ]
 
 [language]
@@ -74,8 +82,8 @@ keywords = [
   { name = "tool",      description = "Declare an AI-callable tool function inside an mcp: block", context = "block" },
   { name = "resource",  description = "Declare a URI-addressable read-only resource inside an mcp: block", context = "block" },
   { name = "prompt",    description = "Declare a parameterized prompt template inside an mcp: block", context = "block" },
-  { name = "params",    description = "Declare tool input parameters (name: type or name: type = default)", context = "block" },
-  { name = "args",      description = "Declare prompt template arguments (name: type or name: type = default)", context = "block" },
+  { name = "params",    description = "Declare tool input parameters (name: type or name: type = default); read them as params.name", context = "block" },
+  { name = "args",      description = "Declare prompt template arguments (name: type or name: type = default); read them as args.name", context = "block" },
   { name = "transport", description = "Configure the transport: stdio (default) or http: with port/host sub-fields", context = "config" },
   { name = "apiKey",    description = "API key for HTTP transport Bearer authentication — use env.get(\"VAR_NAME\") to read from environment", context = "config" },
   { name = "mimeType",  description = "MIME type hint for resource content (application/json, text/plain, text/markdown, text/csv)", context = "block" },
@@ -90,17 +98,18 @@ types = []
 
 # Built-in functions available inside tool/resource/prompt bodies
 functions = [
-  { name = "json",  signature = "json(value)",    description = "Serialize value to JSON and return as MCP text content block. Works with models, lists, primitives." },
-  { name = "text",  signature = "text(message)",  description = "Return a plain-text string as an MCP text content block." },
-  { name = "error", signature = "error(message)", description = "Return an MCP error result with isError: true. The server continues running." },
+  { name = "mcpJson",  signature = "mcpJson(value) -> string",                 description = "Serialize value (model, list, number, string, boolean) to compact JSON and return it as an MCP text content block." },
+  { name = "mcpText",  signature = "mcpText(message) -> string",               description = "Return a plain-text string as an MCP text content block." },
+  { name = "mcpError", signature = "mcpError(message, code: \"CODE\") -> string", description = "Return an MCP error result with isError: true; the optional code is reported in _meta.errorCode. The server continues running." },
+  { name = "mcp.log",  signature = "mcp.log(level, message)",                  description = "Write a log line to stderr (never stdout). level is debug, info, warn, or error." },
 ]
 
 # Auto-completion suggestions
 completions = [
-  { trigger = "mcp ", insert = "mcp \"${1:server-name}\":\n\tversion: \"1.0.0\"\n\tdescription: \"${2:What this MCP server does}\"\n\ttransport: stdio\n\n\ttool \"${3:tool-name}\":\n\t\tdescription: \"${4:What this tool does}\"\n\t\tparams:\n\t\t\t${5:id}: ${6:integer}\n\t\treturn json(${7:result})" },
-  { trigger = "tool ", insert = "tool \"${1:name}\":\n\t\tdescription: \"${2:What this tool does}\"\n\t\tparams:\n\t\t\t${3:param}: ${4:string}\n\t\treturn json(${5:result})", context = "mcp" },
-  { trigger = "resource ", insert = "resource \"${1:scheme://path}\":\n\t\tdescription: \"${2:What this resource provides}\"\n\t\tmimeType: \"application/json\"\n\t\treturn json(${3:data})", context = "mcp" },
-  { trigger = "prompt ", insert = "prompt \"${1:name}\":\n\t\tdescription: \"${2:What this prompt template does}\"\n\t\targs:\n\t\t\t${3:arg}: ${4:string}\n\t\treturn \"${5:Your prompt template here with {{ arg }} interpolation}\"", context = "mcp" },
+  { trigger = "mcp ", insert = "mcp \"${1:server-name}\":\n\tversion: \"1.0.0\"\n\tdescription: \"${2:What this MCP server does}\"\n\ttransport: stdio\n\n\ttool \"${3:tool_name}\":\n\t\tdescription: \"${4:What this tool does}\"\n\t\tparams:\n\t\t\t${5:id}: ${6:integer}\n\t\treturn mcpJson(${7:result})" },
+  { trigger = "tool ", insert = "tool \"${1:name}\":\n\t\tdescription: \"${2:What this tool does}\"\n\t\tparams:\n\t\t\t${3:param}: ${4:string}\n\t\treturn mcpJson(${5:result})", context = "mcp" },
+  { trigger = "resource ", insert = "resource \"${1:scheme://path}\":\n\t\tdescription: \"${2:What this resource provides}\"\n\t\tmimeType: \"application/json\"\n\t\treturn mcpJson(${3:data})", context = "mcp" },
+  { trigger = "prompt ", insert = "prompt \"${1:name}\":\n\t\tdescription: \"${2:What this prompt template does}\"\n\t\targs:\n\t\t\t${3:arg}: ${4:string}\n\t\treturn \"${5:Prompt text about} {{ args.${3} }}\"", context = "mcp" },
 ]
 
 [paths]
@@ -129,13 +138,15 @@ block_folder_rules = [
 ]
 
 [ai]
-description = "MCP server plugin. Declare AI-callable tools, URI-addressable resources, and prompt templates inside a single mcp: block per file. The plugin generates all JSON-RPC boilerplate, handles the initialize handshake, dispatches calls, and serializes params. Use json() for structured data, text() for plain strings, error() for failures. Combine with frame.data for database-backed tools."
+description = "MCP server plugin. Declare AI-callable tools, URI-addressable resources, and prompt templates inside a single mcp: block per file. The plugin generates all JSON-RPC boilerplate, handles the initialize handshake, validates and deserializes params, and dispatches calls. Read inputs as params.name (tools) and args.name (prompts). Return mcpJson() for structured data, mcpText() for plain strings, mcpError() for failures; prompts return the prompt text string. Combine with frame.data for database-backed tools."
 constraints = [
   "Each file in app/mcp/ may contain exactly one mcp: block — two mcp: blocks in the same file is a compile error",
   "Tool params without a default value are required — the AI must supply them; params with a default are optional",
+  "Read tool inputs as params.name and prompt inputs as args.name — bare names are not defined",
   "Resource bodies must not use the params: block — use a tool if you need parameterized data access",
-  "Every tool, resource, and prompt body must end with return json(), return text(), or return error()",
-  "Never call _mcp_stdio_write() directly — use the json(), text(), or error() response helpers. For diagnostics, log to stderr via _mcp_log(level, message); stderr never pollutes the stdio JSON-RPC stream",
+  "Every tool and resource return must be return mcpJson(...), return mcpText(...) or return mcpError(...); prompts return the prompt text string (or mcpError on failure)",
+  "Never call the _mcp_* transport bridges directly — the plugin owns the transport. For diagnostics use mcp.log(level, message); it writes to stderr and never pollutes the stdio JSON-RPC stream",
+  "apiKey: is rejected at compile time: the host's HTTP transport does not expose request headers, so the Bearer check cannot be enforced",
   "Do not print to stdout inside tool/resource/prompt bodies when using stdio transport — it corrupts the JSON-RPC stream",
   "Required params must be declared before optional params in the params: block",
 ]
@@ -143,7 +154,7 @@ constraints = [
 [[ai.patterns]]
 name = "database-tools"
 use_when = "building tools that read or write data from the application database (blog posts, users, orders, etc.)"
-anti_pattern = "returning raw SQL or unstructured strings — always return typed model values via json() so the AI client receives a consistent schema; pair frame.mcp with frame.data in main.cln"
+anti_pattern = "returning raw SQL or unstructured strings — always return typed model values via mcpJson() so the AI client receives a consistent schema; pair frame.mcp with frame.data in main.cln"
 example = "patterns/database-tools.cln"
 
 [[ai.patterns]]

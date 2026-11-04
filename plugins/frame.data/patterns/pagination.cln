@@ -1,50 +1,44 @@
 // Pattern: pagination
-// Use when: endpoint returns a list that can grow — use paginate: for page-number UI (admin
-//   tables, search results), cursor: for infinite scroll or any table that will exceed ~1M rows.
-// Anti-pattern: DON'T manually calculate offset: (page - 1) * limit and run a separate count:
-//   query alongside it. This emits two round trips and scans from row 0 on every deep page.
-//   Use paginate: instead — it performs both the data fetch and the COUNT in one bridge call.
-//   For tables that will exceed ~1M rows at query time, DON'T use paginate: at all — the COUNT
-//   scan becomes prohibitively expensive. Use cursor: instead: it skips the COUNT entirely and
-//   resolves the next page in O(log N) via an indexed cursor field.
+// Use when: an endpoint returns a list that can grow — paginate: for
+//   page-number UI (admin tables, search results), cursor: for infinite
+//   scroll or any table that will exceed ~1M rows.
+// Anti-pattern: DON'T compute offset: (page - 1) * perPage and run a
+//   separate count: query. paginate: fetches the page and the total in one
+//   bridge call. For very large tables DON'T use paginate: at all — its COUNT
+//   scan is O(N); cursor: skips the count and seeks by an indexed column.
 
 plugins:
 	frame.data
 
 data Post:
-	id: integer pk auto
-	author_id: integer
-	title: string
-	published_at: datetime nullable
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		integer authorId required
+		string title required
+		integer publishedAt default: 0  // 0 = draft
+
+	indexes:
+		publishedAt
 
 functions:
-	// OFFSET-BASED PAGINATION via paginate: clause
-	// Returns PagedResult<Post> — fields: items, total, page, perPage, totalPages
-	// Best for: numbered pagination controls where users jump to arbitrary pages
-	// Avoid once the table exceeds ~1M qualifying rows (COUNT scan is O(N))
-	any list_published_paged(integer page, integer per_page)
+	// Offset pagination — PagedResult<Post>: items, totalCount, totalPages,
+	// currentPage, perPage, hasNext, hasPrev.
+	PagedResult<Post> listPublishedPaged(integer page, integer perPage)
 		return Post.paginate:
 			where:
-				published_at != null
-			order:
-				created_at desc
+				publishedAt > 0
+			order: publishedAt desc
 			paginate:
-				page per_page
-				perPage per_page
+				page: page
+				perPage: perPage
 
-	// CURSOR-BASED PAGINATION via cursor: clause
-	// Returns CursorResult<Post> — fields: items, nextCursor, hasMore
-	// Best for: infinite scroll, large tables, or any table that may grow past ~1M rows
-	// nextCursor is an opaque string — pass it back as the `after` value for the next page
-	// Use cursor: by an indexed field (id, created_at) to keep the seek O(log N)
-	any list_published_cursor(string after_cursor, integer per_page)
+	// Cursor pagination — CursorResult<Post>: items, nextCursor, hasNext,
+	// hasPrev, count. Pass nextCursor back as `after` for the next page.
+	CursorResult<Post> listPublishedCursor(string afterCursor, integer perPage)
 		return Post.cursor:
 			where:
-				published_at != null
-			order:
-				id asc
+				publishedAt > 0
 			cursor:
-				perPage per_page
-				after after_cursor
-				by "id"
+				after: afterCursor
+				perPage: perPage
+				by: id

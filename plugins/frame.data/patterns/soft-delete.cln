@@ -1,58 +1,57 @@
 // Pattern: soft-delete
 // Use when: records must be deactivatable without permanent removal
 //   (compliance requirements, undo flows, audit trails)
-// Anti-pattern: DON'T use a boolean is_deleted column.
-//   A boolean loses the deletion timestamp — you can never answer "when was
-//   this deleted?". Use deleted_at: datetime nullable instead. NULL means
-//   active; a datetime value means deleted (and tells you when).
+// Anti-pattern: DON'T use a boolean isDeleted column.
+//   A boolean loses the deletion time — you can never answer "when was this
+//   deleted?". Store the deletion time instead: 0 means active, any other
+//   value is the Unix time of the deletion.
 
 plugins:
 	frame.data
 
 data User:
-	id: integer pk auto
-	email: string unique
-	name: string
-	deleted_at: datetime nullable   // NULL = active, datetime = soft-deleted
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		string email required unique
+		string name required
+		integer deletedAt default: 0    // 0 = active, otherwise when it was deleted
+		integer createdAt default: 0
+
+	indexes:
+		deletedAt
+
+	queries:
+		list<User> active()
+			return find:
+				where:
+					deletedAt == 0
+				order: name asc
 
 functions:
-	// Soft-delete a user — never hard-delete unless legally required
-	integer soft_delete_user(integer user_id)
-		User.update:
-			set:
-				deleted_at = now()
+	// Soft-delete: load, mark, save — the row stays in the table.
+	boolean softDeleteUser(integer userId)
+		User user = User.findOrFail:
 			where:
-				id == user_id
-		return user_id
+				id == userId
+		user.deletedAt = now()
+		return Database.save(user)
 
-	// Restore a soft-deleted user
-	integer restore_user(integer user_id)
-		User.update:
-			set:
-				deleted_at = null
+	// Restore a soft-deleted user.
+	boolean restoreUser(integer userId)
+		User user = User.findOrFail:
 			where:
-				id == user_id
-		return user_id
+				id == userId
+		user.deletedAt = 0
+		return Database.save(user)
 
-	// Query only active users — ALWAYS filter deleted_at in production queries
-	list<pairs> list_active_users()
+	// Admin view: every user, deleted ones last.
+	list<User> listAllUsersWithStatus()
 		return User.find:
-			where:
-				deleted_at == null
-			order:
-				name asc
+			order: deletedAt asc
 
-	// Admin view: include deleted users with their deletion date
-	list<pairs> list_all_users_with_status()
-		return User.find:
-			order:
-				deleted_at asc
-				name asc
-
-	// Hard delete only when legally required (e.g. GDPR right to erasure)
-	integer hard_delete_user(integer user_id)
-		User.delete:
+	// Hard delete only when legally required (e.g. GDPR right to erasure).
+	boolean hardDeleteUser(integer userId)
+		User user = User.findOrFail:
 			where:
-				id == user_id
-		return user_id
+				id == userId
+		return Database.deleteOrFail(user)

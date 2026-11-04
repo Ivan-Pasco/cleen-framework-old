@@ -1,0 +1,29 @@
+// Test: frame.server — middleware() route modifier, pass-through path.
+// Grammar: frame-server.ebnf §3.3 middleware_modifier — each listed function
+// is zero-argument, returns string; "" passes through to the handler.
+// Before the fix the expansion assigned the middleware result to an
+// undeclared local (SEM007 "Undefined variable '__mw_0'") and the file did
+// not compile.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	GET "/test" middleware(First, Second):
+		printl("PASS: server-middleware-pass-through")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-middleware-pass-through server ready")
+
+functions:
+	string First()
+		printl("[mw] First ran")
+		return ""
+
+	string Second()
+		printl("[mw] Second ran")
+		return ""

@@ -40,7 +40,7 @@ get_keywords = "get_keywords"
 
 # Bridge function declarations
 #
-# Plugin Contracts v2 — foundation/spec/plugins/contracts/bridge-host-classes.md §2.
+# Plugin Contracts v2 — foundation/spec/framework/contracts/bridge-host-classes.md §2.
 # Every bridge here is server-only: the filesystem write root is a
 # server-config value (FRAME_STORAGE_ROOT env or [storage] app config),
 # never guest-controlled. A browser-mode build that pulls one of these
@@ -92,8 +92,8 @@ constraints = [
 
 [[ai.patterns]]
 name = "content-addressed-artifact"
-use_when = "persisting an uploaded binary (tarball, image, PDF) whose canonical name is derived from a hash of its contents"
-anti_pattern = "using a client-supplied filename as the storage path — client-supplied names cause collisions between users, allow overwrites of other users' artifacts, and open path-traversal escape holes even when the host rejects '..'. Always hash the bytes (crypto.sha256_bytes) and compose the path as '<prefix>/<hash>.<ext>' before calling storage.write."
+use_when = "persisting an uploaded artifact (report, export, generated document) whose canonical name is derived from a hash of its contents"
+anti_pattern = "using a client-supplied filename as the storage path — client-supplied names cause collisions between users, allow overwrites of other users' artifacts, and open path-traversal escape holes even when the host rejects '..'. Always hash the content (crypto.hash_sha256) and compose the path as '<prefix>/<hash>.<ext>' before calling storage.write."
 example = "patterns/content-addressed-artifact.cln"
 
 [build]

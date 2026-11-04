@@ -1,0 +1,210 @@
+// Test: frame.mcp — JSON-RPC 2.0 dispatch generated from an mcp: block.
+// Spec: foundation/docs/framework/plugins/mcp.md §5-§12,
+//       foundation/spec/framework/frame-mcp-semantics.md (MCP-B005, MCP-T001,
+//       MCP-T002, MCP-R003/D003, MCP-P001..P004, MCP-D002).
+// Runs inside clean-server: start: feeds JSON-RPC requests to the generated
+// dispatcher __mcp_handle(message) and asserts on the JSON responses. The
+// transport loop the plugin appends to start: runs afterwards; it uses HTTP on
+// an ephemeral port (port: 0) so it never reads the runner's stdin.
+
+plugins:
+	frame.mcp
+
+mcp "test-tools":
+	version: "1.2.3"
+	description: "Tools used by the frame.mcp dispatch test"
+	transport: http:
+		port: 0
+		host: "127.0.0.1"
+
+	tool "greet":
+		description: "Greet someone"
+		params:
+			name: string
+			times: integer = 1
+			excited: boolean = false
+		string greeting = "Hi " + params.name
+		if params.times > 1
+			greeting = greeting + " x" + params.times.toString()
+		if params.excited
+			greeting = greeting + "!"
+		return mcpText(greeting)
+
+	tool "numbers":
+		description: "Return a list of numbers as JSON"
+		params:
+			count: integer
+		list<integer> nums = []
+		integer i = 1
+		while i <= params.count
+			nums.add(i)
+			i = i + 1
+		return mcpJson(nums)
+
+	tool "refuse":
+		description: "Always fails with a machine-readable code"
+		return mcpError("not allowed", code: "FORBIDDEN")
+
+	resource "data://numbers":
+		description: "Two numbers as JSON"
+		list<integer> nums = [1, 2]
+		return mcpJson(nums)
+
+	resource "docs://readme":
+		description: "Plain-text readme"
+		return mcpText("Read me")
+
+	prompt "write_about":
+		description: "Ask for a short text about a topic"
+		args:
+			topic: string
+			tone: string = "calm"
+		return "Write about {{ args.topic }} in a " + args.tone + " tone"
+
+start:
+	integer failures = 0
+
+	// ── initialize (MCP-B005, MCP-D002) ─────────────────────────────────
+	string init = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":\{\},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}")
+	if not expectEqual(json.get(init, "id"), "1", "initialize echoes numeric id")
+		failures = failures + 1
+	if not expectEqual(json.get(init, "result.protocolVersion"), "2025-06-18", "initialize accepts a supported protocol version")
+		failures = failures + 1
+	if not expectEqual(json.get(init, "result.serverInfo.name"), "test-tools", "initialize reports the server name")
+		failures = failures + 1
+	if not expectEqual(json.get(init, "result.serverInfo.version"), "1.2.3", "initialize reports the server version")
+		failures = failures + 1
+	if not expectEqual(json.get(init, "result.instructions"), "Tools used by the frame.mcp dispatch test", "initialize carries the description")
+		failures = failures + 1
+	if not expectContains(init, "\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"subscribe\":false,\"listChanged\":false},\"prompts\":{\"listChanged\":false}}", "initialize advertises declared capabilities as JSON objects")
+		failures = failures + 1
+
+	string init_old = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}")
+	if not expectEqual(json.get(init_old, "result.protocolVersion"), "2024-11-05", "unsupported protocol version falls back to 2024-11-05")
+		failures = failures + 1
+
+	// ── notifications get no response ───────────────────────────────────
+	if not expectEqual(__mcp_handle("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "", "notifications/initialized produces no response")
+		failures = failures + 1
+
+	// ── ping with a string id ───────────────────────────────────────────
+	if not expectEqual(__mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"ping\"}"), "{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"result\":\{\}}", "ping returns an empty result and preserves the string id")
+		failures = failures + 1
+
+	// ── tools/list ───────────────────────────────────────────────────────
+	string tools = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}")
+	if not expectEqual(json.get(tools, "result.tools.0.name"), "greet", "tools/list lists greet first")
+		failures = failures + 1
+	if not expectEqual(json.get(tools, "result.tools.0.description"), "Greet someone", "tools/list carries the description")
+		failures = failures + 1
+	if not expectContains(tools, "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"times\":{\"type\":\"integer\"},\"excited\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}", "greet inputSchema marks only name as required")
+		failures = failures + 1
+	if not expectEqual(json.get(tools, "result.tools.2.name"), "refuse", "tools/list lists all three tools")
+		failures = failures + 1
+
+	// ── tools/call ───────────────────────────────────────────────────────
+	string call1 = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\",\"arguments\":{\"name\":\"Ada\",\"times\":3,\"excited\":true}}}")
+	if not expectEqual(call1, "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Hi Ada x3!\"}]}}", "tools/call greet returns a text content block")
+		failures = failures + 1
+
+	string call_defaults = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\",\"arguments\":{\"name\":\"Ada\"}}}")
+	if not expectEqual(json.get(call_defaults, "result.content.0.text"), "Hi Ada", "optional params use their defaults")
+		failures = failures + 1
+
+	// arguments before name, a nested "name" key, and an escaped quote
+	string call_order = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"name\":\"Bo\\\"b\"},\"name\":\"greet\"}}")
+	if not expectEqual(json.get(call_order, "result.content.0.text"), "Hi Bo\"b", "tool name and arguments are read from their own keys")
+		failures = failures + 1
+	if not expectEqual(json.get(call_order, "id"), "42", "response id matches the request id")
+		failures = failures + 1
+
+	string call_json = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"numbers\",\"arguments\":{\"count\":3}}}")
+	if not expectEqual(json.get(call_json, "result.content.0.text"), "[1,2,3]", "mcpJson serializes a list into the text field")
+		failures = failures + 1
+
+	string call_err = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"refuse\",\"arguments\":\{\}}}")
+	if not expectEqual(call_err, "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"not allowed\"}],\"_meta\":{\"errorCode\":\"FORBIDDEN\"}}}", "mcpError is a tool result with isError true")
+		failures = failures + 1
+
+	// MCP-T001: missing / mistyped params are rejected before the handler runs
+	string call_missing = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\",\"arguments\":{\"times\":2}}}")
+	if not expectEqual(json.get(call_missing, "error.code"), "-32602", "missing required param is -32602")
+		failures = failures + 1
+	if not expectEqual(json.get(call_missing, "error.message"), "Missing required param: name", "missing param is named in the error")
+		failures = failures + 1
+
+	string call_type = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"greet\",\"arguments\":{\"name\":\"Ada\",\"times\":\"3\"}}}")
+	if not expectEqual(json.get(call_type, "error.code"), "-32602", "wrong param type is -32602")
+		failures = failures + 1
+
+	string call_unknown = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"nope\"}}")
+	if not expectEqual(json.get(call_unknown, "error.code"), "-32602", "unknown tool is -32602")
+		failures = failures + 1
+
+	// ── resources ────────────────────────────────────────────────────────
+	string resources = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"resources/list\"}")
+	if not expectEqual(json.get(resources, "result.resources.0.mimeType"), "application/json", "mcpJson resource defaults to application/json")
+		failures = failures + 1
+	if not expectEqual(json.get(resources, "result.resources.1.mimeType"), "text/plain", "mcpText resource is inferred as text/plain")
+		failures = failures + 1
+
+	string read1 = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"resources/read\",\"params\":{\"uri\":\"data://numbers\"}}")
+	if not expectEqual(read1, "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{\"contents\":[{\"uri\":\"data://numbers\",\"mimeType\":\"application/json\",\"text\":\"[1,2]\"}]}}", "resources/read returns the resource contents")
+		failures = failures + 1
+
+	string read_missing = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"resources/read\",\"params\":{\"uri\":\"data://nope\"}}")
+	if not expectEqual(json.get(read_missing, "error.code"), "-32002", "unknown resource is -32002")
+		failures = failures + 1
+
+	// ── prompts ──────────────────────────────────────────────────────────
+	string prompts = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"prompts/list\"}")
+	if not expectContains(prompts, "\"arguments\":[{\"name\":\"topic\",\"required\":true},{\"name\":\"tone\",\"required\":false}]", "prompts/list marks required and optional args")
+		failures = failures + 1
+
+	string got = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"prompts/get\",\"params\":{\"name\":\"write_about\",\"arguments\":{\"topic\":\"cats\"}}}")
+	if not expectEqual(json.get(got, "result.messages.0.role"), "user", "prompt message has the user role")
+		failures = failures + 1
+	if not expectEqual(json.get(got, "result.messages.0.content.text"), "Write about cats in a calm tone", "prompt text interpolates args and defaults")
+		failures = failures + 1
+
+	string got_missing = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"prompts/get\",\"params\":{\"name\":\"write_about\"}}")
+	if not expectEqual(json.get(got_missing, "error.code"), "-32602", "missing required prompt arg is -32602")
+		failures = failures + 1
+
+	// ── protocol errors ──────────────────────────────────────────────────
+	string unknown = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"sampling/unknown\"}")
+	if not expectEqual(json.get(unknown, "error.code"), "-32601", "unknown method is -32601")
+		failures = failures + 1
+
+	string bad = __mcp_handle("{not json")
+	if not expectEqual(bad, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}", "malformed JSON is -32700 with a null id")
+		failures = failures + 1
+
+	string no_method = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":18}")
+	if not expectEqual(json.get(no_method, "error.code"), "-32600", "request without a method is -32600")
+		failures = failures + 1
+
+	if failures == 0
+		printl("PASS: mcp-jsonrpc-dispatch")
+	else
+		printl("FAIL: mcp-jsonrpc-dispatch (" + failures.toString() + " assertion(s) failed)")
+
+// Assertion helpers — same contract as assertEqual / assertContains in
+// tests/framework/utils/assertions.cln (copied because there is no module
+// import system yet; renamed because the compiler reserves assertEqual).
+functions:
+	boolean expectEqual(string actual, string expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected)
+			printl("  Actual:   " + actual)
+			return false
+		return true
+
+	boolean expectContains(string haystack, string needle, string message)
+		if haystack.indexOf(needle) == -1
+			printl("FAIL: " + message)
+			printl("  String does not contain: " + needle)
+			printl("  Actual: " + haystack)
+			return false
+		return true

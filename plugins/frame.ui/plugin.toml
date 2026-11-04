@@ -29,15 +29,13 @@ expansion_version = "3.0.0"
 emission_ops_hash = "60d06836a7068ee66a330e8c26ca59bc47cc44991b4f31d56e95e06c707eeaf0"
 
 [lifecycle]
-# Plugin Contracts v3 — typed-emission.md §7. Under atomic-migration, every
-# declared slot MUST be a typed variant. frame.ui's SSR helpers (render,
-# renderWith), theme.css/components.json artifact staging, and client_init
-# hydration wiring all migrate to typed slots by Sub-cycle 3. Sub-cycle 1
-# ships typed no-op stubs so cln check passes on the skeleton; Sub-cycles
-# 2/3 fill the bodies.
+# Plugin Contracts v3 — typed-emission.md §7. Every declared slot is a typed
+# variant: module_helpers emits the SSR helpers (render, renderWith) and the
+# runtime helpers the emitted page/component code calls; client_init wires
+# hydration for components with client != off. theme.css and components.json
+# are staged in build_state while blocks expand (see [[artifacts]] below).
 module_helpers_are_roots = true
 module_helpers = "emit_ui_helpers_typed"
-artifact_emitters = "emit_ui_artifacts_typed"
 client_init = "emit_ui_client_init_typed"
 
 # Plugin Contracts v2 — foundation/spec/plugins/contracts/artifacts.md §4.1.
@@ -110,7 +108,7 @@ assemble = "assemble_typed"
 lint = "lint_project"
 
 [handles]
-blocks = ["component", "page", "html", "ui", "styles"]
+blocks = ["component", "page", "html", "styles"]
 
 # Per-block typed-emission declarations (typed-emission.md §2.1).
 # version = 3 is required when expansion_version = "3.0.0". Every block the
@@ -126,10 +124,6 @@ expand = "expand_block_typed"
 version = 3
 
 [blocks.html]
-expand = "expand_block_typed"
-version = 3
-
-[blocks.ui]
 expand = "expand_block_typed"
 version = 3
 
@@ -214,8 +208,8 @@ functions = [
   { name = "_ui_render_page", params = ["string", "string"], returns = "ptr", description = "Render HTML page template by name with JSON data for { key } substitution; resolves app/ui/web/pages/<name>.html", expand_strings = true, hosts = ["server"], callback = { purpose = "component_tag_render", plugin_target = "frame.ui", discovery = "exports_matching", export_pattern = "{tagname}_render", fallback = "passthrough" } },
 
   # HTML Rendering
-  { name = "_html_escape", params = ["string"], returns = "ptr", description = "Escape HTML entities in string", expand_strings = true, signature = "_html_escape(text) -> string", hosts = ["server"] },
-  { name = "_html_raw", params = ["string"], returns = "ptr", description = "Return raw HTML without escaping", expand_strings = true, signature = "_html_raw(html) -> string", hosts = ["server"] },
+  { name = "_html_escape", params = ["string"], returns = "ptr", description = "Escape HTML entities in string", expand_strings = true, signature = "_html_escape(text) -> string", hosts = ["all"] },
+  { name = "_html_raw", params = ["string"], returns = "ptr", description = "Return raw HTML without escaping", expand_strings = true, signature = "_html_raw(html) -> string", hosts = ["all"] },
 
   # Component Registry
   { name = "_ui_register_component", params = ["string", "string"], returns = "integer", description = "Register component: tag name, class name", expand_strings = true, signature = "_ui_register_component(tagName, className)", hosts = ["server"] },
@@ -357,7 +351,7 @@ functions = [
 
 [language]
 # Block-level keywords that start a declaration
-blocks = ["component", "page", "html", "ui", "styles"]
+blocks = ["component", "page", "html", "styles"]
 
 # Keywords used within plugin context
 keywords = [

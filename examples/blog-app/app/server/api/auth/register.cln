@@ -19,5 +19,6 @@ endpoints:
 		user.name = data.name.toString()
 		user.role = "user"
 		Database.save(user)
-		string token = auth.session.create(user.id, "{\"role\": \"user\"}")
-		return jsonResponse("{\"ok\": true, \"token\": \"" + token + "\"}")
+		// auth.setSession stores the session and sets the session cookie.
+		auth.setSession("{\"user_id\":" + user.id.toString() + ",\"role\":\"user\"}")
+		return jsonResponse("{\"ok\": true}")

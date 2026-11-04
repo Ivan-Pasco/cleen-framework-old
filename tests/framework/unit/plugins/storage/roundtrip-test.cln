@@ -1,0 +1,107 @@
+// Test: frame.storage — write / exists / read / overwrite / delete roundtrip
+// against the real host bridge (STORAGE-F001..F004, STORAGE-H002).
+// Runs inside clean-server from start:. The path is relative, so the host's
+// storage root must cover it: clean-server 1.9.113 resolves paths against its
+// working directory and allows them only under CLEAN_FS_WRITE_ROOT (unset =
+// every write is rejected with code 3). The runner must export
+// CLEAN_FS_WRITE_ROOT pointing at (or above) the directory the server runs in.
+// The test deletes everything it writes.
+
+plugins:
+	frame.storage
+
+start:
+	integer failures = 0
+	string path = "frame-storage-roundtrip-test.bin"
+	string payload = "line one\nline \"two\"\twith tab — ünïcode"
+
+	// Clean slate if an earlier aborted run left the file behind.
+	storage.delete(path)
+
+	// STORAGE-F001: write returns 0 on success.
+	integer rc = storage.write(path, payload)
+	if not expectInt(rc, 0, "storage.write returns 0 (set CLEAN_FS_WRITE_ROOT to cover the server working directory)")
+		failures = failures + 1
+
+	// STORAGE-F003 / F002
+	if not expectTrue(storage.exists(path), "storage.exists is true after write")
+		failures = failures + 1
+	string got = storage.read(path)
+	if got != payload
+		failures = failures + reportRead("storage.read returns the exact bytes written", payload, got)
+
+	// Overwrite replaces the previous contents.
+	string replacement = "second version"
+	if not expectInt(storage.write(path, replacement), 0, "overwriting an existing file returns 0")
+		failures = failures + 1
+	got = storage.read(path)
+	if got != replacement
+		failures = failures + reportRead("storage.read returns the overwritten bytes", replacement, got)
+
+	// An empty file exists and reads as "" (F002: only exists() tells it
+	// apart from a missing file).
+	if not expectInt(storage.write(path, ""), 0, "writing an empty payload returns 0")
+		failures = failures + 1
+	if not expectTrue(storage.exists(path), "an empty file still exists")
+		failures = failures + 1
+	got = storage.read(path)
+	if got != ""
+		failures = failures + reportRead("an empty file reads as an empty string", "", got)
+
+	// STORAGE-F004: delete true once, then false; the file is gone.
+	if not expectTrue(storage.delete(path), "storage.delete removes the file")
+		failures = failures + 1
+	if not expectFalse(storage.exists(path), "storage.exists is false after delete")
+		failures = failures + 1
+	if not expectFalse(storage.delete(path), "deleting a missing file returns false")
+		failures = failures + 1
+	got = storage.read(path)
+	if got != ""
+		failures = failures + reportRead("reading a missing file returns an empty string", "", got)
+
+	// STORAGE-H002: path traversal is rejected at the host boundary.
+	if not expectInt(storage.write("../frame-storage-escape.bin", payload), 3, "a '..' path is rejected with code 3")
+		failures = failures + 1
+	if not expectFalse(storage.exists("../frame-storage-escape.bin"), "a '..' path never exists")
+		failures = failures + 1
+	if not expectFalse(storage.delete("../frame-storage-escape.bin"), "a '..' path cannot be deleted")
+		failures = failures + 1
+	if not expectInt(storage.write("", payload), 3, "an empty path is rejected with code 3")
+		failures = failures + 1
+
+	if failures == 0
+		printl("PASS: storage-roundtrip")
+	else
+		printl("FAIL: storage-roundtrip (" + failures.toString() + " assertion(s) failed)")
+
+// Assertion helpers — same contract as tests/framework/utils/assertions.cln
+// (copied because there is no module import system yet; renamed because the
+// compiler reserves assertEqual). String results are compared in start:
+// itself: compiler 0.33.169 compares a storage.read result passed into a
+// helper by reference, not by content.
+functions:
+	integer reportRead(string message, string expected, string actual)
+		printl("FAIL: " + message)
+		printl("  Expected: " + expected)
+		printl("  Actual:   " + actual)
+		return 1
+
+	boolean expectInt(integer actual, integer expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected.toString())
+			printl("  Actual:   " + actual.toString())
+			return false
+		return true
+
+	boolean expectTrue(boolean condition, string message)
+		if not condition
+			printl("FAIL: " + message)
+			return false
+		return true
+
+	boolean expectFalse(boolean condition, string message)
+		if condition
+			printl("FAIL: " + message)
+			return false
+		return true

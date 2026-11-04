@@ -43,7 +43,6 @@ todo-api/
 | GET | `/todos` | List user's todos |
 | GET | `/todos/:id` | Get single todo |
 | POST | `/todos` | Create todo |
-| PUT | `/todos/:id` | Update todo |
 | DELETE | `/todos/:id` | Delete todo |
 | PATCH | `/todos/:id/toggle` | Toggle todo completion |
 
@@ -62,7 +61,7 @@ todo-api/
 - `password_hash` - Hashed password
 - `name` - Display name
 - `role` - User role (default: "user")
-- `created_at` - Creation timestamp
+- `created_at`, `updated_at` - Timestamps
 
 ### Todo
 - `id` - Primary key (auto-increment)
@@ -71,7 +70,7 @@ todo-api/
 - `completed` - Completion status
 - `priority` - Priority level (0-9)
 - `owner_id` - Owning user (relation `owner`)
-- `created_at` - Creation timestamp
+- `created_at`, `updated_at` - Timestamps
 - `due_date` - Optional due date
 
 ### Category
@@ -79,6 +78,9 @@ todo-api/
 - `name` - Category name
 - `color` - Hex color code
 - `owner_id` - Owning user (relation `owner`)
+
+### TodoCategory
+- Junction table `todo_categories` linking todos to categories (`todo_id`, `category_id`)
 
 ## Example Requests
 
@@ -111,23 +113,22 @@ curl -X GET http://localhost:3000/todos \
   -b cookies.txt
 ```
 
-## Running
+## Build and Run
+
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Development server
-frame serve
-
-# Production build
-frame build --target=server
-
-# Run with Docker
-docker build -t todo-api .
-docker run -p 3000:3000 todo-api
+cd examples/todo-api
+~/.cleen/bin/cln compile main.cln -o todo-api.wasm --plugins
+DATABASE_URL=sqlite::memory: ~/.cleen/bin/clean-server todo-api.wasm --port 3000
 ```
+
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh todo-api` from the framework root.
+
+`app/server/main.cln` creates all four tables on start with `migrate()`.
 
 ## Configuration
 
-Environment variables:
-- `PORT` - Server port (default: 3000)
-- `DATABASE_URL` - Database connection string
-- `SESSION_SECRET` - Session encryption secret
+- `DATABASE_URL` - database connection string, e.g. `sqlite::memory:` or `sqlite:///tmp/todo.db`
+- `--port` - port passed to `clean-server` (the example declares `server: port: 3000`)
+- Session settings live in `app/auth/auth.cln` (`auth: session:`); JWT is disabled

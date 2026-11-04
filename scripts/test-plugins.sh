@@ -13,16 +13,34 @@
 #      (section order required by Clean: import/start/state/class/functions)
 #   3. Run `cln check` on the combined file to verify compilation.
 #
+# Usage: scripts/test-plugins.sh [plugin-name ...]   (default: every plugin)
+# The compiler is $CLEEN_CLN, default ~/.cleen/bin/cln (the toolchain these
+# plugins are built with — never the `cln` on PATH).
+#
 # `cln check` is used instead of `cln test` because the plugin runtime
 # imports (e.g. _state_reset_all) aren't provided by the standalone runner —
-# that's a cross-component gap tracked in TASKS.md. Compilation parity
+# that's a cross-component gap. Compilation parity
 # catches syntax, type, and signature regressions, which is what we need
 # from CI on this layer.
 set -e
 
+# The plugins target this repository's toolchain (~/.cleen). A different
+# compiler on PATH is never used.
+CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The old toolchain's compiler; plain `cln` on PATH is a different toolchain.
+CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
 PLUGINS_DIR="$SCRIPT_DIR/../plugins"
+CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+ONLY=" $* "
 TMP_DIR="$(mktemp -d)"
+# Old-toolchain compiler. Plain `cln` on PATH is a different toolchain.
+CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+if [ ! -x "$CLN" ]; then
+    echo "Compiler not found at: $CLN (set CLEEN_CLN to override)" >&2
+    exit 1
+fi
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Minimal assert() implementation injected into combined test files.
@@ -45,6 +63,9 @@ NO_TESTS=0
 
 for plugin_dir in "$PLUGINS_DIR"/*/; do
     plugin_name=$(basename "$plugin_dir")
+    if [ "$ONLY" != "  " ] && [[ "$ONLY" != *" $plugin_name "* ]]; then
+        continue
+    fi
     src_main="$plugin_dir/src/main.cln"
     tests_dir="$plugin_dir/tests"
 
@@ -90,12 +111,12 @@ for plugin_dir in "$PLUGINS_DIR"/*/; do
             cat "$TMP_DIR/tail.cln"
         } > "$combined"
 
-        if cln check "$combined" >/dev/null 2>&1; then
+        if "$CLN" check "$combined" >/dev/null 2>&1; then
             echo "  ✓ $test_name compiles cleanly"
             ((PASSED++)) || true
         else
             echo "  ✗ $test_name failed:"
-            cln check "$combined" 2>&1 | sed 's/^/      /' | head -20
+            "$CLN" check "$combined" 2>&1 | sed 's/^/      /' | head -20
             ((FAILED++)) || true
         fi
     done

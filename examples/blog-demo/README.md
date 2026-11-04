@@ -1,67 +1,58 @@
 # Blog Demo
 
-A Clean Framework example demonstrating the new project structure with automatic file discovery.
+A small blog showing the project layout: HTML pages, components, a data model and a JSON API.
 
 ## Project Structure
 
 ```
 blog-demo/
-  app/
-    ui/
-      pages/                    # HTML routes (auto-discovered)
-        index.html          # → GET /
-        about.html          # → GET /about
-        blog/
-          index.html        # → GET /blog
-          [slug].html       # → GET /blog/:slug
-      components/               # Custom elements (auto-discovered)
-        Header.cln              # → <blog-header>
-        Footer.cln              # → <blog-footer>
-      public/                   # Static assets
-        css/
-          style.css
-    server/
-      api/                      # JSON endpoints (auto-discovered)
-        posts.cln               # → GET /api/posts
-      models/                   # Database models (auto-discovered)
-        Post.cln
-  config.cln                    # Project configuration
+├── main.cln                      # Package manifest (target: server)
+├── app/
+│   ├── data/models/Post.cln      # Post data model
+│   ├── server/
+│   │   ├── main.cln              # start: Post.migrate()
+│   │   └── api/posts.cln         # /api/posts endpoints
+│   └── ui/web/
+│       ├── components/
+│       │   ├── Header.cln        # <blog-header>
+│       │   └── Footer.cln        # <blog-footer>
+│       └── pages/
+│           ├── index.html        # /
+│           ├── about.html        # /about
+│           └── blog/
+│               ├── index.html    # /blog
+│               └── [slug].html   # /blog/:slug
+└── public/css/style.css
 ```
 
-## Build & Run
+## Build and Run
+
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Scan project to see discovered routes
-frame scan
-
-# Build the project
-frame build
-
-# Run with Clean Server
-cleen server run dist/app.wasm --port 3000
+cd examples/blog-demo
+~/.cleen/bin/cln compile main.cln -o blog-demo.wasm --plugins
+DATABASE_URL=sqlite::memory: ~/.cleen/bin/clean-server blog-demo.wasm --port 3000
 ```
 
-## Routes
+Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
 
-| Route | File | Description |
-|-------|------|-------------|
-| `GET /` | `app/ui/web/pages/index.html` | Home page |
-| `GET /about` | `app/ui/web/pages/about.html` | About page |
-| `GET /blog` | `app/ui/web/pages/blog/index.html` | Blog listing |
-| `GET /blog/:slug` | `app/ui/web/pages/blog/[slug].html` | Single post |
-| `GET /api/posts` | `app/server/api/posts.cln` | Posts JSON API |
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
 
-## Components
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh blog-demo` from the framework root.
 
-| Tag | File |
-|-----|------|
-| `<blog-header>` | `app/ui/web/components/Header.cln` |
-| `<blog-footer>` | `app/ui/web/components/Footer.cln` |
+`app/server/main.cln` creates the tables on start with `Model.migrate()`.
 
-## Key Features
+## API Endpoints
 
-1. **File-based routing**: Pages in `app/ui/web/pages/` automatically become routes
-2. **Dynamic routes**: `[param]` syntax creates URL parameters
-3. **Auto-discovery**: No manual route registration needed
-4. **Custom elements**: Components become HTML tags
-5. **Static assets**: Files in `public/` served at `/public/*`
+| Method | Path | File |
+|--------|------|------|
+| GET | `/api/posts` | `app/server/api/posts.cln` |
+| GET | `/api/posts/:slug` | `app/server/api/posts.cln` |
+
+## Conventions Shown
+
+1. Pages in `app/ui/web/pages/` map to routes by path; `index.html` maps to the folder URL.
+2. `[param]` in a file name is a URL parameter (`[slug].html` → `/blog/:slug`).
+3. Components in `app/ui/web/components/` declare their tag with `component: tag="..."`.
+4. Endpoint files in `app/server/api/` are discovered automatically.

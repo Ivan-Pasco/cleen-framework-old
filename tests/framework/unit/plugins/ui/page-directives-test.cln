@@ -1,0 +1,37 @@
+// Test: frame.ui — cl-if / cl-else / cl-show and forms in a page
+// (frame-ui-semantics UI-B001, UI-B002, UI-B003, UI-B011).
+//
+// Regressions:
+//   - cl-if / cl-else / cl-show on any element with content failed to
+//     compile (SYN001): only the first generated line was indented under
+//     the `if`.
+//   - cl-show's hidden branch added display:none in the middle of an
+//     existing style value (`co` + `display:none;` + `lor:red`) instead of
+//     at its start.
+//   - A form without a method attribute (a GET form) got the CSRF input,
+//     which is for non-GET forms only.
+
+plugins:
+	frame.ui
+
+page DirectivePage:
+	<div>
+		<p cl-if="isOn()">on</p>
+		<p cl-else>off</p>
+		<p cl-show="isOn()" class="c" style="color:red">shown</p>
+		<span cl-show="isOn()">plain</span>
+		<form action="/search"><input name="q"></form>
+	</div>
+
+start:
+	DirectivePage page = DirectivePage()
+	string out = page.render()
+	string expected = "<div><p>off</p><p class='c' style='display:none;color:red'>shown</p><span style='display:none'>plain</span><form action='/search'><input name='q'></form></div>"
+	if out == expected
+		printl("PASS: ui-page-directives")
+	else
+		printl("FAIL: ui-page-directives " + out)
+
+functions:
+	boolean isOn()
+		return false

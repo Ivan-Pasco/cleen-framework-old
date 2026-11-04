@@ -9,82 +9,63 @@ plugins:
 	frame.server
 	frame.data
 
-// Webhook delivery log — tracks every attempt for retry and auditing
+// Webhook delivery log — tracks every attempt for retry and auditing.
+// Times are Unix seconds (now()); 0 means "not yet".
 data WebhookDelivery:
-	id: integer pk auto
-	event_type: string              // "order.completed", "user.created", etc.
-	target_url: string
-	payload: string                 // JSON payload sent
-	signature: string               // HMAC-SHA256 of payload
-	status: string                  // "pending", "delivered", "failed"
-	attempt_count: integer default 0
-	last_attempted_at: datetime nullable
-	delivered_at: datetime nullable
-	error_message: string nullable
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		string event_type required          // "order.completed", "user.created", etc.
+		string target_url required
+		string payload required             // JSON payload sent
+		string signature required           // HMAC-SHA256 of payload
+		string status required              // "pending", "delivered", "failed"
+		integer attempt_count default: 0
+		integer last_attempted_at default: 0
+		integer delivered_at default: 0
+		string error_message default: ""
 
 functions:
 	// Queue a webhook for async delivery (call this from your event handlers)
 	integer queue_webhook(string event_type, string target_url, string payload)
-		string secret = env.get("WEBHOOK_SECRET")
-		string signature = _crypto_hmac(payload, secret, "sha256")
+		WebhookDelivery delivery = WebhookDelivery()
+		delivery.event_type = event_type
+		delivery.target_url = target_url
+		delivery.payload = payload
+		delivery.signature = crypto.hmac(payload, env.get("WEBHOOK_SECRET"), "sha256")
+		delivery.status = "pending"
+		Database.save(delivery)
+		return delivery.id
 
-		integer id = WebhookDelivery.insert:
-			event_type = event_type
-			target_url = target_url
-			payload = payload
-			signature = signature
-			status = "pending"
-		return id
-
-	// Deliver one pending webhook (called by a background job, not a request handler)
-	// NOTE: http_post_with_headers and http_get_response_code are outbound HTTP calls.
-	// Requires frame.client plugin for outbound HTTP (api.post / api.get bridge functions).
+	// Deliver one pending webhook (called by a background job, not a request
+	// handler). Sign the payload so recipients can verify authenticity.
 	integer deliver_webhook(integer delivery_id)
-		any delivery = WebhookDelivery.first:
+		WebhookDelivery delivery = WebhookDelivery.first:
 			where:
 				id == delivery_id
 
-		// Set the signature header so recipients can verify authenticity
-		string headersJson = "{\"Content-Type\":\"application/json\",\"X-Webhook-Signature\":\"" + delivery.signature + "\"}"
-		any response = http_post_with_headers(
-			delivery.target_url,
-			delivery.payload,
-			headersJson
-		)
-
-		integer status_code = http_get_response_code()
-		integer attempt = delivery.attempt_count + 1
+		string headers = "{\"Content-Type\":\"application/json\",\"X-Webhook-Signature\":\"" + delivery.signature + "\"}"
+		http.postWithHeaders(delivery.target_url, delivery.payload, headers)
+		integer status_code = http.responseCode()
+		delivery.attempt_count = delivery.attempt_count + 1
+		delivery.last_attempted_at = now()
 
 		if status_code >= 200 and status_code < 300
-			WebhookDelivery.update:
-				set:
-					status = "delivered"
-					attempt_count = attempt
-					delivered_at = now()
-				where:
-					id == delivery_id
+			delivery.status = "delivered"
+			delivery.delivered_at = now()
+			Database.save(delivery)
 			return 1
 
-		// Failed — record error, mark for retry (up to 5 attempts)
-		string new_status = "pending"
-		if attempt >= 5
-			new_status = "failed"
-
-		WebhookDelivery.update:
-			set:
-				status = new_status
-				attempt_count = attempt
-				last_attempted_at = now()
-				error_message = "HTTP " + status_code.toString()
-			where:
-				id == delivery_id
+		// Failed — record the error and retry later (up to 5 attempts)
+		if delivery.attempt_count >= 5
+			delivery.status = "failed"
+		delivery.error_message = "HTTP " + status_code.toString()
+		Database.save(delivery)
 		return 0
 
 endpoints:
 	// Example: queue a webhook when an order is completed
 	POST "/orders/:id/complete":
-		string order_id = param("id")
+		string order_id = req.param("id")
 
 		// ... complete the order ...
 

@@ -2,75 +2,51 @@
 // Version: 2.0.0
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
 //
-// Atomic migration: this plugin.wasm is v3-only. All lifecycle slots and every
-// block export are typed variants. See typed-emission.md §2.1 for the
-// atomic-per-plugin migration rule.
+// Expands one `mcp "name":` block into:
+//   - response helpers callable from handler bodies: mcpJson(value),
+//     mcpText(message), mcpError(message, code = "")
+//   - one handler function per tool / resource / prompt
+//   - the JSON-RPC 2.0 dispatcher __mcp_handle(message) -> response
+//     ("" for notifications, which get no response)
+//   - the transport loop (stdio or HTTP) in the program start slot
 //
-// Uses:
-//   - Amendment 4 (§3.14) batch-spec builder API for preamble helpers,
-//     registration/dispatcher functions, and __mcp_handle.
-//   - Amendment 2 (§3.11) _emit_stmt_from_source for user-authored tool /
-//     resource / prompt handler bodies.
-//   - Amendment 5 (§3.15) sticky-error context to collapse per-bridge error
-//     scaffolding. One _ctx_set_error_context at helper entry + one
-//     _ctx_had_error at helper exit.
+// Generated helpers and dispatchers are composed as Clean source and passed
+// through _emit_stmt_from_source + _batch_func2 (typed-emission.md §3.11,
+// Amendment 12). JSON is parsed at runtime with the json.* builtins, so
+// request ids, nested arguments and escaped strings are handled by a real
+// JSON parser rather than substring scanning.
+//
+// Spec: foundation/docs/framework/plugins/mcp.md,
+//       foundation/spec/framework/grammar/frame-mcp.ebnf,
+//       foundation/spec/framework/frame-mcp-semantics.md
 
 // ============================================================================
 // TYPED-EMISSION BRIDGE DECLARATIONS
 // ============================================================================
-// typed-emission.md §2.3, §3, §3.11, §3.14, §3.15
-// Underscore aliases required (Clean Language external: rejects dots in names).
-// These are env imports from the compiler's typed-emission sandbox — they
-// MUST NOT appear in plugin.toml [bridge].functions.
+// Env imports from the compiler's typed-emission sandbox — they MUST NOT
+// appear in plugin.toml [bridge].functions.
 
 external:
-	// Array helpers (§3.14)
 	integer _batch_arrayNew(integer ctx)
 	integer _batch_arrayPush(integer ctx, integer array_handle, integer item_handle)
-	// Expression builders (§3.14)
-	integer _batch_stringLit(integer ctx, string value)
-	integer _batch_intLit(integer ctx, integer value_lo, integer value_hi)
-	integer _batch_boolLit(integer ctx, integer value)
-	integer _batch_ident(integer ctx, string name)
-	integer _batch_field(integer ctx, integer receiver_handle, string name)
-	integer _batch_call(integer ctx, string callee, integer args_array_handle)
-	integer _batch_binop(integer ctx, string op, integer lhs_handle, integer rhs_handle)
-	integer _batch_unop(integer ctx, string op, integer operand_handle)
-	integer _batch_index(integer ctx, integer receiver_handle, integer index_handle)
-	// Statement builders (§3.14)
-	integer _batch_stmtCall(integer ctx, string callee, integer args_array_handle)
-	integer _batch_stmtAssign(integer ctx, string target, integer expr_handle)
-	// _batch_stmtVarDecl produces a real Statement::VariableDecl (let-declaration).
-	// Required for first-introduction of a local in function-body / handler /
-	// callback scope; stmtAssign is only valid at start: scope or as a
-	// reassignment of an already-declared local (see prompt #f7183604).
-	integer _batch_stmtVarDecl(integer ctx, string name, string type_lp, integer expr_handle_or_0)
-	integer _batch_stmtIf(integer ctx, integer cond_handle, integer then_array_handle, integer else_array_handle)
-	integer _batch_stmtWhile(integer ctx, integer cond_handle, integer body_array_handle)
-	integer _batch_stmtReturn(integer ctx, integer expr_handle)
-	integer _batch_stmtBlock(integer ctx, integer stmts_array_handle)
-	// Function and terminal builders (§3.14)
 	integer _batch_param(integer ctx, string name, string type_name)
-	integer _batch_func(integer ctx, string name, integer params_array_handle, string return_type, integer body_array_handle)
+	integer _batch_func2(integer ctx, string name, integer params_array_handle, string return_type, integer body_array_handle_or_0, integer from_source_handle_or_0)
 	integer _batch_spec(integer ctx, integer functions_array_handle)
-	// Declaration emitters (§3.12, §3.5)
 	integer _emit_helpers_batch(integer ctx, integer spec_handle_or_lp, integer flags)
-	integer _emit_statement_into_start(integer ctx, integer stmt_handle)
-	// Pass-through for user-authored handler bodies (§3.11)
+	integer _emit_function(integer ctx, string name, string params_json, integer return_type, integer body_stmt, integer flags)
+	integer _type_string(integer ctx)
+	integer _emit_expr_from_source(integer ctx, string source, integer origin_offset)
 	integer _emit_stmt_from_source(integer ctx, string source, integer origin_offset)
-	// Sticky-error context (§3.15)
+	integer _emit_statement_into_start(integer ctx, integer stmt_handle)
 	integer _ctx_had_error(integer ctx)
 	integer _ctx_set_error_context(integer ctx, string code, string message)
-	integer _ctx_clear_error(integer ctx)
-	// Diagnostics (§5)
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
 
 // ============================================================================
 // V3 LIFECYCLE SLOTS
 // ============================================================================
-// typed-emission.md §7. Under atomic-migration, every declared slot MUST be a
-// typed variant. frame.mcp emits its per-file preamble and dispatcher inline
-// from expand_block_typed; module_helpers is a no-op placeholder.
+// typed-emission.md §7. frame.mcp emits everything from expand_block_typed;
+// the module/server/request slots have nothing to contribute.
 
 functions:
 	integer emit_module_helpers_typed(integer ctx, string ctx_json)
@@ -83,9 +59,8 @@ functions:
 		return 0
 
 // ============================================================================
-// V3 BLOCK EXPAND ENTRY POINT
+// PLUGIN EXPORTS
 // ============================================================================
-// typed-emission.md §2.2.
 
 functions:
 	integer expand_block_typed(integer ctx, string block_name, string attrs_json, string body)
@@ -102,1574 +77,520 @@ functions:
 		return "[\"mcp\", \"tool\", \"resource\", \"prompt\", \"params\", \"args\", \"transport\", \"apiKey\", \"mimeType\", \"version\", \"description\", \"port\", \"host\", \"mcpJson\", \"mcpText\", \"mcpError\"]"
 
 // ============================================================================
-// PLUGIN-LEVEL DIAGNOSTIC HELPER
+// SOURCE COMPOSITION HELPERS
 // ============================================================================
+// Generated code is written as templates where ' marks a Clean string
+// delimiter and ~ marks an escaped quote inside a generated string literal:
+//   tpl("return '{~a~:1}'")  ->  return "{\"a\":1}"
 
 functions:
-	integer plugin_error(integer ctx, string code, string message)
-		_emit_error(ctx, 2, code, message, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
-		return 1
+	string tpl(string s)
+		string r = s.replace("~", "\\\"")
+		return r.replace("'", "\"")
 
-// ============================================================================
-// TINY BATCH-BUILDER FACTORY HELPERS
-// ============================================================================
-// Sticky-error propagates through these — the caller checks _ctx_had_error
-// once at helper exit. Each helper returns 0 on failure (sticky already set).
+	// Clean string literal (with quotes) whose runtime value is exactly s.
+	// Braces are escaped so no {expr} interpolation can occur.
+	string clit(string s)
+		string r = s.replace("\\", "\\\\")
+		r = r.replace("\"", "\\\"")
+		r = r.replace("\n", "\\n")
+		r = r.replace("\r", "\\r")
+		r = r.replace("\t", "\\t")
+		r = r.replace("{", "\\{")
+		r = r.replace("}", "\\}")
+		return "\"" + r + "\""
 
-functions:
-	// Expression literals
-	integer sl(integer ctx, string v)
-		return _batch_stringLit(ctx, v)
+	// JSON string literal (with quotes) for s.
+	string jstr(string s)
+		string r = s.replace("\\", "\\\\")
+		r = r.replace("\"", "\\\"")
+		r = r.replace("\n", "\\n")
+		r = r.replace("\r", "\\r")
+		r = r.replace("\t", "\\t")
+		return "\"" + r + "\""
 
-	integer il(integer ctx, integer n)
-		return _batch_intLit(ctx, n, 0)
+	// Emit one generated function from Clean source. params is a batch param
+	// array. Returns 0 on success, 1 on failure (diagnostic already emitted).
+	integer emit_src_function(integer ctx, string name, integer params, string return_type, string source)
+		integer body_h = _emit_stmt_from_source(ctx, source, 0)
+		if body_h == 0
+			_emit_error(ctx, 2, "FRAME-MCP-E002", "frame.mcp: generated function " + name + " failed to parse", "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+			return 1
+		integer fns = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, fns, _batch_func2(ctx, name, params, return_type, 0, body_h))
+		_emit_helpers_batch(ctx, _batch_spec(ctx, fns), 2)
+		if _ctx_had_error(ctx) != 0
+			return 1
+		return 0
 
-	integer bl(integer ctx, boolean b)
-		integer bit = 0
-		if b
-			bit = 1
-		return _batch_boolLit(ctx, bit)
-
-	integer id(integer ctx, string name)
-		return _batch_ident(ctx, name)
-
-	// Empty arg array
-	integer arr0(integer ctx)
+	integer p0(integer ctx)
 		return _batch_arrayNew(ctx)
 
-	// One-element arg array
-	integer arr1(integer ctx, integer h1)
-		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, h1)
-		return a
-
-	// Two-element arg array
-	integer arr2(integer ctx, integer h1, integer h2)
-		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, h1)
-		_batch_arrayPush(ctx, a, h2)
-		return a
-
-	// Three-element arg array
-	integer arr3(integer ctx, integer h1, integer h2, integer h3)
-		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, h1)
-		_batch_arrayPush(ctx, a, h2)
-		_batch_arrayPush(ctx, a, h3)
-		return a
-
-	// Zero-arg call as expression
-	integer call0(integer ctx, string callee)
-		return _batch_call(ctx, callee, _batch_arrayNew(ctx))
-
-	// One-arg call as expression
-	integer call1(integer ctx, string callee, integer arg1)
-		return _batch_call(ctx, callee, arr1(ctx, arg1))
-
-	// Two-arg call as expression
-	integer call2(integer ctx, string callee, integer arg1, integer arg2)
-		return _batch_call(ctx, callee, arr2(ctx, arg1, arg2))
-
-	// Three-arg call as expression
-	integer call3(integer ctx, string callee, integer arg1, integer arg2, integer arg3)
-		return _batch_call(ctx, callee, arr3(ctx, arg1, arg2, arg3))
-
-	// Statement: identifier assign to expression (reassignment of a declared local
-	// OR first-introduction at start: scope, where implicit-decl is tolerated).
-	integer sassign(integer ctx, string target, integer expr)
-		return _batch_stmtAssign(ctx, target, expr)
-
-	// Statement: typed first-introduction (let-declaration) — required in
-	// function-body / handler / callback scope. See prompt #f7183604.
-	integer svardecl(integer ctx, string target, string typ, integer expr)
-		return _batch_stmtVarDecl(ctx, target, typ, expr)
-
-	// Statement: return expression
-	integer sret(integer ctx, integer expr)
-		return _batch_stmtReturn(ctx, expr)
-
-	// Statement: bare call
-	integer scall(integer ctx, string callee, integer args_arr)
-		return _batch_stmtCall(ctx, callee, args_arr)
-
-	// If with no else, single-statement then body
-	integer sif1(integer ctx, integer cond, integer then_stmt)
-		return _batch_stmtIf(ctx, cond, arr1(ctx, then_stmt), 0)
-
-	// If with else, single-statement then and else bodies
-	integer sif1else(integer ctx, integer cond, integer then_stmt, integer else_stmt)
-		return _batch_stmtIf(ctx, cond, arr1(ctx, then_stmt), arr1(ctx, else_stmt))
-
-	// Method call (receiver.name(args)) → callee "receiver.name"
-	// Clean Language allows dotted callee identifiers in _batch_call.
-	integer methcall0(integer ctx, string receiver_ident, string method)
-		integer recv = id(ctx, receiver_ident)
-		integer args = arr0(ctx)
-		return _batch_call(ctx, receiver_ident + "." + method, args)
-
-	// Method call with 1 arg
-	integer methcall1(integer ctx, string receiver_ident, string method, integer arg)
-		return _batch_call(ctx, receiver_ident + "." + method, arr1(ctx, arg))
-
-	// Method call with 2 args
-	integer methcall2(integer ctx, string receiver_ident, string method, integer arg1, integer arg2)
-		return _batch_call(ctx, receiver_ident + "." + method, arr2(ctx, arg1, arg2))
-
-	// Binary op: ident == string_lit
-	integer eq_id_sl(integer ctx, string ident_name, string str_val)
-		return _batch_binop(ctx, "==", id(ctx, ident_name), sl(ctx, str_val))
-
-	// Binary op: ident == int_lit
-	integer eq_id_il(integer ctx, string ident_name, integer int_val)
-		return _batch_binop(ctx, "==", id(ctx, ident_name), il(ctx, int_val))
-
-	// Binary op: ident < int_lit
-	integer lt_id_il(integer ctx, string ident_name, integer int_val)
-		return _batch_binop(ctx, "<", id(ctx, ident_name), il(ctx, int_val))
-
-	// Binary op: ident >= int_lit
-	integer gte_id_il(integer ctx, string ident_name, integer int_val)
-		return _batch_binop(ctx, ">=", id(ctx, ident_name), il(ctx, int_val))
-
-	// Binary op: string concat two exprs
-	integer concat(integer ctx, integer lhs, integer rhs)
-		return _batch_binop(ctx, "+", lhs, rhs)
-
-	// Binary op: add two exprs
-	integer add(integer ctx, integer lhs, integer rhs)
-		return _batch_binop(ctx, "+", lhs, rhs)
-
-	// Params-array helpers
-	integer params0(integer ctx)
-		return _batch_arrayNew(ctx)
-
-	integer params1(integer ctx, string n1, string t1)
+	integer p1(integer ctx, string n1, string t1)
 		integer a = _batch_arrayNew(ctx)
 		_batch_arrayPush(ctx, a, _batch_param(ctx, n1, t1))
 		return a
 
-	integer params2(integer ctx, string n1, string t1, string n2, string t2)
-		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, _batch_param(ctx, n1, t1))
+	integer p2(integer ctx, string n1, string t1, string n2, string t2)
+		integer a = p1(ctx, n1, t1)
 		_batch_arrayPush(ctx, a, _batch_param(ctx, n2, t2))
 		return a
 
-	integer params3(integer ctx, string n1, string t1, string n2, string t2, string n3, string t3)
-		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, _batch_param(ctx, n1, t1))
-		_batch_arrayPush(ctx, a, _batch_param(ctx, n2, t2))
+	integer p3(integer ctx, string n1, string t1, string n2, string t2, string n3, string t3)
+		integer a = p2(ctx, n1, t1, n2, t2)
 		_batch_arrayPush(ctx, a, _batch_param(ctx, n3, t3))
 		return a
 
-// ============================================================================
-// PREAMBLE HELPER FUNCTION BUILDERS
-// ============================================================================
-// Each build_* returns a func_handle (0 on failure with sticky already tripped).
-// Every helper follows the same pattern:
-//   1. build params array
-//   2. build body_arr; push statements
-//   3. return _batch_func(ctx, name, params, return_type, body_arr)
-
-functions:
-	// __mcp_json_escape(s: string) -> string
-	// r = s.replace("\\", "\\\\")
-	// r = r.replace("\"", "\\\"")
-	// r = r.replace("\n", "\\n")
-	// r = r.replace("\r", "\\r")
-	// r = r.replace("\t", "\\t")
-	// return r
-	integer build_mcp_json_escape(integer ctx)
-		integer params = params1(ctx, "s", "string")
-		integer body_arr = arr0(ctx)
-
-		// string r = s.replace("\\", "\\\\")
-		integer e1 = methcall2(ctx, "s", "replace", sl(ctx, "\\"), sl(ctx, "\\\\"))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "r", "string", e1))
-
-		// r = r.replace("\"", "\\\"")
-		integer e2 = methcall2(ctx, "r", "replace", sl(ctx, "\""), sl(ctx, "\\\""))
-		_batch_arrayPush(ctx, body_arr, sassign(ctx, "r", e2))
-
-		// r = r.replace("\n", "\\n")
-		integer e3 = methcall2(ctx, "r", "replace", sl(ctx, "\n"), sl(ctx, "\\n"))
-		_batch_arrayPush(ctx, body_arr, sassign(ctx, "r", e3))
-
-		// r = r.replace("\r", "\\r")
-		integer e4 = methcall2(ctx, "r", "replace", sl(ctx, "\r"), sl(ctx, "\\r"))
-		_batch_arrayPush(ctx, body_arr, sassign(ctx, "r", e4))
-
-		// r = r.replace("\t", "\\t")
-		integer e5 = methcall2(ctx, "r", "replace", sl(ctx, "\t"), sl(ctx, "\\t"))
-		_batch_arrayPush(ctx, body_arr, sassign(ctx, "r", e5))
-
-		// return r
-		_batch_arrayPush(ctx, body_arr, sret(ctx, id(ctx, "r")))
-
-		return _batch_func(ctx, "__mcp_json_escape", params, "string", body_arr)
-
-	// __mcp_extract_str(__json: string, __key: string) -> string
-	// __search = "\"" + __key + "\":\""
-	// __pos = __json.indexOf(__search)
-	// if __pos < 0 return ""
-	// __start = __pos + __search.length()
-	// __end = __json.indexOf("\"", __start)
-	// if __end < 0 return ""
-	// return __json.substring(__start, __end)
-	integer build_mcp_extract_str(integer ctx)
-		integer params = params2(ctx, "__json", "string", "__key", "string")
-		integer body_arr = arr0(ctx)
-
-		// string __search = "\"" + __key + "\":\""
-		integer q = sl(ctx, "\"")
-		integer colonq = sl(ctx, "\":\"")
-		integer part1 = concat(ctx, q, id(ctx, "__key"))
-		integer search_e = concat(ctx, part1, colonq)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__search", "string", search_e))
-
-		// integer __pos = __json.indexOf(__search)
-		integer pos_e = methcall1(ctx, "__json", "indexOf", id(ctx, "__search"))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__pos", "integer", pos_e))
-
-		// if __pos < 0: return ""
-		integer if1 = sif1(ctx, lt_id_il(ctx, "__pos", 0), sret(ctx, sl(ctx, "")))
-		_batch_arrayPush(ctx, body_arr, if1)
-
-		// integer __start = __pos + __search.length()
-		integer slen = methcall0(ctx, "__search", "length")
-		integer start_e = add(ctx, id(ctx, "__pos"), slen)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__start", "integer", start_e))
-
-		// integer __end = __json.indexOf("\"", __start)
-		integer end_e = methcall2(ctx, "__json", "indexOf", sl(ctx, "\""), id(ctx, "__start"))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__end", "integer", end_e))
-
-		// if __end < 0: return ""
-		integer if2 = sif1(ctx, lt_id_il(ctx, "__end", 0), sret(ctx, sl(ctx, "")))
-		_batch_arrayPush(ctx, body_arr, if2)
-
-		// return __json.substring(__start, __end)
-		integer ret_e = methcall2(ctx, "__json", "substring", id(ctx, "__start"), id(ctx, "__end"))
-		_batch_arrayPush(ctx, body_arr, sret(ctx, ret_e))
-
-		return _batch_func(ctx, "__mcp_extract_str", params, "string", body_arr)
-
-	// __mcp_extract_str_default(__json: string, __key: string, __default: string) -> string
-	// __val = __mcp_extract_str(__json, __key)
-	// if __val == "" return __default
-	// return __val
-	integer build_mcp_extract_str_default(integer ctx)
-		integer params = params3(ctx, "__json", "string", "__key", "string", "__default", "string")
-		integer body_arr = arr0(ctx)
-
-		integer call_e = call2(ctx, "__mcp_extract_str", id(ctx, "__json"), id(ctx, "__key"))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__val", "string", call_e))
-
-		integer if1 = sif1(ctx, eq_id_sl(ctx, "__val", ""), sret(ctx, id(ctx, "__default")))
-		_batch_arrayPush(ctx, body_arr, if1)
-
-		_batch_arrayPush(ctx, body_arr, sret(ctx, id(ctx, "__val")))
-
-		return _batch_func(ctx, "__mcp_extract_str_default", params, "string", body_arr)
-
-	// __mcp_extract_int(__json: string, __key: string) -> integer
-	// __isearch = "\"" + __key + "\":"
-	// __ipos = __json.indexOf(__isearch)
-	// if __ipos < 0 return 0
-	// __istart = __ipos + __isearch.length()
-	// __irest = __json.substring(__istart, __json.length())
-	// __icomma = __irest.indexOf(",")
-	// __ibrace = __irest.indexOf("}")
-	// __iend = __irest.length()
-	// if __icomma >= 0 and __icomma < __iend: __iend = __icomma
-	// if __ibrace >= 0 and __ibrace < __iend: __iend = __ibrace
-	// __inum = __irest.substring(0, __iend).trim()
-	// if __inum == "" return 0
-	// return __inum.toInteger()
-	integer build_mcp_extract_int(integer ctx)
-		integer params = params2(ctx, "__json", "string", "__key", "string")
-		integer body_arr = arr0(ctx)
-
-		// string __isearch = "\"" + __key + "\":"
-		integer q = sl(ctx, "\"")
-		integer qcolon = sl(ctx, "\":")
-		integer part1 = concat(ctx, q, id(ctx, "__key"))
-		integer isearch_e = concat(ctx, part1, qcolon)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__isearch", "string", isearch_e))
-
-		// integer __ipos = __json.indexOf(__isearch)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__ipos", "integer", methcall1(ctx, "__json", "indexOf", id(ctx, "__isearch"))))
-
-		// if __ipos < 0: return 0
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, lt_id_il(ctx, "__ipos", 0), sret(ctx, il(ctx, 0))))
-
-		// integer __istart = __ipos + __isearch.length()
-		integer slen = methcall0(ctx, "__isearch", "length")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__istart", "integer", add(ctx, id(ctx, "__ipos"), slen)))
-
-		// string __irest = __json.substring(__istart, __json.length())
-		integer jlen = methcall0(ctx, "__json", "length")
-		integer irest_e = methcall2(ctx, "__json", "substring", id(ctx, "__istart"), jlen)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__irest", "string", irest_e))
-
-		// integer __icomma = __irest.indexOf(",")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__icomma", "integer", methcall1(ctx, "__irest", "indexOf", sl(ctx, ","))))
-
-		// integer __ibrace = __irest.indexOf("}")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__ibrace", "integer", methcall1(ctx, "__irest", "indexOf", sl(ctx, "}"))))
-
-		// integer __iend = __irest.length()
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__iend", "integer", methcall0(ctx, "__irest", "length")))
-
-		// if __icomma >= 0 and __icomma < __iend: __iend = __icomma
-		integer c_ge0 = gte_id_il(ctx, "__icomma", 0)
-		integer c_lt = _batch_binop(ctx, "<", id(ctx, "__icomma"), id(ctx, "__iend"))
-		integer c_and = _batch_binop(ctx, "and", c_ge0, c_lt)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, c_and, sassign(ctx, "__iend", id(ctx, "__icomma"))))
-
-		// if __ibrace >= 0 and __ibrace < __iend: __iend = __ibrace
-		integer b_ge0 = gte_id_il(ctx, "__ibrace", 0)
-		integer b_lt = _batch_binop(ctx, "<", id(ctx, "__ibrace"), id(ctx, "__iend"))
-		integer b_and = _batch_binop(ctx, "and", b_ge0, b_lt)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, b_and, sassign(ctx, "__iend", id(ctx, "__ibrace"))))
-
-		// __inum = __irest.substring(0, __iend).trim()
-		integer sub_e = methcall2(ctx, "__irest", "substring", il(ctx, 0), id(ctx, "__iend"))
-		// Chain .trim() — use _batch_call with dotted callee is wrong for expr chains.
-		// Correct approach: use _batch_field for method-on-call is not right either.
-		// Simpler: assign sub_e to a temp then call trim on it.
-		// Or use batch.field: field(sub_e, "trim") returns a call? No, field is receiver.name (member access).
-		// Method chaining requires: first the substring result, then .trim() call.
-		// The cleanest is to introduce a temp: __itmp = __irest.substring(0, __iend); __inum = __itmp.trim()
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__itmp", "string", sub_e))
-		integer trim_e = methcall0(ctx, "__itmp", "trim")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__inum", "string", trim_e))
-
-		// if __inum == "": return 0
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__inum", ""), sret(ctx, il(ctx, 0))))
-
-		// return __inum.toInteger()
-		_batch_arrayPush(ctx, body_arr, sret(ctx, methcall0(ctx, "__inum", "toInteger")))
-
-		return _batch_func(ctx, "__mcp_extract_int", params, "integer", body_arr)
-
-	// __mcp_extract_int_default(__json: string, __key: string, __default: integer) -> integer
-	// __disearch = "\"" + __key + "\":"
-	// __dipos = __json.indexOf(__disearch)
-	// if __dipos < 0 return __default
-	// return __mcp_extract_int(__json, __key)
-	integer build_mcp_extract_int_default(integer ctx)
-		integer params = params3(ctx, "__json", "string", "__key", "string", "__default", "integer")
-		integer body_arr = arr0(ctx)
-
-		integer q = sl(ctx, "\"")
-		integer qcolon = sl(ctx, "\":")
-		integer part1 = concat(ctx, q, id(ctx, "__key"))
-		integer search_e = concat(ctx, part1, qcolon)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__disearch", "string", search_e))
-
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__dipos", "integer", methcall1(ctx, "__json", "indexOf", id(ctx, "__disearch"))))
-
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, lt_id_il(ctx, "__dipos", 0), sret(ctx, id(ctx, "__default"))))
-
-		_batch_arrayPush(ctx, body_arr, sret(ctx, call2(ctx, "__mcp_extract_int", id(ctx, "__json"), id(ctx, "__key"))))
-
-		return _batch_func(ctx, "__mcp_extract_int_default", params, "integer", body_arr)
-
-	// __mcp_extract_bool_str(__json: string, __key: string) -> string
-	// Same shape as extract_int but returns the trimmed raw value as a string
-	// ("true", "false", or "false" default).
-	integer build_mcp_extract_bool_str(integer ctx)
-		integer params = params2(ctx, "__json", "string", "__key", "string")
-		integer body_arr = arr0(ctx)
-
-		integer q = sl(ctx, "\"")
-		integer qcolon = sl(ctx, "\":")
-		integer part1 = concat(ctx, q, id(ctx, "__key"))
-		integer bsearch_e = concat(ctx, part1, qcolon)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bsearch", "string", bsearch_e))
-
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bpos", "integer", methcall1(ctx, "__json", "indexOf", id(ctx, "__bsearch"))))
-
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, lt_id_il(ctx, "__bpos", 0), sret(ctx, sl(ctx, "false"))))
-
-		integer slen = methcall0(ctx, "__bsearch", "length")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bstart", "integer", add(ctx, id(ctx, "__bpos"), slen)))
-
-		integer jlen = methcall0(ctx, "__json", "length")
-		integer brest_e = methcall2(ctx, "__json", "substring", id(ctx, "__bstart"), jlen)
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__brest", "string", brest_e))
-
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bcomma", "integer", methcall1(ctx, "__brest", "indexOf", sl(ctx, ","))))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bbrace", "integer", methcall1(ctx, "__brest", "indexOf", sl(ctx, "}"))))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__bend", "integer", methcall0(ctx, "__brest", "length")))
-
-		integer c_ge0 = gte_id_il(ctx, "__bcomma", 0)
-		integer c_lt = _batch_binop(ctx, "<", id(ctx, "__bcomma"), id(ctx, "__bend"))
-		integer c_and = _batch_binop(ctx, "and", c_ge0, c_lt)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, c_and, sassign(ctx, "__bend", id(ctx, "__bcomma"))))
-
-		integer b_ge0 = gte_id_il(ctx, "__bbrace", 0)
-		integer b_lt = _batch_binop(ctx, "<", id(ctx, "__bbrace"), id(ctx, "__bend"))
-		integer b_and = _batch_binop(ctx, "and", b_ge0, b_lt)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, b_and, sassign(ctx, "__bend", id(ctx, "__bbrace"))))
-
-		// return __brest.substring(0, __bend).trim()
-		integer sub_e = methcall2(ctx, "__brest", "substring", il(ctx, 0), id(ctx, "__bend"))
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__btmp", "string", sub_e))
-		_batch_arrayPush(ctx, body_arr, sret(ctx, methcall0(ctx, "__btmp", "trim")))
-
-		return _batch_func(ctx, "__mcp_extract_bool_str", params, "string", body_arr)
-
-	// mcpJson(__data: string) -> string
-	// return "{\"type\":\"text\",\"text\":" + __data + "}"
-	// Renamed from `json` to avoid colliding with the compiler's `json` builtin namespace (SEM003).
-	integer build_json_helper(integer ctx)
-		integer params = params1(ctx, "__data", "string")
-		integer body_arr = arr0(ctx)
-		integer prefix = sl(ctx, "{\"type\":\"text\",\"text\":")
-		integer suffix = sl(ctx, "}")
-		integer e1 = concat(ctx, prefix, id(ctx, "__data"))
-		integer full = concat(ctx, e1, suffix)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, full))
-		return _batch_func(ctx, "mcpJson", params, "string", body_arr)
-
-	// mcpText(__msg: string) -> string
-	// return "{\"type\":\"text\",\"text\":\"" + __mcp_json_escape(__msg) + "\"}"
-	// Renamed from `text` for namespace consistency with mcpJson / mcpError.
-	integer build_text_helper(integer ctx)
-		integer params = params1(ctx, "__msg", "string")
-		integer body_arr = arr0(ctx)
-		integer prefix = sl(ctx, "{\"type\":\"text\",\"text\":\"")
-		integer suffix = sl(ctx, "\"}")
-		integer esc = call1(ctx, "__mcp_json_escape", id(ctx, "__msg"))
-		integer e1 = concat(ctx, prefix, esc)
-		integer full = concat(ctx, e1, suffix)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, full))
-		return _batch_func(ctx, "mcpText", params, "string", body_arr)
-
-	// mcpError(__message: string) -> string
-	// return "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"" + __mcp_json_escape(__message) + "\"}]}"
-	// Renamed from `error` to avoid colliding with the compiler's `error` global builtin (SEM003).
-	integer build_error_helper(integer ctx)
-		integer params = params1(ctx, "__message", "string")
-		integer body_arr = arr0(ctx)
-		integer prefix = sl(ctx, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"")
-		integer suffix = sl(ctx, "\"}]}")
-		integer esc = call1(ctx, "__mcp_json_escape", id(ctx, "__message"))
-		integer e1 = concat(ctx, prefix, esc)
-		integer full = concat(ctx, e1, suffix)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, full))
-		return _batch_func(ctx, "mcpError", params, "string", body_arr)
-
-// ============================================================================
-// MAIN EXPAND — expand_mcp_typed
-// ============================================================================
-
-functions:
-	integer expand_mcp_typed(integer ctx, string attributes, string body)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E001", "frame.mcp expand_mcp_typed failed during typed emission")
-
-		// ── Extract server-level config (v1 parsing helpers, unchanged) ──
-		string server_name = extract_server_name(attributes)
-		string server_version = extract_config_value(body, "version")
-		if server_version == ""
-			server_version = "1.0.0"
-		string transport = extract_transport(body)
-		string http_port = extract_transport_nested(body, "port")
-		if http_port == ""
-			http_port = "3001"
-		string http_host = extract_transport_nested(body, "host")
-		if http_host == ""
-			http_host = "0.0.0.0"
-
-		// ── Batch-emit the 9 preamble helper functions ──
-		integer preamble_err = emit_preamble_batch(ctx)
-		if preamble_err != 0
-			return preamble_err
-
-		// ── Collect and emit tools ──
-		string tools_list_entries = ""
-		string tools_dispatch_cases = ""
-		integer tool_count = 0
-		integer tool_scan_start = 0
-		boolean tools_keep_going = true
-
-		while tool_count < 50 and tools_keep_going
-			integer tool_pos = find_block_start(body, "\ttool \"", tool_scan_start)
-			if tool_pos < 0
-				tools_keep_going = false
-			else
-				string tool_name = extract_quoted_name(body, tool_pos + 6)
-				integer tool_body_start = find_block_body_start(body, tool_pos)
-				integer tool_body_end = find_block_end_at_one_tab(body, tool_body_start)
-				string tool_body = body.substring(tool_body_start, tool_body_end)
-
-				string t_desc = extract_subconfig_value(tool_body, "description")
-				string params_body = extract_params_body(tool_body, "params")
-				string handler_body = extract_handler_body(tool_body, params_body)
-
-				string schema_json = build_tool_json_schema(params_body)
-				string list_entry = "{\"name\":\"" + tool_name + "\",\"description\":\"" + json_escape_str(t_desc) + "\",\"inputSchema\":" + schema_json + "}"
-				if tool_count > 0
-					tools_list_entries = tools_list_entries + ","
-				tools_list_entries = tools_list_entries + list_entry
-
-				string fn_name = "__mcp_tool_" + sanitize_name(tool_name)
-
-				// Emit the tool handler function (batch + user body via §3.11)
-				integer emit_h_err = emit_tool_handler(ctx, fn_name, params_body, handler_body, tool_name)
-				if emit_h_err != 0
-					return emit_h_err
-
-				// Track dispatch case for later batch of __mcp_dispatch_tool
-				string dispatch_case = tool_name + "|" + fn_name
-				if tools_dispatch_cases.length() > 0
-					tools_dispatch_cases = tools_dispatch_cases + "\n"
-				tools_dispatch_cases = tools_dispatch_cases + dispatch_case
-
-				tool_scan_start = tool_body_end
-				tool_count = tool_count + 1
-
-		// ── Collect and emit resources ──
-		string resources_list_entries = ""
-		string resources_dispatch_cases = ""
-		integer resource_count = 0
-		integer resource_scan_start = 0
-		boolean resources_keep_going = true
-
-		while resource_count < 50 and resources_keep_going
-			integer resource_pos = find_block_start(body, "\tresource \"", resource_scan_start)
-			if resource_pos < 0
-				resources_keep_going = false
-			else
-				string resource_uri = extract_quoted_name(body, resource_pos + 10)
-				integer resource_body_start = find_block_body_start(body, resource_pos)
-				integer resource_body_end = find_block_end_at_one_tab(body, resource_body_start)
-				string resource_body = body.substring(resource_body_start, resource_body_end)
-
-				string r_desc = extract_subconfig_value(resource_body, "description")
-				string r_mime = extract_subconfig_value(resource_body, "mimeType")
-				if r_mime == ""
-					r_mime = "application/json"
-				string r_handler_body = extract_resource_handler_body(resource_body)
-
-				string r_list_entry = "{\"uri\":\"" + resource_uri + "\",\"name\":\"" + resource_uri + "\",\"description\":\"" + json_escape_str(r_desc) + "\",\"mimeType\":\"" + r_mime + "\"}"
-				if resource_count > 0
-					resources_list_entries = resources_list_entries + ","
-				resources_list_entries = resources_list_entries + r_list_entry
-
-				string r_safe_name = "__mcp_resource_" + sanitize_uri(resource_uri)
-
-				integer emit_r_err = emit_resource_handler(ctx, r_safe_name, r_handler_body, resource_uri)
-				if emit_r_err != 0
-					return emit_r_err
-
-				string r_dispatch_case = resource_uri + "|" + r_safe_name
-				if resources_dispatch_cases.length() > 0
-					resources_dispatch_cases = resources_dispatch_cases + "\n"
-				resources_dispatch_cases = resources_dispatch_cases + r_dispatch_case
-
-				resource_scan_start = resource_body_end
-				resource_count = resource_count + 1
-
-		// ── Collect and emit prompts ──
-		string prompts_list_entries = ""
-		string prompts_dispatch_cases = ""
-		integer prompt_count = 0
-		integer prompt_scan_start = 0
-		boolean prompts_keep_going = true
-
-		while prompt_count < 50 and prompts_keep_going
-			integer prompt_pos = find_block_start(body, "\tprompt \"", prompt_scan_start)
-			if prompt_pos < 0
-				prompts_keep_going = false
-			else
-				string prompt_name = extract_quoted_name(body, prompt_pos + 8)
-				integer prompt_body_start = find_block_body_start(body, prompt_pos)
-				integer prompt_body_end = find_block_end_at_one_tab(body, prompt_body_start)
-				string prompt_body = body.substring(prompt_body_start, prompt_body_end)
-
-				string p_desc = extract_subconfig_value(prompt_body, "description")
-				string args_body = extract_params_body(prompt_body, "args")
-				string p_handler_body = extract_handler_body(prompt_body, args_body)
-
-				string p_args_json = build_prompt_args_json(args_body)
-				string p_list_entry = "{\"name\":\"" + prompt_name + "\",\"description\":\"" + json_escape_str(p_desc) + "\",\"arguments\":" + p_args_json + "}"
-				if prompt_count > 0
-					prompts_list_entries = prompts_list_entries + ","
-				prompts_list_entries = prompts_list_entries + p_list_entry
-
-				string p_fn_name = "__mcp_prompt_" + sanitize_name(prompt_name)
-
-				integer emit_p_err = emit_prompt_handler(ctx, p_fn_name, args_body, p_handler_body, prompt_name)
-				if emit_p_err != 0
-					return emit_p_err
-
-				string p_dispatch_case = prompt_name + "|" + p_fn_name
-				if prompts_dispatch_cases.length() > 0
-					prompts_dispatch_cases = prompts_dispatch_cases + "\n"
-				prompts_dispatch_cases = prompts_dispatch_cases + p_dispatch_case
-
-				prompt_scan_start = prompt_body_end
-				prompt_count = prompt_count + 1
-
-		// ── Emit the registration-list functions + dispatchers + __mcp_handle ──
-		string capabilities = build_capabilities_json(tool_count, resource_count, prompt_count)
-		integer post_err = emit_dispatcher_functions_batch(ctx, tools_list_entries, resources_list_entries, prompts_list_entries, tools_dispatch_cases, resources_dispatch_cases, prompts_dispatch_cases, server_name, server_version, capabilities)
-		if post_err != 0
-			return post_err
-
-		// ── Emit start: block into program start slot ──
-		integer start_err = emit_start_block(ctx, transport, http_port, http_host)
-		if start_err != 0
-			return start_err
-
-		// Sticky-error final check
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E001", "expand_mcp_typed: sticky-error tripped during emission")
-		return 0
-
-// ============================================================================
-// PREAMBLE BATCH EMISSION
-// ============================================================================
-
-functions:
-	integer emit_preamble_batch(integer ctx)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E002", "frame.mcp emit_preamble_batch: preamble helper batch failed")
-
-		integer fns_arr = arr0(ctx)
-
-		_batch_arrayPush(ctx, fns_arr, build_mcp_json_escape(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_mcp_extract_str(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_mcp_extract_str_default(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_mcp_extract_int(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_mcp_extract_int_default(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_mcp_extract_bool_str(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_json_helper(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_text_helper(ctx))
-		_batch_arrayPush(ctx, fns_arr, build_error_helper(ctx))
-
-		integer spec = _batch_spec(ctx, fns_arr)
-		// flags=2 → BFS root (helpers referenced only from plugin-emitted dispatch)
-		_emit_helpers_batch(ctx, spec, 2)
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E002", "emit_preamble_batch: sticky-error tripped")
-		return 0
-
-// ============================================================================
-// PER-TOOL/RESOURCE/PROMPT HANDLER EMISSION
-// ============================================================================
-// Each handler function is a batch of one function whose body is:
-//   [param extractor statements built via batch]
-//   [user-authored body passed through _emit_stmt_from_source]
-
-functions:
-	// Emit __mcp_tool_<name>(string __params_json) -> string
-	integer emit_tool_handler(integer ctx, string fn_name, string params_body, string handler_body, string diag_label)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E010", "frame.mcp emit_tool_handler failed for tool " + diag_label)
-
-		integer params = params1(ctx, "__params_json", "string")
-		integer body_arr = arr0(ctx)
-
-		// Emit param extractor statements (batch-built)
-		integer ext_err = emit_param_extractors_batch(ctx, params_body, "__params_json", body_arr)
-		if ext_err != 0
-			return ext_err
-
-		// Emit user body via _emit_stmt_from_source (§3.11 pass-through)
-		if handler_body.length() > 0
-			string reindented = reindent_handler_body(handler_body, 2)
-			integer user_stmt = _emit_stmt_from_source(ctx, reindented, 0)
-			if user_stmt == 0
-				_emit_error(ctx, 2, "FRAME-MCP-E011", "syntax error in tool handler body for " + diag_label, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
-				return 1
-			_batch_arrayPush(ctx, body_arr, user_stmt)
-
-		integer fns_arr = arr0(ctx)
-		_batch_arrayPush(ctx, fns_arr, _batch_func(ctx, fn_name, params, "string", body_arr))
-		integer spec = _batch_spec(ctx, fns_arr)
-		_emit_helpers_batch(ctx, spec, 2)
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E010", "emit_tool_handler sticky-error tripped for " + diag_label)
-		return 0
-
-	// Emit __mcp_resource_<uri>() -> string
-	integer emit_resource_handler(integer ctx, string fn_name, string handler_body, string diag_label)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E020", "frame.mcp emit_resource_handler failed for " + diag_label)
-
-		integer params = params0(ctx)
-		integer body_arr = arr0(ctx)
-
-		if handler_body.length() > 0
-			string reindented = reindent_handler_body(handler_body, 2)
-			integer user_stmt = _emit_stmt_from_source(ctx, reindented, 0)
-			if user_stmt == 0
-				_emit_error(ctx, 2, "FRAME-MCP-E021", "syntax error in resource handler body for " + diag_label, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
-				return 1
-			_batch_arrayPush(ctx, body_arr, user_stmt)
-
-		integer fns_arr = arr0(ctx)
-		_batch_arrayPush(ctx, fns_arr, _batch_func(ctx, fn_name, params, "string", body_arr))
-		integer spec = _batch_spec(ctx, fns_arr)
-		_emit_helpers_batch(ctx, spec, 2)
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E020", "emit_resource_handler sticky-error tripped for " + diag_label)
-		return 0
-
-	// Emit __mcp_prompt_<name>(string __args_json) -> string
-	integer emit_prompt_handler(integer ctx, string fn_name, string args_body, string handler_body, string diag_label)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E030", "frame.mcp emit_prompt_handler failed for " + diag_label)
-
-		integer params = params1(ctx, "__args_json", "string")
-		integer body_arr = arr0(ctx)
-
-		integer ext_err = emit_param_extractors_batch(ctx, args_body, "__args_json", body_arr)
-		if ext_err != 0
-			return ext_err
-
-		if handler_body.length() > 0
-			string reindented = reindent_handler_body(handler_body, 2)
-			integer user_stmt = _emit_stmt_from_source(ctx, reindented, 0)
-			if user_stmt == 0
-				_emit_error(ctx, 2, "FRAME-MCP-E031", "syntax error in prompt handler body for " + diag_label, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
-				return 1
-			_batch_arrayPush(ctx, body_arr, user_stmt)
-
-		integer fns_arr = arr0(ctx)
-		_batch_arrayPush(ctx, fns_arr, _batch_func(ctx, fn_name, params, "string", body_arr))
-		integer spec = _batch_spec(ctx, fns_arr)
-		_emit_helpers_batch(ctx, spec, 2)
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E030", "emit_prompt_handler sticky-error tripped for " + diag_label)
-		return 0
-
-// ============================================================================
-// PARAM EXTRACTOR EMISSION
-// ============================================================================
-// Emits per-param assignment statements into body_arr. Each param maps to:
-//   TYPE pname = __mcp_extract_TYPE(json_var, "pname"[, default])
-//
-// Handles: string, integer, number, boolean plus with/without default.
-
-functions:
-	integer emit_param_extractors_batch(integer ctx, string params_body, string json_var, integer body_arr)
+	integer p4(integer ctx, string n1, string t1, string n2, string t2, string n3, string t3, string n4, string t4)
+		integer a = p3(ctx, n1, t1, n2, t2, n3, t3)
+		_batch_arrayPush(ctx, a, _batch_param(ctx, n4, t4))
+		return a
+
+	// Prefix every line of src with one tab (nest it under an if/while).
+	string indent1(string src)
+		string out = ""
 		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < params_body.length()
-			safety = safety + 1
-			string from_scan = params_body.substring(scan, params_body.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
+		while scan < src.length()
+			integer nl = src.indexOf("\n", scan)
 			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			string trimmed = line.trim()
-			if trimmed.length() > 0
-				integer sp1 = trimmed.indexOf(" ")
-				if sp1 > 0
-					string ptype = trimmed.substring(0, sp1)
-					string rest_after_type = trimmed.substring(sp1 + 1, trimmed.length()).trim()
-					integer eq_pos = rest_after_type.indexOf(" = ")
-					string pname = ""
-					string pdefault = ""
-					boolean has_default = false
-					if eq_pos >= 0
-						pname = rest_after_type.substring(0, eq_pos).trim()
-						pdefault = rest_after_type.substring(eq_pos + 3, rest_after_type.length()).trim()
-						has_default = true
-					else
-						pname = rest_after_type.trim()
-
-					// Build the extraction expression and push assign stmt
-					integer stmt = build_extractor_stmt(ctx, ptype, pname, pdefault, has_default, json_var)
-					if stmt != 0
-						_batch_arrayPush(ctx, body_arr, stmt)
-			if nl < 0
-				scan = params_body.length()
-			else
-				scan = scan + nl + 1
-		return 0
-
-	// Build a single: TYPE pname = <extract call>(<json_var>, "pname"[, default])
-	// as a _batch_stmtVarDecl statement — declares a new local in the tool /
-	// resource / prompt handler body scope.
-	integer build_extractor_stmt(integer ctx, string ptype, string pname, string pdefault, boolean has_default, string json_var)
-		integer json_arg = id(ctx, json_var)
-		integer name_arg = sl(ctx, pname)
-		if ptype == "string"
-			if has_default
-				string clean_default = pdefault
-				if pdefault.startsWith("\"") and pdefault.length() >= 2
-					clean_default = pdefault.substring(1, pdefault.length() - 1)
-				integer def_arg = sl(ctx, clean_default)
-				integer call_e = call3(ctx, "__mcp_extract_str_default", json_arg, name_arg, def_arg)
-				return svardecl(ctx, pname, "string", call_e)
-			integer call_e = call2(ctx, "__mcp_extract_str", json_arg, name_arg)
-			return svardecl(ctx, pname, "string", call_e)
-		if ptype == "integer"
-			if has_default
-				integer dnum = pdefault.toInteger()
-				integer def_arg = il(ctx, dnum)
-				integer call_e = call3(ctx, "__mcp_extract_int_default", json_arg, name_arg, def_arg)
-				return svardecl(ctx, pname, "integer", call_e)
-			integer call_e = call2(ctx, "__mcp_extract_int", json_arg, name_arg)
-			return svardecl(ctx, pname, "integer", call_e)
-		if ptype == "number"
-			// number = __mcp_extract_int(...).toNumber()
-			integer call_e = call2(ctx, "__mcp_extract_int", json_arg, name_arg)
-			_batch_arrayPush(ctx, arr0(ctx), 0)
-			integer chain = _batch_call(ctx, "toNumber", arr1(ctx, call_e))
-			return svardecl(ctx, pname, "number", chain)
-		if ptype == "boolean"
-			// boolean = __mcp_extract_bool_str(...) == "true"
-			integer call_e = call2(ctx, "__mcp_extract_bool_str", json_arg, name_arg)
-			integer eq_e = _batch_binop(ctx, "==", call_e, sl(ctx, "true"))
-			return svardecl(ctx, pname, "boolean", eq_e)
-		// list<T> / any → treat as string
-		if has_default
-			integer def_arg = sl(ctx, pdefault)
-			integer call_e = call3(ctx, "__mcp_extract_str_default", json_arg, name_arg, def_arg)
-			return svardecl(ctx, pname, "string", call_e)
-		integer call_e = call2(ctx, "__mcp_extract_str", json_arg, name_arg)
-		return svardecl(ctx, pname, "string", call_e)
-
-// ============================================================================
-// DISPATCHER FUNCTIONS + __mcp_handle EMISSION (BATCH)
-// ============================================================================
-// Emits (in one _emit_helpers_batch call):
-//   __mcp_tools_list()        — string literal return
-//   __mcp_resources_list()    — string literal return
-//   __mcp_prompts_list()      — string literal return
-//   __mcp_dispatch_tool(name, __params_json, __req_id) -> string
-//   __mcp_dispatch_resource(uri, __req_id) -> string
-//   __mcp_dispatch_prompt(name, __args_json, __req_id) -> string
-//   __mcp_handle(__msg) -> string
-
-functions:
-	integer emit_dispatcher_functions_batch(integer ctx, string tools_list_json, string resources_list_json, string prompts_list_json, string tools_dispatch, string resources_dispatch, string prompts_dispatch, string server_name, string server_version, string capabilities)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E040", "frame.mcp emit_dispatcher_functions_batch failed")
-
-		integer fns_arr = arr0(ctx)
-
-		// __mcp_tools_list() → return "[<entries>]"
-		_batch_arrayPush(ctx, fns_arr, build_list_fn(ctx, "__mcp_tools_list", tools_list_json))
-		// __mcp_resources_list()
-		_batch_arrayPush(ctx, fns_arr, build_list_fn(ctx, "__mcp_resources_list", resources_list_json))
-		// __mcp_prompts_list()
-		_batch_arrayPush(ctx, fns_arr, build_list_fn(ctx, "__mcp_prompts_list", prompts_list_json))
-
-		// __mcp_dispatch_tool
-		_batch_arrayPush(ctx, fns_arr, build_dispatch_tool_fn(ctx, tools_dispatch))
-		// __mcp_dispatch_resource
-		_batch_arrayPush(ctx, fns_arr, build_dispatch_resource_fn(ctx, resources_dispatch))
-		// __mcp_dispatch_prompt
-		_batch_arrayPush(ctx, fns_arr, build_dispatch_prompt_fn(ctx, prompts_dispatch))
-
-		// __mcp_handle
-		_batch_arrayPush(ctx, fns_arr, build_mcp_handle_fn(ctx, server_name, server_version, capabilities))
-
-		integer spec = _batch_spec(ctx, fns_arr)
-		_emit_helpers_batch(ctx, spec, 2)
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E040", "emit_dispatcher_functions_batch sticky-error tripped")
-		return 0
-
-	// build_list_fn: fn_name() → return "[<entries>]"
-	integer build_list_fn(integer ctx, string fn_name, string entries_json)
-		integer params = params0(ctx)
-		integer body_arr = arr0(ctx)
-		string full = "[" + entries_json + "]"
-		_batch_arrayPush(ctx, body_arr, sret(ctx, sl(ctx, full)))
-		return _batch_func(ctx, fn_name, params, "string", body_arr)
-
-	// build_dispatch_tool_fn:
-	//   __mcp_dispatch_tool(name: string, __params_json: string, __req_id: string) -> string
-	//     result = ""
-	//     if name == "<t1>": result = __mcp_tool_<t1>(__params_json)
-	//     if name == "<t2>": result = __mcp_tool_<t2>(__params_json)
-	//     ...
-	//     if result == "": return "{...error...}"
-	//     return "{...jsonrpc result...}"
-	integer build_dispatch_tool_fn(integer ctx, string dispatch_lines)
-		integer params = params3(ctx, "name", "string", "__params_json", "string", "__req_id", "string")
-		integer body_arr = arr0(ctx)
-
-		// string result = ""
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "result", "string", sl(ctx, "")))
-
-		// Emit one if per tool dispatch case
-		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < dispatch_lines.length()
-			safety = safety + 1
-			string from_scan = dispatch_lines.substring(scan, dispatch_lines.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
+				nl = src.length()
+			string line = src.substring(scan, nl)
 			if line.length() > 0
-				integer bar = line.indexOf("|")
-				if bar > 0
-					string tname = line.substring(0, bar)
-					string fnm = line.substring(bar + 1, line.length())
-					integer cond = eq_id_sl(ctx, "name", tname)
-					integer call_e = call1(ctx, fnm, id(ctx, "__params_json"))
-					integer body_s = sassign(ctx, "result", call_e)
-					_batch_arrayPush(ctx, body_arr, sif1(ctx, cond, body_s))
-			if nl < 0
-				scan = dispatch_lines.length()
-			else
-				scan = scan + nl + 1
-
-		// if result == "": return err_json (built via string concat at runtime)
-		// return "{\"jsonrpc\":\"2.0\",\"id\":" + __req_id + ",\"error\":{\"code\":-32601,\"message\":\"Tool not found: " + name + "\"}}"
-		integer err_prefix = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer err_mid = sl(ctx, ",\"error\":{\"code\":-32601,\"message\":\"Tool not found: ")
-		integer err_suffix = sl(ctx, "\"}}")
-		integer e1 = concat(ctx, err_prefix, id(ctx, "__req_id"))
-		integer e2 = concat(ctx, e1, err_mid)
-		integer e3 = concat(ctx, e2, id(ctx, "name"))
-		integer err_full = concat(ctx, e3, err_suffix)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "result", ""), sret(ctx, err_full)))
-
-		// return "{\"jsonrpc\":\"2.0\",\"id\":" + __req_id + ",\"result\":{\"content\":[" + result + "]}}"
-		integer ok_prefix = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer ok_mid = sl(ctx, ",\"result\":{\"content\":[")
-		integer ok_suffix = sl(ctx, "]}}")
-		integer o1 = concat(ctx, ok_prefix, id(ctx, "__req_id"))
-		integer o2 = concat(ctx, o1, ok_mid)
-		integer o3 = concat(ctx, o2, id(ctx, "result"))
-		integer ok_full = concat(ctx, o3, ok_suffix)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, ok_full))
-
-		return _batch_func(ctx, "__mcp_dispatch_tool", params, "string", body_arr)
-
-	// build_dispatch_resource_fn:
-	//   __mcp_dispatch_resource(uri: string, __req_id: string) -> string
-	integer build_dispatch_resource_fn(integer ctx, string dispatch_lines)
-		integer params = params2(ctx, "uri", "string", "__req_id", "string")
-		integer body_arr = arr0(ctx)
-
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "result", "string", sl(ctx, "")))
-
-		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < dispatch_lines.length()
-			safety = safety + 1
-			string from_scan = dispatch_lines.substring(scan, dispatch_lines.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			if line.length() > 0
-				integer bar = line.indexOf("|")
-				if bar > 0
-					string ruri = line.substring(0, bar)
-					string fnm = line.substring(bar + 1, line.length())
-					integer cond = eq_id_sl(ctx, "uri", ruri)
-					integer call_e = call0(ctx, fnm)
-					integer body_s = sassign(ctx, "result", call_e)
-					_batch_arrayPush(ctx, body_arr, sif1(ctx, cond, body_s))
-			if nl < 0
-				scan = dispatch_lines.length()
-			else
-				scan = scan + nl + 1
-
-		// error json
-		integer err_prefix = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer err_mid = sl(ctx, ",\"error\":{\"code\":-32601,\"message\":\"Resource not found: ")
-		integer err_suffix = sl(ctx, "\"}}")
-		integer e1 = concat(ctx, err_prefix, id(ctx, "__req_id"))
-		integer e2 = concat(ctx, e1, err_mid)
-		integer e3 = concat(ctx, e2, id(ctx, "uri"))
-		integer err_full = concat(ctx, e3, err_suffix)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "result", ""), sret(ctx, err_full)))
-
-		// return "{...result: {\"contents\":[{\"uri\":\"" + uri + "\",\"mimeType\":\"application/json\",\"text\":" + result + "}]}}"
-		integer ok_p1 = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer ok_p2 = sl(ctx, ",\"result\":{\"contents\":[{\"uri\":\"")
-		integer ok_p3 = sl(ctx, "\",\"mimeType\":\"application/json\",\"text\":")
-		integer ok_p4 = sl(ctx, "}]}}")
-		integer o1 = concat(ctx, ok_p1, id(ctx, "__req_id"))
-		integer o2 = concat(ctx, o1, ok_p2)
-		integer o3 = concat(ctx, o2, id(ctx, "uri"))
-		integer o4 = concat(ctx, o3, ok_p3)
-		integer o5 = concat(ctx, o4, id(ctx, "result"))
-		integer ok_full = concat(ctx, o5, ok_p4)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, ok_full))
-
-		return _batch_func(ctx, "__mcp_dispatch_resource", params, "string", body_arr)
-
-	// build_dispatch_prompt_fn: __mcp_dispatch_prompt(name, __args_json, __req_id)
-	integer build_dispatch_prompt_fn(integer ctx, string dispatch_lines)
-		integer params = params3(ctx, "name", "string", "__args_json", "string", "__req_id", "string")
-		integer body_arr = arr0(ctx)
-
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "result", "string", sl(ctx, "")))
-
-		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < dispatch_lines.length()
-			safety = safety + 1
-			string from_scan = dispatch_lines.substring(scan, dispatch_lines.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			if line.length() > 0
-				integer bar = line.indexOf("|")
-				if bar > 0
-					string pname = line.substring(0, bar)
-					string fnm = line.substring(bar + 1, line.length())
-					integer cond = eq_id_sl(ctx, "name", pname)
-					integer call_e = call1(ctx, fnm, id(ctx, "__args_json"))
-					integer body_s = sassign(ctx, "result", call_e)
-					_batch_arrayPush(ctx, body_arr, sif1(ctx, cond, body_s))
-			if nl < 0
-				scan = dispatch_lines.length()
-			else
-				scan = scan + nl + 1
-
-		integer err_prefix = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer err_mid = sl(ctx, ",\"error\":{\"code\":-32601,\"message\":\"Prompt not found: ")
-		integer err_suffix = sl(ctx, "\"}}")
-		integer e1 = concat(ctx, err_prefix, id(ctx, "__req_id"))
-		integer e2 = concat(ctx, e1, err_mid)
-		integer e3 = concat(ctx, e2, id(ctx, "name"))
-		integer err_full = concat(ctx, e3, err_suffix)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "result", ""), sret(ctx, err_full)))
-
-		// return "{...result:{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":" + result + "}}]}}"
-		integer ok_p1 = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer ok_p2 = sl(ctx, ",\"result\":{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":")
-		integer ok_p3 = sl(ctx, "}}]}}")
-		integer o1 = concat(ctx, ok_p1, id(ctx, "__req_id"))
-		integer o2 = concat(ctx, o1, ok_p2)
-		integer o3 = concat(ctx, o2, id(ctx, "result"))
-		integer ok_full = concat(ctx, o3, ok_p3)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, ok_full))
-
-		return _batch_func(ctx, "__mcp_dispatch_prompt", params, "string", body_arr)
-
-	// build_mcp_handle_fn: the JSON-RPC 2.0 dispatcher
-	integer build_mcp_handle_fn(integer ctx, string server_name, string server_version, string capabilities)
-		integer params = params1(ctx, "__msg", "string")
-		integer body_arr = arr0(ctx)
-
-		// string __method = __mcp_extract_str(__msg, "method")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__method", "string", call2(ctx, "__mcp_extract_str", id(ctx, "__msg"), sl(ctx, "method"))))
-		// string __req_id = __mcp_extract_str(__msg, "id")
-		_batch_arrayPush(ctx, body_arr, svardecl(ctx, "__req_id", "string", call2(ctx, "__mcp_extract_str", id(ctx, "__msg"), sl(ctx, "id"))))
-
-		// if __method == "initialize": return "{...initialize response...}"
-		string init_resp = "{\"jsonrpc\":\"2.0\",\"id\":"
-		string init_mid = ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":" + capabilities + ",\"serverInfo\":{\"name\":\"" + server_name + "\",\"version\":\"" + server_version + "\"}}}"
-		integer i_p = sl(ctx, init_resp)
-		integer i_m = sl(ctx, init_mid)
-		integer i_e1 = concat(ctx, i_p, id(ctx, "__req_id"))
-		integer i_full = concat(ctx, i_e1, i_m)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "initialize"), sret(ctx, i_full)))
-
-		// if __method == "initialized": return ""
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "initialized"), sret(ctx, sl(ctx, ""))))
-
-		// if __method == "ping": return "{...ping...}"
-		integer ping_p = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer ping_s = sl(ctx, ",\"result\":{}}")
-		integer ping_e1 = concat(ctx, ping_p, id(ctx, "__req_id"))
-		integer ping_full = concat(ctx, ping_e1, ping_s)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "ping"), sret(ctx, ping_full)))
-
-		// if __method == "tools/list": return "{...tools/list...}"
-		integer tl_p = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer tl_m = sl(ctx, ",\"result\":{\"tools\":")
-		integer tl_s = sl(ctx, "}}")
-		integer tl_call = call0(ctx, "__mcp_tools_list")
-		integer tl_e1 = concat(ctx, tl_p, id(ctx, "__req_id"))
-		integer tl_e2 = concat(ctx, tl_e1, tl_m)
-		integer tl_e3 = concat(ctx, tl_e2, tl_call)
-		integer tl_full = concat(ctx, tl_e3, tl_s)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "tools/list"), sret(ctx, tl_full)))
-
-		// if __method == "tools/call":
-		//   __tool_name = __mcp_extract_str(__msg, "name")
-		//   __args_key = "\"arguments\":"
-		//   __args_pos = __msg.indexOf(__args_key)
-		//   __tool_params = "{}"
-		//   if __args_pos >= 0:
-		//     __args_start = __args_pos + __args_key.length()
-		//     __tool_params = __msg.substring(__args_start, __msg.length() - 1)
-		//   return __mcp_dispatch_tool(__tool_name, __tool_params, __req_id)
-		integer tc_body = arr0(ctx)
-		_batch_arrayPush(ctx, tc_body, svardecl(ctx, "__tool_name", "string", call2(ctx, "__mcp_extract_str", id(ctx, "__msg"), sl(ctx, "name"))))
-		_batch_arrayPush(ctx, tc_body, svardecl(ctx, "__args_key", "string", sl(ctx, "\"arguments\":")))
-		_batch_arrayPush(ctx, tc_body, svardecl(ctx, "__args_pos", "integer", methcall1(ctx, "__msg", "indexOf", id(ctx, "__args_key"))))
-		_batch_arrayPush(ctx, tc_body, svardecl(ctx, "__tool_params", "string", sl(ctx, "{}")))
-		// nested if body
-		integer nest_body = arr0(ctx)
-		integer args_len = methcall0(ctx, "__args_key", "length")
-		integer args_start_e = add(ctx, id(ctx, "__args_pos"), args_len)
-		_batch_arrayPush(ctx, nest_body, svardecl(ctx, "__args_start", "integer", args_start_e))
-		integer msg_len = methcall0(ctx, "__msg", "length")
-		integer msg_len_minus_one = _batch_binop(ctx, "-", msg_len, il(ctx, 1))
-		integer substr_e = methcall2(ctx, "__msg", "substring", id(ctx, "__args_start"), msg_len_minus_one)
-		_batch_arrayPush(ctx, nest_body, sassign(ctx, "__tool_params", substr_e))
-		integer nest_if = _batch_stmtIf(ctx, gte_id_il(ctx, "__args_pos", 0), nest_body, 0)
-		_batch_arrayPush(ctx, tc_body, nest_if)
-		_batch_arrayPush(ctx, tc_body, sret(ctx, call3(ctx, "__mcp_dispatch_tool", id(ctx, "__tool_name"), id(ctx, "__tool_params"), id(ctx, "__req_id"))))
-		integer tc_if = _batch_stmtIf(ctx, eq_id_sl(ctx, "__method", "tools/call"), tc_body, 0)
-		_batch_arrayPush(ctx, body_arr, tc_if)
-
-		// resources/list
-		integer rl_p = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer rl_m = sl(ctx, ",\"result\":{\"resources\":")
-		integer rl_s = sl(ctx, "}}")
-		integer rl_call = call0(ctx, "__mcp_resources_list")
-		integer rl_e1 = concat(ctx, rl_p, id(ctx, "__req_id"))
-		integer rl_e2 = concat(ctx, rl_e1, rl_m)
-		integer rl_e3 = concat(ctx, rl_e2, rl_call)
-		integer rl_full = concat(ctx, rl_e3, rl_s)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "resources/list"), sret(ctx, rl_full)))
-
-		// resources/read: __uri = extract_str("uri"); return dispatch_resource(__uri, __req_id)
-		integer rr_body = arr0(ctx)
-		_batch_arrayPush(ctx, rr_body, svardecl(ctx, "__uri", "string", call2(ctx, "__mcp_extract_str", id(ctx, "__msg"), sl(ctx, "uri"))))
-		_batch_arrayPush(ctx, rr_body, sret(ctx, call2(ctx, "__mcp_dispatch_resource", id(ctx, "__uri"), id(ctx, "__req_id"))))
-		integer rr_if = _batch_stmtIf(ctx, eq_id_sl(ctx, "__method", "resources/read"), rr_body, 0)
-		_batch_arrayPush(ctx, body_arr, rr_if)
-
-		// prompts/list
-		integer pl_p = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer pl_m = sl(ctx, ",\"result\":{\"prompts\":")
-		integer pl_s = sl(ctx, "}}")
-		integer pl_call = call0(ctx, "__mcp_prompts_list")
-		integer pl_e1 = concat(ctx, pl_p, id(ctx, "__req_id"))
-		integer pl_e2 = concat(ctx, pl_e1, pl_m)
-		integer pl_e3 = concat(ctx, pl_e2, pl_call)
-		integer pl_full = concat(ctx, pl_e3, pl_s)
-		_batch_arrayPush(ctx, body_arr, sif1(ctx, eq_id_sl(ctx, "__method", "prompts/list"), sret(ctx, pl_full)))
-
-		// prompts/get:
-		//   __prompt_name = extract_str("name")
-		//   __pargs_key = "\"arguments\":"
-		//   __pargs_pos = __msg.indexOf(__pargs_key)
-		//   __prompt_args = "{}"
-		//   if __pargs_pos >= 0: __pargs_start = ...; __prompt_args = __msg.substring(...)
-		//   return __mcp_dispatch_prompt(__prompt_name, __prompt_args, __req_id)
-		integer pg_body = arr0(ctx)
-		_batch_arrayPush(ctx, pg_body, svardecl(ctx, "__prompt_name", "string", call2(ctx, "__mcp_extract_str", id(ctx, "__msg"), sl(ctx, "name"))))
-		_batch_arrayPush(ctx, pg_body, svardecl(ctx, "__pargs_key", "string", sl(ctx, "\"arguments\":")))
-		_batch_arrayPush(ctx, pg_body, svardecl(ctx, "__pargs_pos", "integer", methcall1(ctx, "__msg", "indexOf", id(ctx, "__pargs_key"))))
-		_batch_arrayPush(ctx, pg_body, svardecl(ctx, "__prompt_args", "string", sl(ctx, "{}")))
-		integer pnest = arr0(ctx)
-		integer pargs_len = methcall0(ctx, "__pargs_key", "length")
-		integer pargs_start_e = add(ctx, id(ctx, "__pargs_pos"), pargs_len)
-		_batch_arrayPush(ctx, pnest, svardecl(ctx, "__pargs_start", "integer", pargs_start_e))
-		integer pmsg_len = methcall0(ctx, "__msg", "length")
-		integer pmsg_len_minus_one = _batch_binop(ctx, "-", pmsg_len, il(ctx, 1))
-		integer psubstr_e = methcall2(ctx, "__msg", "substring", id(ctx, "__pargs_start"), pmsg_len_minus_one)
-		_batch_arrayPush(ctx, pnest, sassign(ctx, "__prompt_args", psubstr_e))
-		integer pnest_if = _batch_stmtIf(ctx, gte_id_il(ctx, "__pargs_pos", 0), pnest, 0)
-		_batch_arrayPush(ctx, pg_body, pnest_if)
-		_batch_arrayPush(ctx, pg_body, sret(ctx, call3(ctx, "__mcp_dispatch_prompt", id(ctx, "__prompt_name"), id(ctx, "__prompt_args"), id(ctx, "__req_id"))))
-		integer pg_if = _batch_stmtIf(ctx, eq_id_sl(ctx, "__method", "prompts/get"), pg_body, 0)
-		_batch_arrayPush(ctx, body_arr, pg_if)
-
-		// Fallback: unknown method
-		// return "{\"jsonrpc\":\"2.0\",\"id\":" + __req_id + ",\"error\":{\"code\":-32601,\"message\":\"Method not found: " + __method + "\"}}"
-		integer uk_p = sl(ctx, "{\"jsonrpc\":\"2.0\",\"id\":")
-		integer uk_m = sl(ctx, ",\"error\":{\"code\":-32601,\"message\":\"Method not found: ")
-		integer uk_s = sl(ctx, "\"}}")
-		integer uk_e1 = concat(ctx, uk_p, id(ctx, "__req_id"))
-		integer uk_e2 = concat(ctx, uk_e1, uk_m)
-		integer uk_e3 = concat(ctx, uk_e2, id(ctx, "__method"))
-		integer uk_full = concat(ctx, uk_e3, uk_s)
-		_batch_arrayPush(ctx, body_arr, sret(ctx, uk_full))
-
-		return _batch_func(ctx, "__mcp_handle", params, "string", body_arr)
+				out = out + "\t" + line + "\n"
+			scan = nl + 1
+		return out
 
 // ============================================================================
-// START BLOCK EMISSION (typed statements into start slot)
+// DSL PARSING
 // ============================================================================
+// The compiler hands over the block body dedented to column 0. The parser
+// works on a normalized copy in which mcp: members sit at one tab:
+// primitive headers `\ttool "name":`, primitive members at two tabs,
+// params/args declarations at three.
 
 functions:
-	integer emit_start_block(integer ctx, string transport, string http_port, string http_host)
-		_ctx_set_error_context(ctx, "FRAME-MCP-E050", "frame.mcp emit_start_block failed")
-
-		if transport == "http"
-			// _mcp_http_serve(port, host)
-			integer port_i = http_port.toInteger()
-			integer serve_args = arr2(ctx, il(ctx, port_i), sl(ctx, http_host))
-			_emit_statement_into_start(ctx, _batch_stmtCall(ctx, "_mcp_http_serve", serve_args))
-
-			// boolean __http_running = true
-			_emit_statement_into_start(ctx, svardecl(ctx, "__http_running", "boolean", bl(ctx, true)))
-
-			// while __http_running:
-			//   __req = _mcp_http_accept()
-			//   if __req.length() > 0:
-			//     __resp = __mcp_handle(__req)
-			//     if __resp.length() > 0:
-			//       _mcp_stdio_write(__resp)
-			integer wbody = arr0(ctx)
-			_batch_arrayPush(ctx, wbody, svardecl(ctx, "__req", "string", call0(ctx, "_mcp_http_accept")))
-			integer reqlen = methcall0(ctx, "__req", "length")
-			integer reqlen_gt0 = _batch_binop(ctx, ">", reqlen, il(ctx, 0))
-			integer inner1 = arr0(ctx)
-			_batch_arrayPush(ctx, inner1, svardecl(ctx, "__resp", "string", call1(ctx, "__mcp_handle", id(ctx, "__req"))))
-			integer resplen = methcall0(ctx, "__resp", "length")
-			integer resplen_gt0 = _batch_binop(ctx, ">", resplen, il(ctx, 0))
-			integer inner2 = arr0(ctx)
-			_batch_arrayPush(ctx, inner2, _batch_stmtCall(ctx, "_mcp_stdio_write", arr1(ctx, id(ctx, "__resp"))))
-			_batch_arrayPush(ctx, inner1, _batch_stmtIf(ctx, resplen_gt0, inner2, 0))
-			_batch_arrayPush(ctx, wbody, _batch_stmtIf(ctx, reqlen_gt0, inner1, 0))
-			_emit_statement_into_start(ctx, _batch_stmtWhile(ctx, id(ctx, "__http_running"), wbody))
-		else
-			// stdio (default)
-			// boolean __running = true
-			_emit_statement_into_start(ctx, svardecl(ctx, "__running", "boolean", bl(ctx, true)))
-
-			// while __running:
-			//   __msg = _mcp_stdio_read()
-			//   if __msg.length() == 0: __running = false
-			//   if __running:
-			//     __response = __mcp_handle(__msg)
-			//     if __response.length() > 0: _mcp_stdio_write(__response)
-			integer wbody = arr0(ctx)
-			_batch_arrayPush(ctx, wbody, svardecl(ctx, "__msg", "string", call0(ctx, "_mcp_stdio_read")))
-			integer msglen = methcall0(ctx, "__msg", "length")
-			integer msglen_eq0 = _batch_binop(ctx, "==", msglen, il(ctx, 0))
-			_batch_arrayPush(ctx, wbody, sif1(ctx, msglen_eq0, sassign(ctx, "__running", bl(ctx, false))))
-			integer inner_body = arr0(ctx)
-			_batch_arrayPush(ctx, inner_body, svardecl(ctx, "__response", "string", call1(ctx, "__mcp_handle", id(ctx, "__msg"))))
-			integer resplen = methcall0(ctx, "__response", "length")
-			integer resplen_gt0 = _batch_binop(ctx, ">", resplen, il(ctx, 0))
-			integer inner2 = arr0(ctx)
-			_batch_arrayPush(ctx, inner2, _batch_stmtCall(ctx, "_mcp_stdio_write", arr1(ctx, id(ctx, "__response"))))
-			_batch_arrayPush(ctx, inner_body, _batch_stmtIf(ctx, resplen_gt0, inner2, 0))
-			_batch_arrayPush(ctx, wbody, sif1(ctx, id(ctx, "__running"), _batch_stmtBlock(ctx, inner_body)))
-			_emit_statement_into_start(ctx, _batch_stmtWhile(ctx, id(ctx, "__running"), wbody))
-
-		if _ctx_had_error(ctx) != 0
-			return plugin_error(ctx, "FRAME-MCP-E050", "emit_start_block sticky-error tripped")
-		return 0
-
-// ============================================================================
-// DSL PARSING HELPERS (unchanged from v1)
-// ============================================================================
-
-functions:
-	string extract_server_name(string attributes)
-		string trimmed = attributes.trim()
-		integer open_q = trimmed.indexOf("\"")
-		if open_q < 0
-			return "mcp-server"
-		string after_open = trimmed.substring(open_q + 1, trimmed.length())
-		integer close_q = after_open.indexOf("\"")
-		if close_q < 0
-			return "mcp-server"
-		return after_open.substring(0, close_q)
-
-	string extract_config_value(string body, string key)
-		string search = "\t" + key + ": \""
-		integer pos = body.indexOf(search)
-		if pos < 0
-			return ""
-		integer val_start = pos + search.length()
-		string after = body.substring(val_start, body.length())
-		integer close_q = after.indexOf("\"")
-		if close_q < 0
-			return ""
-		return after.substring(0, close_q)
-
-	string extract_transport(string body)
-		string search = "\ttransport: "
-		integer pos = body.indexOf(search)
-		if pos < 0
-			return "stdio"
-		integer val_start = pos + search.length()
-		string after = body.substring(val_start, body.length())
-		integer nl = after.indexOf("\n")
-		string line = ""
+	// The line starting at offset `at`, without its newline.
+	string line_at(string text, integer at)
+		integer nl = text.indexOf("\n", at)
 		if nl < 0
-			line = after.trim()
-		else
-			line = after.substring(0, nl).trim()
-		if line.startsWith("http")
-			return "http"
-		return "stdio"
+			return text.substring(at, text.length())
+		return text.substring(at, nl)
 
-	string extract_transport_nested(string body, string key)
-		integer transport_pos = body.indexOf("\ttransport: http:")
-		if transport_pos < 0
+	integer next_line(string text, integer at)
+		integer nl = text.indexOf("\n", at)
+		if nl < 0
+			return text.length()
+		return nl + 1
+
+	// Number of leading tabs.
+	integer tabs(string line)
+		integer n = 0
+		while n < line.length() and line.substring(n, n + 1) == "\t"
+			n = n + 1
+		return n
+
+	boolean is_blank_or_comment(string line)
+		string t = line.trim()
+		return t == "" or t.startsWith("//")
+
+	// Primitive kind for a one-tab header line: tool, resource, prompt, or "".
+	string primitive_kind(string line)
+		if tabs(line) != 1
 			return ""
-		integer body_start = body.indexOf("\n", transport_pos)
-		if body_start < 0
-			return ""
-		body_start = body_start + 1
-		integer scan = body_start
-		integer len = body.length()
-		integer safety = 0
-		while safety < 64 and scan < len
-			safety = safety + 1
-			integer nl = body.indexOf("\n", scan)
-			string line = ""
-			integer next_scan = 0
-			if nl < 0
-				line = body.substring(scan, len)
-				next_scan = len
-			else
-				line = body.substring(scan, nl)
-				next_scan = nl + 1
-			if not line.startsWith("\t\t")
-				return ""
-			string trimmed = line.trim()
-			string prefix = key + ":"
-			if trimmed.startsWith(prefix)
-				string value = trimmed.substring(prefix.length(), trimmed.length()).trim()
-				if value.startsWith("\"") and value.endsWith("\"")
-					value = value.substring(1, value.length() - 1)
-				return value
-			scan = next_scan
+		string t = line.trim()
+		if t.startsWith("tool \"")
+			return "tool"
+		if t.startsWith("resource \"")
+			return "resource"
+		if t.startsWith("prompt \"")
+			return "prompt"
 		return ""
 
-	integer find_block_start(string body, string marker, integer scan_start)
-		string remaining = body.substring(scan_start, body.length())
-		integer rel_pos = remaining.indexOf(marker)
-		if rel_pos < 0
-			return -1
-		return scan_start + rel_pos
-
-	integer find_block_body_start(string body, integer header_pos)
-		string from_header = body.substring(header_pos, body.length())
-		integer nl = from_header.indexOf("\n")
-		if nl < 0
-			return body.length()
-		return header_pos + nl + 1
-
-	integer find_block_end_at_one_tab(string body, integer body_start)
-		string remaining = body.substring(body_start, body.length())
-		integer scan = 0
-		integer safety = 0
-		while safety < 2000 and scan < remaining.length()
-			safety = safety + 1
-			string from_scan = remaining.substring(scan, remaining.length())
-			integer nl = from_scan.indexOf("\n")
-			if nl < 0
-				return body.length()
-			integer line_start = scan + nl + 1
-			if line_start >= remaining.length()
-				return body.length()
-			string line_first = remaining.substring(line_start, line_start + 1)
-			if line_first == "\t"
-				if line_start + 1 < remaining.length()
-					string line_second = remaining.substring(line_start + 1, line_start + 2)
-					if line_second != "\t"
-						return body_start + line_start
-			else
-				return body_start + line_start
-			scan = line_start
-		return body.length()
-
-	string extract_subconfig_value(string block_body, string key)
-		string search = "\t\t" + key + ": \""
-		integer pos = block_body.indexOf(search)
-		if pos < 0
-			string search2 = "\t\t" + key + ": "
-			integer pos2 = block_body.indexOf(search2)
-			if pos2 < 0
-				return ""
-			integer start2 = pos2 + search2.length()
-			string after2 = block_body.substring(start2, block_body.length())
-			integer nl2 = after2.indexOf("\n")
-			if nl2 < 0
-				return after2.trim()
-			return after2.substring(0, nl2).trim()
-		integer val_start = pos + search.length()
-		string after = block_body.substring(val_start, block_body.length())
-		integer close_q = after.indexOf("\"")
+	string first_quoted(string s)
+		integer open_q = s.indexOf("\"")
+		if open_q < 0
+			return ""
+		integer close_q = s.indexOf("\"", open_q + 1)
 		if close_q < 0
 			return ""
-		return after.substring(0, close_q)
+		return s.substring(open_q + 1, close_q)
 
-	string extract_params_body(string block_body, string block_keyword)
-		string search = "\t\t" + block_keyword + ":\n"
-		integer pos = block_body.indexOf(search)
-		if pos < 0
-			return ""
-		integer params_content_start = pos + search.length()
-		string remaining = block_body.substring(params_content_start, block_body.length())
-		string result = ""
-		integer scan = 0
-		integer safety = 0
-		while safety < 200 and scan < remaining.length()
-			safety = safety + 1
-			string from_scan = remaining.substring(scan, remaining.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			if line.startsWith("\t\t\t")
-				result = result + line + "\n"
-				if nl < 0
-					scan = remaining.length()
-				else
-					scan = scan + nl + 1
-			else
-				scan = remaining.length()
-		return result
+	// Value of a `key: value` member; quoted values are unquoted and their
+	// \" \\ \n escapes resolved.
+	string member_value(string trimmed, string key)
+		string v = trimmed.substring(key.length() + 1, trimmed.length()).trim()
+		if v.length() >= 2 and v.startsWith("\"") and v.endsWith("\"")
+			v = v.substring(1, v.length() - 1)
+			v = v.replace("\\\\", "\0")
+			v = v.replace("\\\"", "\"")
+			v = v.replace("\\n", "\n")
+			v = v.replace("\0", "\\")
+		return v
 
-	string extract_handler_body(string block_body, string params_body)
-		string result = ""
-		string remaining = block_body
-		integer scan = 0
-		integer safety = 0
-		while safety < 500 and scan < remaining.length()
-			safety = safety + 1
-			string from_scan = remaining.substring(scan, remaining.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
+	// Re-indent the body so its least-indented lines sit at one tab.
+	string normalize_body(string body)
+		integer min_tabs = 99
+		integer pos = 0
+		while pos < body.length()
+			string line = line_at(body, pos)
+			if line.trim() != "" and tabs(line) < min_tabs
+				min_tabs = tabs(line)
+			pos = next_line(body, pos)
+		if min_tabs == 1 or min_tabs == 99
+			return body
+		string out = ""
+		pos = 0
+		while pos < body.length()
+			string line = line_at(body, pos)
+			if line.trim() == ""
+				out = out + "\n"
 			else
-				line = from_scan.substring(0, nl)
-			string trimmed_line = line.trim()
-			boolean skip = trimmed_line.startsWith("description:")
-			if trimmed_line == "params:" or trimmed_line == "args:"
-				skip = true
-			if line.startsWith("\t\t\t")
-				skip = true
-			if not skip and line.startsWith("\t\t") and trimmed_line.length() > 0
-				result = result + line + "\n"
-			if nl < 0
-				scan = remaining.length()
-			else
-				scan = scan + nl + 1
-		return result
+				out = out + "\t" + line.substring(min_tabs, line.length()) + "\n"
+			pos = next_line(body, pos)
+		return out
 
-	string extract_resource_handler_body(string block_body)
-		string result = ""
-		integer scan = 0
-		integer safety = 0
-		while safety < 500 and scan < block_body.length()
-			safety = safety + 1
-			string from_scan = block_body.substring(scan, block_body.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			string trimmed_line = line.trim()
-			boolean skip = trimmed_line.startsWith("description:") or trimmed_line.startsWith("mimeType:")
-			if not skip and line.startsWith("\t\t") and trimmed_line.length() > 0
-				result = result + line + "\n"
-			if nl < 0
-				scan = block_body.length()
-			else
-				scan = scan + nl + 1
-		return result
+	// Server name from the block attributes. The compiler passes them as
+	// JSON ({"model_name":"blog-tools"}); a raw `"blog-tools"` is accepted too.
+	string extract_server_name(string attributes)
+		string key = "\"model_name\":\""
+		integer k = attributes.indexOf(key)
+		if k >= 0
+			integer close_q = attributes.indexOf("\"", k + key.length())
+			if close_q < 0
+				return ""
+			return attributes.substring(k + key.length(), close_q)
+		return first_quoted(attributes)
 
-	// Re-indent handler body lines to remove leading indent (from \t\t block level
-	// down to column 0). _emit_stmt_from_source expects a fragment starting at
-	// column 0 (the compiler wraps it in a synthetic scope per §3.11).
-	string reindent_handler_body(string body, integer strip_tabs)
+	// Config section = one-tab lines before the first primitive header,
+	// including the two-tab lines of a nested `transport: http:` block.
+	string config_section(string body)
+		string out = ""
+		integer pos = 0
+		while pos < body.length()
+			string line = line_at(body, pos)
+			if primitive_kind(line) != ""
+				return out
+			out = out + line + "\n"
+			pos = next_line(body, pos)
+		return out
+
+	// One-tab config value (`version`, `description`, `transport`, `apiKey`).
+	string config_value(string body, string key)
+		string cfg = config_section(body)
+		integer pos = 0
+		while pos < cfg.length()
+			string line = line_at(cfg, pos)
+			if tabs(line) == 1
+				string t = line.trim()
+				if t.startsWith(key + ":")
+					return member_value(t, key)
+			pos = next_line(cfg, pos)
+		return ""
+
+	boolean has_config(string body, string key)
+		string cfg = config_section(body)
+		integer pos = 0
+		while pos < cfg.length()
+			string line = line_at(cfg, pos)
+			if tabs(line) == 1 and line.trim().startsWith(key + ":")
+				return true
+			pos = next_line(cfg, pos)
+		return false
+
+	// "stdio" or "http" (stdio when transport: is omitted — MCP-D001).
+	string transport_kind(string body)
+		string v = config_value(body, "transport")
+		if v.startsWith("http")
+			return "http"
+		if v == "" or v == "stdio"
+			return "stdio"
+		return "invalid:" + v
+
+	// port / host under `transport: http:`.
+	string http_attr(string body, string key)
+		string cfg = config_section(body)
+		integer pos = 0
+		boolean in_http = false
+		while pos < cfg.length()
+			string line = line_at(cfg, pos)
+			integer n = tabs(line)
+			string t = line.trim()
+			if n == 1
+				in_http = t.startsWith("transport:") and t.indexOf("http") > 0
+			else if in_http and n >= 2 and t.startsWith(key + ":")
+				return member_value(t, key)
+			pos = next_line(cfg, pos)
+		return ""
+
+	// Text of every primitive block as records terminated by "\0;" with
+	// fields separated by "\0,":  kind, name, block_text
+	// block_text holds the lines under the header (two tabs and deeper).
+	string collect_primitives(string body)
+		string out = ""
+		integer pos = 0
+		while pos < body.length()
+			string line = line_at(body, pos)
+			string kind = primitive_kind(line)
+			pos = next_line(body, pos)
+			if kind != ""
+				string name = first_quoted(line)
+				string block = ""
+				boolean going = true
+				while going and pos < body.length()
+					string bl = line_at(body, pos)
+					if bl.trim() != "" and tabs(bl) < 2
+						going = false
+					else
+						block = block + bl + "\n"
+						pos = next_line(body, pos)
+				out = out + kind + "\0," + name + "\0," + block + "\0;"
+		return out
+
+	string record_field(string record, integer index)
+		integer at = 0
+		integer i = 0
+		while i < index
+			at = record.indexOf("\0,", at) + 2
+			i = i + 1
+		integer stop = record.indexOf("\0,", at)
+		if stop < 0 or index == 2
+			return record.substring(at, record.length())
+		return record.substring(at, stop)
+
+	// Header member of a primitive block (`description`, `mimeType`).
+	string block_member(string block, string key)
+		string head = block_header(block)
+		integer pos = 0
+		while pos < head.length()
+			string line = line_at(head, pos)
+			string t = line.trim()
+			if tabs(line) == 2 and t.startsWith(key + ":")
+				return member_value(t, key)
+			pos = next_line(head, pos)
+		return ""
+
+	boolean header_line(string line, boolean in_decls)
+		if is_blank_or_comment(line)
+			return true
+		integer n = tabs(line)
+		string t = line.trim()
+		if n >= 3 and in_decls
+			return true
+		if n != 2
+			return false
+		return t.startsWith("description:") or t.startsWith("mimeType:") or t == "params:" or t == "args:"
+
+	// Header lines of a primitive block: description, mimeType, params/args
+	// declarations. Everything after the first other line is handler body.
+	string block_header(string block)
+		string out = ""
+		integer pos = 0
+		boolean in_decls = false
+		while pos < block.length()
+			string line = line_at(block, pos)
+			if not header_line(line, in_decls)
+				return out
+			string t = line.trim()
+			if tabs(line) == 2 and t != ""
+				in_decls = t == "params:" or t == "args:"
+			out = out + line + "\n"
+			pos = next_line(block, pos)
+		return out
+
+	// Handler body: the block minus its header, dedented to column 0.
+	string block_handler(string block)
+		string head = block_header(block)
+		string rest = block.substring(head.length(), block.length())
+		string out = ""
+		integer pos = 0
+		while pos < rest.length()
+			string line = line_at(rest, pos)
+			integer strip = tabs(line)
+			if strip > 2
+				strip = 2
+			if line.trim() != ""
+				out = out + line.substring(strip, line.length()) + "\n"
+			pos = next_line(rest, pos)
+		return out
+
+	// Which declaration section the block uses: "params", "args", or "".
+	string decl_keyword(string block)
+		string head = block_header(block)
+		if head.indexOf("\n\t\tparams:\n") >= 0 or head.startsWith("\t\tparams:\n")
+			return "params"
+		if head.indexOf("\n\t\targs:\n") >= 0 or head.startsWith("\t\targs:\n")
+			return "args"
+		return ""
+
+	// Declarations as lines `name\0type\0has_default\0default_src`.
+	// Accepts `name: type [= default]` (mcp.md §5.2) and
+	// `type name [= default]` (frame-mcp.ebnf param_decl).
+	string block_decls(string block)
+		string head = block_header(block)
+		string out = ""
+		integer pos = 0
+		boolean in_decls = false
+		while pos < head.length()
+			string line = line_at(head, pos)
+			string t = line.trim()
+			if tabs(line) == 2 and t != ""
+				in_decls = t == "params:" or t == "args:"
+			else if in_decls and tabs(line) >= 3 and not is_blank_or_comment(line)
+				out = out + parse_decl(t) + "\n"
+			pos = next_line(head, pos)
+		return out
+
+	string parse_decl(string decl)
+		string lhs = decl
+		string def_src = ""
+		string has_def = "0"
+		integer eq = decl.indexOf(" = ")
+		if eq >= 0
+			lhs = decl.substring(0, eq).trim()
+			def_src = decl.substring(eq + 3, decl.length()).trim()
+			has_def = "1"
+		string name = ""
+		string typ = ""
+		integer colon = lhs.indexOf(":")
+		if colon > 0
+			name = lhs.substring(0, colon).trim()
+			typ = lhs.substring(colon + 1, lhs.length()).trim()
+		else
+			integer sp = lhs.lastIndexOf(" ")
+			if sp > 0
+				typ = lhs.substring(0, sp).trim()
+				name = lhs.substring(sp + 1, lhs.length()).trim()
+			else
+				name = lhs
+		return name + "\0" + typ + "\0" + has_def + "\0" + def_src
+
+	string decl_field(string decl, integer index)
+		return record_field_n(decl, index, 4)
+
+	// Field `index` of a \0-separated record with `count` fields; the last
+	// field runs to the end of the record.
+	string record_field_n(string record, integer index, integer count)
+		integer at = 0
+		integer i = 0
+		while i < index
+			at = record.indexOf("\0", at) + 1
+			i = i + 1
+		integer stop = record.indexOf("\0", at)
+		if stop < 0 or index == count - 1
+			return record.substring(at, record.length())
+		return record.substring(at, stop)
+
+	boolean is_identifier(string s)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			boolean letter = (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or ch == "_"
+			boolean digit = ch >= "0" and ch <= "9"
+			if not letter and not (digit and i > 0)
+				return false
+			i = i + 1
+		return true
+
+	string sanitize_name(string name)
 		string result = ""
-		integer scan = 0
-		integer safety = 0
-		while safety < 500 and scan < body.length()
-			safety = safety + 1
-			string from_scan = body.substring(scan, body.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
+		integer i = 0
+		while i < name.length()
+			string ch = name.substring(i, i + 1)
+			boolean is_ok = (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9")
+			if is_ok
+				result = result + ch
 			else
-				line = from_scan.substring(0, nl)
-			// Strip up to strip_tabs leading tabs
-			integer stripped = 0
-			string remaining_line = line
-			while stripped < strip_tabs and remaining_line.startsWith("\t")
-				remaining_line = remaining_line.substring(1, remaining_line.length())
-				stripped = stripped + 1
-			result = result + remaining_line + "\n"
-			if nl < 0
-				scan = body.length()
-			else
-				scan = scan + nl + 1
+				result = result + "_"
+			i = i + 1
 		return result
 
 // ============================================================================
-// JSON SCHEMA GENERATION (unchanged from v1)
+// HANDLER BODY REWRITE
+// ============================================================================
+// `params.x` (tools, MCP-T002) and `args.x` (prompts, MCP-P004) become the
+// generated locals `__param_x` / `__arg_x`. Rewriting applies to code and to
+// {expr} interpolations inside string literals; plain string text is left
+// alone. In prompt bodies `{{ expr }}` (MCP-P003) becomes the core `{expr}`
+// interpolation.
+//
+// `mcpJson(value)` becomes `mcpJson(json.encode(value))` so the value is
+// serialized where its static type is known; json.encode through an `any`
+// parameter loses class layouts (models would serialize wrongly).
+
+functions:
+	boolean ident_char(string ch)
+		return (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_"
+
+	string rewrite_body(string src, string accessor, string local_prefix, boolean prompt_templates)
+		string out = ""
+		string pat = accessor + "."
+		boolean in_str = false
+		integer depth = 0
+		integer parens = 0
+		string wraps = ","
+		integer i = 0
+		integer n = src.length()
+		while i < n
+			string ch = src.substring(i, i + 1)
+			boolean code = not in_str or depth > 0
+			boolean at_word = i == 0 or not ident_char(src.substring(i - 1, i))
+			if in_str and depth == 0 and ch == "\\" and i + 1 < n
+				out = out + src.substring(i, i + 2)
+				i = i + 2
+			else if in_str and prompt_templates and depth == 0 and src.substring(i, i + 2) == "{{"
+				integer close = src.indexOf("}}", i + 2)
+				if close < 0
+					out = out + ch
+					i = i + 1
+				else
+					string inner = src.substring(i + 2, close).trim()
+					out = out + "{" + rewrite_body(inner, accessor, local_prefix, false) + "}"
+					i = close + 2
+			else if ch == "\""
+				if depth == 0
+					in_str = not in_str
+				out = out + ch
+				i = i + 1
+			else if in_str and ch == "{"
+				depth = depth + 1
+				out = out + ch
+				i = i + 1
+			else if in_str and depth > 0 and ch == "}"
+				depth = depth - 1
+				out = out + ch
+				i = i + 1
+			else if code and src.substring(i, i + pat.length()) == pat and at_word
+				out = out + local_prefix
+				i = i + pat.length()
+			else if not in_str and src.substring(i, i + 8) == "mcpJson(" and at_word
+				out = out + "mcpJson(json.encode("
+				wraps = wraps + parens.toString() + ","
+				parens = parens + 1
+				i = i + 8
+			else if not in_str and ch == "("
+				parens = parens + 1
+				out = out + ch
+				i = i + 1
+			else if not in_str and ch == ")"
+				parens = parens - 1
+				out = out + ch
+				string mark = "," + parens.toString() + ","
+				if wraps.endsWith(mark)
+					out = out + ")"
+					wraps = wraps.substring(0, wraps.length() - mark.length() + 1)
+				i = i + 1
+			else
+				out = out + ch
+				i = i + 1
+		return out
+
+// ============================================================================
+// JSON SCHEMA / LIST ENTRIES
 // ============================================================================
 
 functions:
-	string build_tool_json_schema(string params_body)
-		if params_body.trim() == ""
-			return "{\"type\":\"object\",\"properties\":{}}"
-		string properties = ""
-		string required_arr = ""
-		integer prop_count = 0
-		integer req_count = 0
-		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < params_body.length()
-			safety = safety + 1
-			string from_scan = params_body.substring(scan, params_body.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			string trimmed = line.trim()
-			if trimmed.length() > 0
-				integer sp1 = trimmed.indexOf(" ")
-				if sp1 > 0
-					string ptype = trimmed.substring(0, sp1)
-					string rest_after_type = trimmed.substring(sp1 + 1, trimmed.length()).trim()
-					integer eq_pos = rest_after_type.indexOf(" = ")
-					string pname = ""
-					boolean has_default = false
-					if eq_pos >= 0
-						pname = rest_after_type.substring(0, eq_pos).trim()
-						has_default = true
-					else
-						pname = rest_after_type.trim()
-					string schema_type = type_to_json_schema(ptype)
-					if prop_count > 0
-						properties = properties + ","
-					properties = properties + "\"" + pname + "\":" + schema_type
-					prop_count = prop_count + 1
-					if not has_default
-						if req_count > 0
-							required_arr = required_arr + ","
-						required_arr = required_arr + "\"" + pname + "\""
-						req_count = req_count + 1
-			if nl < 0
-				scan = params_body.length()
-			else
-				scan = scan + nl + 1
-		string schema = "{\"type\":\"object\",\"properties\":{" + properties + "}"
-		if req_count > 0
-			schema = schema + ",\"required\":[" + required_arr + "]"
-		schema = schema + "}"
-		return schema
-
 	string type_to_json_schema(string clean_type)
 		if clean_type == "string"
 			return "{\"type\":\"string\"}"
@@ -1689,149 +610,554 @@ functions:
 			return "{\"type\":\"array\",\"items\":{\"type\":\"number\"}}"
 		if clean_type == "list<boolean>"
 			return "{\"type\":\"array\",\"items\":{\"type\":\"boolean\"}}"
-		if clean_type == "list<any>"
+		if clean_type.startsWith("list<")
 			return "{\"type\":\"array\"}"
 		return "{\"type\":\"object\"}"
 
-	string build_prompt_args_json(string args_body)
-		if args_body.trim() == ""
-			return "[]"
+	string build_input_schema(string decls)
+		string props = ""
+		string required = ""
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			if d != ""
+				string name = decl_field(d, 0)
+				if props != ""
+					props = props + ","
+				props = props + jstr(name) + ":" + type_to_json_schema(decl_field(d, 1))
+				if decl_field(d, 2) == "0"
+					if required != ""
+						required = required + ","
+					required = required + jstr(name)
+			pos = next_line(decls, pos)
+		string schema = "{\"type\":\"object\",\"properties\":{" + props + "}"
+		if required != ""
+			schema = schema + ",\"required\":[" + required + "]"
+		return schema + "}"
+
+	string build_prompt_arguments(string decls)
 		string entries = ""
-		integer count = 0
-		integer scan = 0
-		integer safety = 0
-		while safety < 100 and scan < args_body.length()
-			safety = safety + 1
-			string from_scan = args_body.substring(scan, args_body.length())
-			integer nl = from_scan.indexOf("\n")
-			string line = ""
-			if nl < 0
-				line = from_scan
-			else
-				line = from_scan.substring(0, nl)
-			string trimmed = line.trim()
-			if trimmed.length() > 0
-				integer sp1 = trimmed.indexOf(" ")
-				if sp1 > 0
-					string rest_after_type = trimmed.substring(sp1 + 1, trimmed.length()).trim()
-					integer eq_pos = rest_after_type.indexOf(" = ")
-					string aname = ""
-					boolean has_default = false
-					if eq_pos >= 0
-						aname = rest_after_type.substring(0, eq_pos).trim()
-						has_default = true
-					else
-						aname = rest_after_type.trim()
-					string required_field = "true"
-					if has_default
-						required_field = "false"
-					if count > 0
-						entries = entries + ","
-					entries = entries + "{\"name\":\"" + aname + "\",\"required\":" + required_field + "}"
-					count = count + 1
-			if nl < 0
-				scan = args_body.length()
-			else
-				scan = scan + nl + 1
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			if d != ""
+				string req = "true"
+				if decl_field(d, 2) == "1"
+					req = "false"
+				if entries != ""
+					entries = entries + ","
+				entries = entries + "{\"name\":" + jstr(decl_field(d, 0)) + ",\"required\":" + req + "}"
+			pos = next_line(decls, pos)
 		return "[" + entries + "]"
 
 	string build_capabilities_json(integer tool_count, integer resource_count, integer prompt_count)
-		string caps = "{"
-		boolean first = true
+		string caps = ""
 		if tool_count > 0
-			caps = caps + "\\\"tools\\\":{\\\"listChanged\\\":false}"
-			first = false
+			caps = "\"tools\":{\"listChanged\":false}"
 		if resource_count > 0
-			if not first
+			if caps != ""
 				caps = caps + ","
-			caps = caps + "\\\"resources\\\":{\\\"subscribe\\\":false,\\\"listChanged\\\":false}"
-			first = false
+			caps = caps + "\"resources\":{\"subscribe\":false,\"listChanged\":false}"
 		if prompt_count > 0
-			if not first
+			if caps != ""
 				caps = caps + ","
-			caps = caps + "\\\"prompts\\\":{\\\"listChanged\\\":false}"
-		caps = caps + "}"
-		return caps
+			caps = caps + "\"prompts\":{\"listChanged\":false}"
+		return "{" + caps + "}"
+
+	// MCP-D003: explicit mimeType wins; otherwise mcpText() bodies are
+	// text/plain and everything else application/json.
+	string resource_mime(string block)
+		string declared = block_member(block, "mimeType")
+		if declared != ""
+			return declared
+		string handler = block_handler(block)
+		if handler.indexOf("mcpText(") >= 0 and handler.indexOf("mcpJson(") < 0
+			return "text/plain"
+		return "application/json"
 
 // ============================================================================
-// SANITIZATION AND UTILITIES (unchanged from v1)
-// ============================================================================
-
-functions:
-	string sanitize_name(string name)
-		string result = ""
-		integer i = 0
-		integer safety = 0
-		while safety < 200 and i < name.length()
-			safety = safety + 1
-			string ch = name.substring(i, i + 1)
-			boolean is_ok = (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_"
-			if is_ok
-				result = result + ch
-			else
-				result = result + "_"
-			i = i + 1
-		return result
-
-	string sanitize_uri(string uri)
-		return sanitize_name(uri)
-
-	string json_escape_str(string s)
-		string r = s.replace("\\", "\\\\")
-		r = r.replace("\"", "\\\"")
-		r = r.replace("\n", "\\n")
-		r = r.replace("\r", "\\r")
-		r = r.replace("\t", "\\t")
-		return r
-
-	string extract_quoted_name(string body, integer quote_start)
-		string from_here = body.substring(quote_start, body.length())
-		integer open_q = from_here.indexOf("\"")
-		if open_q < 0
-			return ""
-		string after_open = from_here.substring(open_q + 1, from_here.length())
-		integer close_q = after_open.indexOf("\"")
-		if close_q < 0
-			return ""
-		return after_open.substring(0, close_q)
-
-// ============================================================================
-// VALIDATION (unchanged from v1)
+// GENERATED RUNTIME HELPERS
 // ============================================================================
 
 functions:
-	string validate_mcp(string attributes, string body)
+	integer emit_runtime_helpers(integer ctx)
+		// mcpJson(value) — value serialized to compact JSON, carried as the
+		// text of an MCP text content block (mcp.md §10). Handler bodies are
+		// rewritten to pass json.encode(value) (see rewrite_body).
+		string src = tpl("return '{~type~:~text~,~text~:' + json.encode(encoded) + '}'\n")
+		if emit_src_function(ctx, "mcpJson", p1(ctx, "encoded", "string"), "string", src) != 0
+			return 1
+
+		src = tpl("return '{~type~:~text~,~text~:' + json.encode(message) + '}'\n")
+		if emit_src_function(ctx, "mcpText", p1(ctx, "message", "string"), "string", src) != 0
+			return 1
+
+		// mcpError(message, code = "") — isError tool result. A code is
+		// carried in _meta.errorCode (mcp.md §10).
+		src = tpl("string __result = '{~isError~:true,~content~:[{~type~:~text~,~text~:' + json.encode(message) + '}]'\nif code != ''\n\t__result = __result + ',~_meta~:{~errorCode~:' + json.encode(code) + '}'\nreturn __result + '}'\n")
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		integer str_t1 = _type_string(ctx)
+		integer str_t2 = _type_string(ctx)
+		integer str_t3 = _type_string(ctx)
+		integer def_h = _emit_expr_from_source(ctx, "\"\"", 0)
+		if body_h == 0 or def_h == 0
+			return plugin_error(ctx, "FRAME-MCP-E002", "frame.mcp: mcpError helper failed to build")
+		string params_json = "[{\"name\":\"message\",\"type_handle\":" + str_t1.toString() + "},{\"name\":\"code\",\"type_handle\":" + str_t2.toString() + ",\"default_expr_handle\":" + def_h.toString() + "}]"
+		if _emit_function(ctx, "mcpError", params_json, str_t3, body_h, 2) != 0
+			return plugin_error(ctx, "FRAME-MCP-E002", "frame.mcp: mcpError helper failed to emit")
+
+		src = tpl("return result.startsWith('{~isError~:true')\n")
+		if emit_src_function(ctx, "__mcp_is_error", p1(ctx, "result", "string"), "boolean", src) != 0
+			return 1
+
+		src = tpl("return '{~jsonrpc~:~2.0~,~id~:' + id + ',~result~:' + result + '}'\n")
+		if emit_src_function(ctx, "__mcp_ok", p2(ctx, "id", "string", "result", "string"), "string", src) != 0
+			return 1
+
+		src = tpl("return '{~jsonrpc~:~2.0~,~id~:' + id + ',~error~:{~code~:' + code.toString() + ',~message~:' + json.encode(message) + '}}'\n")
+		if emit_src_function(ctx, "__mcp_err", p3(ctx, "id", "string", "code", "integer", "message", "string"), "string", src) != 0
+			return 1
+
+		// Message text of an mcpError() result.
+		src = tpl("string __text = json.get(result, 'content.0.text')\nreturn __text\n")
+		if emit_src_function(ctx, "__mcp_error_text", p1(ctx, "result", "string"), "string", src) != 0
+			return 1
+
+		// JSON text of a value: "null" when absent.
+		src = tpl("any __value = json.get(data, key)\nreturn json.encode(__value)\n")
+		if emit_src_function(ctx, "__mcp_value_json", p2(ctx, "data", "any", "key", "string"), "string", src) != 0
+			return 1
+
+		// Validation of one tool param (MCP-T001): "" when acceptable,
+		// otherwise the -32602 message.
+		src = "string __enc = __mcp_value_json(data, key)\n"
+		src = src + tpl("if __enc == 'null'\n\tif required\n\t\treturn 'Missing required param: ' + key\n\treturn ''\n")
+		src = src + tpl("string __first = __enc.substring(0, 1)\n")
+		src = src + tpl("boolean __numeric = __first == '-' or (__first >= '0' and __first <= '9')\n")
+		src = src + tpl("if type == 'string' and __first != '~'\n\treturn 'Param ' + key + ' must be a string'\n")
+		src = src + tpl("if type == 'boolean' and __enc != 'true' and __enc != 'false'\n\treturn 'Param ' + key + ' must be a boolean'\n")
+		src = src + tpl("if type == 'number' and not __numeric\n\treturn 'Param ' + key + ' must be a number'\n")
+		src = src + tpl("if type == 'integer' and (not __numeric or __enc.indexOf('.') >= 0 or __enc.indexOf('e') >= 0 or __enc.indexOf('E') >= 0)\n\treturn 'Param ' + key + ' must be an integer'\n")
+		src = src + tpl("if type.startsWith('list') and __first != '['\n\treturn 'Param ' + key + ' must be an array'\n")
+		src = src + "return \"\"\n"
+		if emit_src_function(ctx, "__mcp_check_param", p4(ctx, "data", "any", "key", "string", "type", "string", "required", "boolean"), "string", src) != 0
+			return 1
+		return 0
+
+	integer plugin_error(integer ctx, string code, string message)
+		_emit_error(ctx, 2, code, message, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+		return 1
+
+// ============================================================================
+// PER-PRIMITIVE HANDLER EMISSION
+// ============================================================================
+
+functions:
+	// Statements that bind each declaration to `<prefix><name>`. Values are
+	// read from `__data` (decoded arguments object). Optional declarations
+	// keep their default expression when the key is absent.
+	string binding_source(string decls, string prefix)
+		string src = ""
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			if d != ""
+				string name = decl_field(d, 0)
+				string typ = decl_field(d, 1)
+				string local = prefix + name
+				string raw = "__raw_" + name
+				string ltype = typ
+				string conv = raw
+				if typ == "integer"
+					conv = raw + ".toInteger()"
+				else if typ == "number"
+					conv = raw + ".toNumber()"
+				else if typ == "boolean"
+					conv = raw + " == \"true\""
+				else if typ != "string"
+					ltype = "any"
+				if ltype == "any"
+					string init = "json.get(__data, " + clit(name) + ")"
+					if decl_field(d, 2) == "1"
+						src = src + "any " + local + " = " + decl_field(d, 3) + "\n"
+						src = src + "if __mcp_value_json(__data, " + clit(name) + ") != \"null\"\n"
+						src = src + "\t" + local + " = " + init + "\n"
+					else
+						src = src + "any " + local + " = " + init + "\n"
+				else if decl_field(d, 2) == "1"
+					src = src + ltype + " " + local + " = " + decl_field(d, 3) + "\n"
+					src = src + "if __mcp_value_json(__data, " + clit(name) + ") != \"null\"\n"
+					src = src + "\tstring " + raw + " = json.get(__data, " + clit(name) + ")\n"
+					src = src + "\t" + local + " = " + conv + "\n"
+				else
+					src = src + "string " + raw + " = json.get(__data, " + clit(name) + ")\n"
+					src = src + ltype + " " + local + " = " + conv + "\n"
+			pos = next_line(decls, pos)
+		return src
+
+	integer emit_handler(integer ctx, string fn_name, string kind, string block, string label)
+		string handler = block_handler(block)
+		if handler == ""
+			return plugin_error(ctx, "FRAME-MCP-E011", kind + " " + label + " has no handler body — it must return a response")
+		string decls = block_decls(block)
+		string src = ""
+		integer params = 0
+		if kind == "tool"
+			src = "any __data = json.textToData(__args_json)\n" + binding_source(decls, "__param_")
+			src = src + rewrite_body(handler, "params", "__param_", false)
+			params = p1(ctx, "__args_json", "string")
+		else if kind == "prompt"
+			src = "any __data = json.textToData(__args_json)\n" + binding_source(decls, "__arg_")
+			src = src + rewrite_body(handler, "args", "__arg_", true)
+			params = p1(ctx, "__args_json", "string")
+		else
+			src = rewrite_body(handler, "\0", "", false)
+			params = p0(ctx)
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if body_h == 0
+			return plugin_error(ctx, "FRAME-MCP-E011", "syntax error in " + kind + " handler body for " + label)
+		integer fns = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, fns, _batch_func2(ctx, fn_name, params, "string", 0, body_h))
+		_emit_helpers_batch(ctx, _batch_spec(ctx, fns), 2)
+		if _ctx_had_error(ctx) != 0
+			return plugin_error(ctx, "FRAME-MCP-E010", "frame.mcp: emission failed for " + kind + " " + label)
+		return 0
+
+	// Dispatcher case for one tool: validate params, run, wrap the result.
+	string tool_case(string name, string fn_name, string decls)
+		string body = "string __problem = \"\"\n"
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			if d != ""
+				string req = "true"
+				if decl_field(d, 2) == "1"
+					req = "false"
+				body = body + "if __problem == \"\"\n\t__problem = __mcp_check_param(__data, " + clit(decl_field(d, 0)) + ", " + clit(decl_field(d, 1)) + ", " + req + ")\n"
+			pos = next_line(decls, pos)
+		body = body + "if __problem != \"\"\n\treturn __mcp_err(id, -32602, __problem)\n"
+		body = body + "string __result = " + fn_name + "(arguments)\n"
+		body = body + "if __mcp_is_error(__result)\n\treturn __mcp_ok(id, __result)\n"
+		body = body + tpl("return __mcp_ok(id, '{~content~:[' + __result + ']}')\n")
+		return "if name == " + clit(name) + "\n" + indent1(body)
+
+	string resource_case(string uri, string fn_name, string mime)
+		string body = "string __result = " + fn_name + "()\n"
+		body = body + "if __mcp_is_error(__result)\n\treturn __mcp_err(id, -32603, __mcp_error_text(__result))\n"
+		body = body + "string __text = json.get(__result, \"text\")\n"
+		string head = "{\"contents\":[{\"uri\":" + jstr(uri) + ",\"mimeType\":" + jstr(mime) + ",\"text\":"
+		body = body + "return __mcp_ok(id, " + clit(head) + " + json.encode(__text) + \"}]}\")\n"
+		return "if uri == " + clit(uri) + "\n" + indent1(body)
+
+	string prompt_case(string name, string fn_name, string desc, string decls)
+		string body = "string __problem = \"\"\n"
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			if d != "" and decl_field(d, 2) == "0"
+				body = body + "if __problem == \"\" and __mcp_value_json(__data, " + clit(decl_field(d, 0)) + ") == \"null\"\n\t__problem = " + clit("Missing required argument: " + decl_field(d, 0)) + "\n"
+			pos = next_line(decls, pos)
+		body = body + "if __problem != \"\"\n\treturn __mcp_err(id, -32602, __problem)\n"
+		body = body + "string __result = " + fn_name + "(arguments)\n"
+		body = body + "if __mcp_is_error(__result)\n\treturn __mcp_err(id, -32603, __mcp_error_text(__result))\n"
+		string head = "{\"description\":" + jstr(desc) + ",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":"
+		body = body + "return __mcp_ok(id, " + clit(head) + " + json.encode(__result) + \"}}]}\")\n"
+		return "if name == " + clit(name) + "\n" + indent1(body)
+
+// ============================================================================
+// MAIN EXPAND
+// ============================================================================
+
+functions:
+	integer expand_mcp_typed(integer ctx, string attributes, string raw_body)
+		string body = normalize_body(raw_body)
+		_ctx_set_error_context(ctx, "FRAME-MCP-E001", "frame.mcp expand_mcp_typed failed during typed emission")
+		string problem = validate_mcp(attributes, body)
+		if problem != ""
+			return plugin_error(ctx, "FRAME-MCP-E003", problem)
+
 		string server_name = extract_server_name(attributes)
-		if server_name == "mcp-server"
-			if attributes.trim() == ""
-				return "mcp: block must have a quoted server name: mcp \"my-server\":"
+		string server_version = config_value(body, "version")
+		if server_version == ""
+			server_version = "1.0.0"
+		string server_desc = config_value(body, "description")
 
-		string transport = extract_transport(body)
-		if transport != "stdio" and transport != "http"
-			return "mcp: block must declare transport: stdio or transport: http:"
+		if emit_runtime_helpers(ctx) != 0
+			return 1
 
-		integer tool_pos = find_block_start(body, "\ttool \"", 0)
-		integer resource_pos = find_block_start(body, "\tresource \"", 0)
-		integer prompt_pos = find_block_start(body, "\tprompt \"", 0)
-		if tool_pos < 0 and resource_pos < 0 and prompt_pos < 0
-			return "mcp: block must contain at least one tool, resource, or prompt declaration"
+		string tools_json = ""
+		string resources_json = ""
+		string prompts_json = ""
+		string tool_cases = ""
+		string resource_cases = ""
+		string prompt_cases = ""
+		integer tool_count = 0
+		integer resource_count = 0
+		integer prompt_count = 0
 
-		integer t_scan = 0
-		integer t_count = 0
-		boolean t_going = true
-		while t_count < 50 and t_going
-			integer tpos = find_block_start(body, "\ttool \"", t_scan)
-			if tpos < 0
-				t_going = false
+		string prims = collect_primitives(body)
+		integer pos = 0
+		while pos < prims.length()
+			integer stop = prims.indexOf("\0;", pos)
+			string rec = prims.substring(pos, stop)
+			pos = stop + 2
+			string kind = record_field(rec, 0)
+			string name = record_field(rec, 1)
+			string block = record_field(rec, 2)
+			string desc = block_member(block, "description")
+			string decls = block_decls(block)
+			if kind == "tool"
+				string fn_name = "__mcp_tool_" + sanitize_name(name)
+				if emit_handler(ctx, fn_name, kind, block, name) != 0
+					return 1
+				if tool_count > 0
+					tools_json = tools_json + ","
+				tools_json = tools_json + "{\"name\":" + jstr(name) + ",\"description\":" + jstr(desc) + ",\"inputSchema\":" + build_input_schema(decls) + "}"
+				tool_cases = tool_cases + tool_case(name, fn_name, decls)
+				tool_count = tool_count + 1
+			else if kind == "resource"
+				string fn_name = "__mcp_resource_" + sanitize_name(name)
+				if emit_handler(ctx, fn_name, kind, block, name) != 0
+					return 1
+				string mime = resource_mime(block)
+				if resource_count > 0
+					resources_json = resources_json + ","
+				resources_json = resources_json + "{\"uri\":" + jstr(name) + ",\"name\":" + jstr(name) + ",\"description\":" + jstr(desc) + ",\"mimeType\":" + jstr(mime) + "}"
+				resource_cases = resource_cases + resource_case(name, fn_name, mime)
+				resource_count = resource_count + 1
 			else
-				integer tb_start = find_block_body_start(body, tpos)
-				integer tb_end = find_block_end_at_one_tab(body, tb_start)
-				string tb = body.substring(tb_start, tb_end)
-				string tdesc = extract_subconfig_value(tb, "description")
-				if tdesc == ""
-					string tname = extract_quoted_name(body, tpos + 6)
-					return "tool \"" + tname + "\" must have a description: field"
-				t_scan = tb_end
-				t_count = t_count + 1
+				string fn_name = "__mcp_prompt_" + sanitize_name(name)
+				if emit_handler(ctx, fn_name, kind, block, name) != 0
+					return 1
+				if prompt_count > 0
+					prompts_json = prompts_json + ","
+				prompts_json = prompts_json + "{\"name\":" + jstr(name) + ",\"description\":" + jstr(desc) + ",\"arguments\":" + build_prompt_arguments(decls) + "}"
+				prompt_cases = prompt_cases + prompt_case(name, fn_name, desc, decls)
+				prompt_count = prompt_count + 1
 
+		// Dispatchers. Each receives the JSON-RPC id (raw JSON text).
+		string src = "any __data = json.textToData(arguments)\n" + tool_cases + "return __mcp_err(id, -32602, \"Unknown tool: \" + name)\n"
+		if emit_src_function(ctx, "__mcp_call_tool", p3(ctx, "id", "string", "name", "string", "arguments", "string"), "string", src) != 0
+			return 1
+		src = resource_cases + "return __mcp_err(id, -32002, \"Resource not found: \" + uri)\n"
+		if emit_src_function(ctx, "__mcp_read_resource", p2(ctx, "id", "string", "uri", "string"), "string", src) != 0
+			return 1
+		src = "any __data = json.textToData(arguments)\n" + prompt_cases + "return __mcp_err(id, -32602, \"Unknown prompt: \" + name)\n"
+		if emit_src_function(ctx, "__mcp_get_prompt", p3(ctx, "id", "string", "name", "string", "arguments", "string"), "string", src) != 0
+			return 1
+
+		string init_tail = "\",\"capabilities\":" + build_capabilities_json(tool_count, resource_count, prompt_count) + ",\"serverInfo\":{\"name\":" + jstr(server_name) + ",\"version\":" + jstr(server_version) + "}"
+		if server_desc != ""
+			init_tail = init_tail + ",\"instructions\":" + jstr(server_desc)
+		init_tail = init_tail + "}"
+		if emit_handle_function(ctx, init_tail, "[" + tools_json + "]", "[" + resources_json + "]", "[" + prompts_json + "]") != 0
+			return 1
+
+		if emit_transport_loop(ctx, body) != 0
+			return 1
+		if _ctx_had_error(ctx) != 0
+			return plugin_error(ctx, "FRAME-MCP-E001", "expand_mcp_typed: sticky-error tripped during emission")
+		return 0
+
+	// __mcp_handle(message) — the JSON-RPC 2.0 entry point. Returns the
+	// response JSON, or "" for notifications (requests without an id).
+	integer emit_handle_function(integer ctx, string init_tail, string tools_json, string resources_json, string prompts_json)
+		string src = "any __req = json.tryTextToData(message)\n"
+		src = src + "string __reqtext = json.encode(__req)\n"
+		src = src + tpl("if not __reqtext.startsWith('{')\n\treturn __mcp_err('null', -32700, 'Parse error')\n")
+		src = src + "any __idv = json.get(__req, \"id\")\n"
+		src = src + "string __id = json.encode(__idv)\n"
+		src = src + "string __method = json.get(__req, \"method\")\n"
+		src = src + tpl("if __id == 'null'\n\treturn ''\n")
+		src = src + tpl("if __method == ''\n\treturn __mcp_err(__id, -32600, 'Invalid Request')\n")
+		src = src + tpl("if __method == 'initialize'\n\tstring __pv = json.get(__req, 'params.protocolVersion')\n\tif __pv != '2024-11-05' and __pv != '2025-03-26' and __pv != '2025-06-18'\n\t\t__pv = '2024-11-05'\n")
+		src = src + "\treturn __mcp_ok(__id, " + tpl("'{~protocolVersion~:~'") + " + __pv + " + clit(init_tail) + ")\n"
+		src = src + tpl("if __method == 'ping'\n\treturn __mcp_ok(__id, '\\{\\}')\n")
+		src = src + tpl("if __method == 'tools/list'\n\treturn __mcp_ok(__id, ") + clit("{\"tools\":" + tools_json + "}") + ")\n"
+		src = src + tpl("if __method == 'resources/list'\n\treturn __mcp_ok(__id, ") + clit("{\"resources\":" + resources_json + "}") + ")\n"
+		src = src + tpl("if __method == 'prompts/list'\n\treturn __mcp_ok(__id, ") + clit("{\"prompts\":" + prompts_json + "}") + ")\n"
+		src = src + tpl("if __method == 'tools/call' or __method == 'prompts/get'\n")
+		src = src + tpl("\tstring __name = json.get(__req, 'params.name')\n")
+		src = src + tpl("\tstring __args = json.get(__req, 'params.arguments')\n")
+		src = src + tpl("\tif __args == ''\n\t\t__args = '\\{\\}'\n")
+		src = src + tpl("\tif not __args.startsWith('{')\n\t\treturn __mcp_err(__id, -32602, 'arguments must be an object')\n")
+		src = src + tpl("\tif __method == 'tools/call'\n\t\treturn __mcp_call_tool(__id, __name, __args)\n")
+		src = src + "\treturn __mcp_get_prompt(__id, __name, __args)\n"
+		src = src + tpl("if __method == 'resources/read'\n\tstring __uri = json.get(__req, 'params.uri')\n\treturn __mcp_read_resource(__id, __uri)\n")
+		src = src + tpl("return __mcp_err(__id, -32601, 'Method not found: ' + __method)\n")
+		return emit_src_function(ctx, "__mcp_handle", p1(ctx, "message", "string"), "string", src)
+
+	// Transport loop in the program start slot.
+	//   stdio: read newline-delimited messages until EOF, write responses.
+	//   http:  serve, then answer every accepted request exactly once with
+	//          _mcp_http_respond (registry: each accept must be followed by
+	//          exactly one respond, including notifications).
+	integer emit_transport_loop(integer ctx, string body)
+		string src = ""
+		if transport_kind(body) == "http"
+			string port = http_attr(body, "port")
+			if port == ""
+				port = "3001"
+			string host = http_attr(body, "host")
+			if host == ""
+				host = "localhost"
+			src = "_mcp_http_serve(" + port.toInteger().toString() + ", " + clit(host) + ")\n"
+			src = src + "boolean __mcp_serving = true\n"
+			src = src + "while __mcp_serving\n"
+			src = src + "\tstring __mcp_in = _mcp_http_accept()\n"
+			src = src + "\t_mcp_http_respond(__mcp_handle(__mcp_in))\n"
+		else
+			src = "boolean __mcp_running = true\n"
+			src = src + "while __mcp_running\n"
+			src = src + "\tstring __mcp_in = _mcp_stdio_read()\n"
+			src = src + "\tif __mcp_in.length() == 0\n"
+			src = src + "\t\t__mcp_running = false\n"
+			src = src + "\telse\n"
+			src = src + "\t\tstring __mcp_out = __mcp_handle(__mcp_in)\n"
+			src = src + "\t\tif __mcp_out.length() > 0\n"
+			src = src + "\t\t\t_mcp_stdio_write(__mcp_out)\n"
+		integer stmt = _emit_stmt_from_source(ctx, src, 0)
+		if stmt == 0
+			return plugin_error(ctx, "FRAME-MCP-E050", "frame.mcp: transport loop failed to parse")
+		_emit_statement_into_start(ctx, stmt)
+		if _ctx_had_error(ctx) != 0
+			return plugin_error(ctx, "FRAME-MCP-E050", "frame.mcp: transport loop emission failed")
+		return 0
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+// Returns "" when the block is valid, otherwise the first error message.
+
+functions:
+	string validate_mcp(string attributes, string raw_body)
+		string body = normalize_body(raw_body)
+		// MCP-B002
+		if extract_server_name(attributes) == ""
+			return "mcp: block must have a quoted server name: mcp \"my-server\":"
+
+		string transport = transport_kind(body)
+		if transport.startsWith("invalid:")
+			return "mcp: transport must be stdio or http: (got " + transport.substring(8, transport.length()) + ")"
+		if transport == "http"
+			string port = http_attr(body, "port")
+			if port != "" and port.toInteger().toString() != port
+				return "mcp: transport http port must be an integer (got " + port + ")"
+
+		// MCP-B004: apiKey is an HTTP-only setting.
+		if has_config(body, "apiKey")
+			if transport != "http"
+				return "mcp: apiKey: requires transport: http: — stdio servers have no API key authentication (MCP-B004)"
+			return "mcp: apiKey: cannot be enforced — the host's _mcp_http_accept bridge does not expose request headers, so the Authorization: Bearer check cannot run. Remove apiKey: or restrict the listener with host: \"localhost\""
+
+		// MCP-B006: config fields before primitives; nothing unknown at the top.
+		string seen_primitive = ""
+		integer pos = 0
+		while pos < body.length()
+			string line = line_at(body, pos)
+			pos = next_line(body, pos)
+			if tabs(line) == 1 and not is_blank_or_comment(line)
+				string kind = primitive_kind(line)
+				string t = line.trim()
+				if kind != ""
+					seen_primitive = kind
+					if not t.endsWith(":")
+						return kind + " declaration must end with ':' — " + t
+				else
+					boolean is_config = t.startsWith("version:") or t.startsWith("description:") or t.startsWith("transport:") or t.startsWith("apiKey:")
+					if not is_config
+						return "mcp: unknown member '" + t + "' — expected version:, description:, transport:, apiKey:, tool, resource or prompt"
+					if seen_primitive != ""
+						return "mcp: config field '" + t + "' must appear before the first tool/resource/prompt declaration (MCP-B006)"
+
+		// Per-primitive rules.
+		string names = "\0"
+		string prims = collect_primitives(body)
+		pos = 0
+		while pos < prims.length()
+			integer stop = prims.indexOf("\0;", pos)
+			string rec = prims.substring(pos, stop)
+			pos = stop + 2
+			string err = validate_primitive(record_field(rec, 0), record_field(rec, 1), record_field(rec, 2), transport)
+			if err != ""
+				return err
+			string name = record_field(rec, 1)
+			// MCP-X001: one namespace for all primitive names.
+			if names.indexOf("\0" + name + "\0") >= 0
+				return "mcp: duplicate name \"" + name + "\" — tool, resource and prompt names must be unique within one mcp: block (MCP-X001)"
+			names = names + name + "\0"
+		return ""
+
+	string validate_primitive(string kind, string name, string block, string transport)
+		string label = kind + " \"" + name + "\""
+		if name == ""
+			return kind + " declaration must have a quoted name"
+		if block_member(block, "description") == ""
+			return label + " must have a description: field"
+
+		// MCP-R001
+		if kind == "resource"
+			integer sep = name.indexOf("://")
+			if sep <= 0 or sep + 3 >= name.length() or name.indexOf(" ") >= 0
+				return label + " must be a scheme://path URI without spaces (MCP-R001)"
+		else if not is_identifier(sanitize_name(name)) or name.indexOf(" ") >= 0
+			return label + " name must not contain spaces"
+
+		string kw = decl_keyword(block)
+		// MCP-R002
+		if kind == "resource" and kw != ""
+			return label + " must not declare " + kw + ": — resources are parameterless; use a tool (MCP-R002)"
+		if kind == "tool" and kw == "args"
+			return label + " declares its inputs with params:, not args:"
+		if kind == "prompt" and kw == "params"
+			return label + " declares its inputs with args:, not params:"
+		if block_member(block, "mimeType") != "" and kind != "resource"
+			return label + " mimeType: is only valid on resources"
+
+		// Declarations: well-formed, unique, required before optional (MCP-T005).
+		string decls = block_decls(block)
+		string seen = "\0"
+		boolean optional_seen = false
+		integer pos = 0
+		while pos < decls.length()
+			string d = line_at(decls, pos)
+			pos = next_line(decls, pos)
+			if d != ""
+				string pname = decl_field(d, 0)
+				string ptype = decl_field(d, 1)
+				if not is_identifier(pname) or ptype == ""
+					return label + " has a malformed " + kw + " declaration — use name: type or name: type = default"
+				if seen.indexOf("\0" + pname + "\0") >= 0
+					return label + " declares " + pname + " twice"
+				seen = seen + pname + "\0"
+				if decl_field(d, 2) == "1"
+					optional_seen = true
+					if decl_field(d, 3) == ""
+						return label + " " + pname + " has an empty default value"
+				else if optional_seen
+					return label + " required " + kw + " " + pname + " must be declared before optional ones (MCP-T005)"
+
+		string handler = block_handler(block)
+		if handler == ""
+			return label + " has no handler body — it must return a response"
+
+		// MCP-X002: transport bridges are plugin-internal.
+		if handler.indexOf("_mcp_") >= 0 or handler.indexOf("mcp.stdio_") >= 0 or handler.indexOf("mcp.http_") >= 0 or handler.indexOf("mcp.sse_") >= 0
+			return label + " must not call MCP transport bridges directly (MCP-X002) — return mcpJson(), mcpText() or mcpError()"
+		// MCP-X003: stdout belongs to the JSON-RPC stream under stdio.
+		if transport == "stdio" and (handler.indexOf("print(") >= 0 or handler.indexOf("printl(") >= 0)
+			return label + " must not print to stdout under transport: stdio (MCP-X003) — use mcp.log(level, message)"
+
+		// MCP-T003 / MCP-P002: shape of every return statement.
+		integer hp = 0
+		while hp < handler.length()
+			string t = line_at(handler, hp).trim()
+			hp = next_line(handler, hp)
+			if t.startsWith("return ") or t == "return"
+				boolean helper = t.startsWith("return mcpJson(") or t.startsWith("return mcpText(") or t.startsWith("return mcpError(")
+				if kind == "prompt"
+					if t.startsWith("return mcpJson(") or t.startsWith("return mcpText(")
+						return label + " must return the prompt text as a string, not mcpJson()/mcpText() (MCP-P002)"
+				else if not helper
+					return label + " must return mcpJson(), mcpText() or mcpError() on every path (MCP-T003): " + t
 		return ""

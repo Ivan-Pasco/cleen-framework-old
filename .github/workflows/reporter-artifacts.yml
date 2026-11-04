@@ -80,24 +80,10 @@ jobs:
           sudo chmod +x /usr/local/bin/cln
           cln --version
 
-          # (2) framework plugins — install THIS checkout's plugin.wasm
-          # files (the release candidates on a tag push, or HEAD on
-          # workflow_dispatch). Each plugin ships with its own version in
-          # plugin.toml; install into ~/.cleen/plugins/<name>/<version>/
-          # and mark it active.
-          for plugin_dir in plugins/frame.*/; do
-            plugin_name=$(basename "$plugin_dir")
-            plugin_version=$(grep -E '^version\s*=' "$plugin_dir/plugin.toml" | head -1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
-            if [[ -z "$plugin_version" ]]; then
-              echo "WARN: no version in $plugin_dir/plugin.toml, skipping"
-              continue
-            fi
-            dest="$HOME/.cleen/plugins/$plugin_name/$plugin_version"
-            mkdir -p "$dest"
-            cp -r "$plugin_dir"/* "$dest/"
-            echo "$plugin_version" > "$HOME/.cleen/plugins/$plugin_name/.active-version"
-            echo "installed $plugin_name @ $plugin_version -> $dest"
-          done
+          # (2) framework plugins — install THIS checkout's plugins (the
+          # release candidates) into ~/.cleen/plugins/<name>/<version>/ with
+          # .active-version pinned, plus the top-level copy clean-server reads.
+          ./scripts/install-plugins.sh
 
       - name: install cln-repro tool
         run: |

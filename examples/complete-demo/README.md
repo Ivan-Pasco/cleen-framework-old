@@ -1,156 +1,112 @@
 # Complete Demo
 
-A full-stack Clean Framework application demonstrating all core plugins working together.
-
-## Features
-
-- **Database Access** - User model with SQLite using frame.data
-- **Registration Form** - Form validation and submission using frame.ui
-- **Authentication** - Session-based auth with password hashing using frame.auth
-- **API Endpoints** - RESTful API using frame.server
-- **Canvas Animation** - Interactive particle system using frame.canvas
+A full-stack example combining frame.ui pages, frame.server endpoints, a frame.data model and a frame.canvas browser scene.
 
 ## Project Structure
 
 ```
 complete-demo/
-├── main.cln                    # Main application config
+├── main.cln                      # Package manifest (target: server)
 ├── app/
-│   ├── pages/                 # SSR HTML pages (frame.ui)
-│   │   ├── index.html         # Landing page with animation
-│   │   ├── register.html      # Registration form
-│   │   └── dashboard.html     # User dashboard
-│   │
-│   ├── api/                   # API endpoints (frame.server)
-│   │   └── users.cln          # User registration/login/list
-│   │
-│   ├── data/                  # Data models (frame.data)
-│   │   └── User.cln           # User model with CRUD
-│   │
-│   ├── auth/                  # Auth config (frame.auth)
-│   │   └── config.cln         # Sessions, password hashing
-│   │
-│   ├── canvas/                # Canvas apps (frame.canvas)
-│   │   └── particles.cln      # Particle animation
-│   │
-│   └── components/            # Reusable components
-│
-└── public/
-    └── css/
-        └── style.css          # Application styles
+│   ├── canvas/particles.cln      # Canvas scene (separate browser module)
+│   ├── data/models/User.cln      # User data model
+│   ├── server/
+│   │   ├── main.cln              # start: User.migrate()
+│   │   └── api/
+│   │       ├── main.cln          # GET /, GET /register, POST /register
+│   │       └── users.cln         # /api/users endpoints
+│   └── ui/web/pages/
+│       ├── index.html            # Landing page with the canvas
+│       ├── register.html         # Registration form (posts to /register)
+│       ├── dashboard.html        # User table and stats
+│       └── dashboard.cln         # Companion loader: GET /dashboard data
+└── public/css/style.css
 ```
 
-## Running the Demo
+`main.cln` limits the server build to `shared: [app/ui, app/server, app/data]`, so `app/canvas/` is not part of the server build.
+
+## Build and Run
+
+Plugins come from `~/.cleen/plugins` (installed with `cleen frame install latest`).
 
 ```bash
-# Navigate to the example
 cd examples/complete-demo
-
-# Start the development server
-cleen serve
-
-# Open in browser
-open http://localhost:3000
+~/.cleen/bin/cln compile main.cln -o complete-demo.wasm --plugins
+DATABASE_URL=sqlite::memory: JWT_SECRET=dev-secret \
+  ~/.cleen/bin/clean-server complete-demo.wasm --port 3000
 ```
 
-## Pages
+Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
 
-### Home (/)
-Landing page with:
-- Interactive particle animation background
-- Feature highlights
-- Call-to-action buttons
+To compile, start and request every route in one step, run `./scripts/smoke-examples.sh complete-demo` from the framework root.
 
-### Register (/register)
-Registration form with:
-- Client-side validation
-- Password confirmation
-- Server-side validation
-- Auto-login after registration
+`app/server/main.cln` creates the `users` table on start with `User.migrate()`.
 
-### Dashboard (/dashboard)
-User dashboard with:
-- Stats cards (total users, active users, new today)
-- User table from database
-- Embedded canvas animation
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /api/users/register | Register new user |
-| POST | /api/users/login | Login user |
-| GET | /api/users | List all users |
-| GET | /api/users/:id | Get user by ID |
-
-## Plugins Used
-
-1. **frame.data** - ORM for User model
-2. **frame.server** - API endpoints
-3. **frame.auth** - Authentication & sessions
-4. **frame.ui** - SSR pages & forms
-5. **frame.canvas** - Particle animation (browser module, see below)
-
-## Key Concepts Demonstrated
-
-### Folder Conventions
-Each folder maps to a specific plugin:
-- `pages/` → frame.ui (HTML pages)
-- `api/` → frame.server (endpoints)
-- `data/` → frame.data (models)
-- `auth/` → frame.auth (config)
-- `canvas/` → frame.canvas (animations)
-
-### File Extensions
-- `.html` for SSR pages (full editor support)
-- `.css` for styles (full editor support)
-- `.cln` for Clean Language logic
-
-### Clean Templating in HTML
-```html
-<h1>Welcome, {{ user.name }}</h1>
-<ul cl-iterate="item in items">
-    <li>{{ item.title }}</li>
-</ul>
-<div cl-if="user.isAdmin">Admin content</div>
-```
-
-### Type-Safe Data Models
-```clean
-data User:
-    fields:
-        id: integer primary autoincrement
-        email: string unique
-        username: string
-```
-
-### Declarative Endpoints
-```clean
-endpoints:
-    POST "/api/users/register":
-        string email = req.json(User).email
-        string password = req.json(User).password
-        // Type-safe request handling
-```
-
-### Canvas Animations
-
-Canvas scenes run in the browser: every frame.canvas bridge function is
-browser-only, so `app/canvas/` is not part of the server build (`main.cln`
-limits the server build to `shared: [app/ui, app/server, app/data]`). The
-scene is its own browser module and draws into the page's
-`<canvas id="particles">` element:
+The canvas scene is built on its own, because every frame.canvas bridge function runs in the browser:
 
 ```bash
-cln compile app/canvas/particles.cln -o public/particles.wasm
+~/.cleen/bin/cln compile app/canvas/particles.cln -o public/particles.wasm
 ```
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | `render("index")` |
+| GET | `/register` | `render("register")` |
+| POST | `/register` | Form post: validates, hashes the password with `auth.hashPassword`, redirects (303) to `/dashboard` |
+| GET | `/dashboard` | Page with data from `dashboard.cln` `load()` |
+| GET | `/api/users` | Latest 50 users |
+| POST | `/api/users` | Create a user (`email`, `username`, `password`) |
+| GET | `/api/users/:id` | One user |
+| DELETE | `/api/users/:id` | Delete a user |
+| POST | `/api/users/login` | Check email and password with `auth.verifyPassword` |
+
+User JSON returned by the API never includes `password_hash`.
+
+## Key Code
+
+### Data model
 
 ```clean
-canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
-    state:
-        number frameCount = 0.0
-
-    onFrame: param="dt"
-        frameCount = frameCount + dt * 60.0
-        canvas.circle x=400 y=200 radius=20 color="#ffffff30"
+// app/data/models/User.cln
+data User:
+	fields:
+		integer id primary generated
+		string email required unique
+		string username required
+		string password_hash required
+		string created_at
+		boolean is_active default: true
 ```
+
+### Endpoint writing through `Database.save`
+
+```clean
+// app/server/api/users.cln (excerpt)
+User user = User()
+user.email = email
+user.username = username
+user.password_hash = auth.hashPassword(password)
+user.is_active = true
+if not Database.save(user)
+	return badRequest("Insert failed")
+```
+
+### Canvas scene
+
+```clean
+// app/canvas/particles.cln (excerpt)
+canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
+
+	state:
+		number frameCount = 0.0
+
+	onFrame: param="dt"
+		frameCount = frameCount + dt * 60.0
+
+		on layer "particles":
+			canvas.circle x=400 y=200 radius=20 color="#ffffff30"
+```
+
+The scene draws into the page's `<canvas id="particles">` element.

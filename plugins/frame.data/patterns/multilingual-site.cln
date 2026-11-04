@@ -2,87 +2,74 @@
 // Use when: your app serves content in more than one language
 // Anti-pattern: DON'T store translations as a JSON column on the content row.
 //   JSON columns cannot be indexed by locale, break FK integrity, and require
-//   app-side deserialization on every read. Use a separate translations table —
-//   one row per (content_id, locale) pair — so SQL does the filtering.
+//   app-side deserialization on every read. Use a separate translations
+//   table — one row per (articleId, locale) pair — so SQL does the filtering.
 
 plugins:
 	frame.data
 
 // Language-neutral metadata only — no content fields here
 data Article:
-	id: integer pk auto
-	slug: string unique
-	author_id: integer
-	published_at: datetime nullable
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		string slug required unique
+		integer authorId required
+		integer publishedAt default: 0
 
 // One row per translation. locale IS the lookup key.
 data ArticleTranslation:
-	id: integer pk auto
-	article_id: integer             // FK to Article
-	locale: string                  // ISO 639-1: "en", "es", "fr", "pt-BR"
-	title: string
-	body: string
-	meta_description: string nullable
-	updated_at: datetime auto
+	fields:
+		integer id primary generated
+		integer articleId required
+		string locale required          // ISO 639-1: "en", "es", "fr", "pt-BR"
+		string title required
+		string body required
+		string metaDescription
+
+	indexes:
+		(articleId, locale) unique
+
+	relations:
+		article: belongs_to Article on articleId
 
 functions:
-	// Fetch a translated article; falls back to English when locale has no row
-	pairs get_article(string slug, string locale)
-		pairs article = Article.first:
+	// The translation for `locale`, falling back to English.
+	ArticleTranslation? translationFor(string slug, string locale)
+		Article article = Article.findOrFail:
 			where:
 				slug == slug
-
-		pairs translation = ArticleTranslation.first:
+		ArticleTranslation translation = ArticleTranslation.first:
 			where:
-				article_id == article.id
+				articleId == article.id
 				locale == locale
-
-		// Fallback to English when requested locale is not available
 		if translation == null
-			translation = ArticleTranslation.first:
-				where:
-					article_id == article.id
-					locale == "en"
+			translation = englishTranslation(article.id)
+		return translation
 
-		return pairs(
-			"id" to article.id,
-			"slug" to article.slug,
-			"locale" to translation.locale,
-			"title" to translation.title,
-			"body" to translation.body
-		)
-
-	// Upsert: update existing translation or insert a new one
-	integer save_translation(integer article_id, string locale, string title, string body)
-		pairs existing = ArticleTranslation.first:
+	ArticleTranslation? englishTranslation(integer articleId)
+		return ArticleTranslation.first:
 			where:
-				article_id == article_id
+				articleId == articleId
+				locale == "en"
+
+	// Update the existing translation or create it.
+	boolean saveTranslation(integer articleId, string locale, string title, string body)
+		ArticleTranslation translation = ArticleTranslation.first:
+			where:
+				articleId == articleId
 				locale == locale
+		if translation == null
+			translation = ArticleTranslation()
+			translation.articleId = articleId
+			translation.locale = locale
+		translation.title = title
+		translation.body = body
+		return Database.save(translation)
 
-		if existing != null
-			ArticleTranslation.update:
-				set:
-					title = title
-					body = body
-				where:
-					id == existing.id
-			return existing.id
-
-		integer result = ArticleTranslation.insert:
-			article_id = article_id
-			locale = locale
-			title = title
-			body = body
-		return result
-
-	// List every locale that has a translation for this article
-	list<string> list_locales(integer article_id)
-		list<pairs> rows = ArticleTranslation.find:
-			select:
-				locale
+	// Every locale that has a translation for this article.
+	list<ArticleTranslation> listLocales(integer articleId)
+		return ArticleTranslation.find:
+			select: id, locale
 			where:
-				article_id == article_id
-			order:
-				locale asc
-		return rows.map(r => r.locale)
+				articleId == articleId
+			order: locale asc

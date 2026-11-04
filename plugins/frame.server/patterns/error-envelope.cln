@@ -1,44 +1,47 @@
 // Pattern: error-envelope
 // Use when: building any API consumed by web, mobile, or third-party clients
 // Anti-pattern: DON'T return ad-hoc error strings or vary the error shape by route.
-//   Clients need a consistent shape to handle errors programmatically.
-//   Use {code, message, field?} everywhere — code is machine-readable,
-//   message is human-readable, field identifies which input caused the error.
+//   Clients need one shape to handle errors programmatically. Every error uses
+//   the envelope {"ok": false, "err": {"code": ..., "message": ...}}
+//   (frame-server-semantics.md SRV-I002). The response helpers build it:
+//     badRequest(message)      → 400 VALIDATION_ERROR
+//     unauthorized()           → 401 AUTH_ERROR
+//     forbidden()              → 403 PERMISSION_DENIED
+//     notFound(message)        → 404 NOT_FOUND
+//     httpError(status, msg)   → <status> HTTP_ERROR
+//   Messages are JSON-escaped for you. For an extra member (e.g. the input
+//   field that failed) send the envelope yourself with httpStatus(code, json).
 
 plugins:
 	frame.server
-
-// Every error response in the system uses this shape:
-// { "code": "ERROR_CODE", "message": "Human readable", "field": "fieldName" (optional) }
 
 endpoints:
 	POST "/orders":
 		string product_id = req.body_field("product_id")
 		string quantity = req.body_field("quantity")
 
-		// Validation error — includes field
+		// Validation error that names the failing field
 		if product_id.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"message\": \"product_id is required\", \"field\": \"product_id\"}"))
+			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"product_id is required\",\"field\":\"product_id\"}}")
 
 		integer qty = quantity.toInteger()
 		if qty <= 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"message\": \"quantity must be greater than zero\", \"field\": \"quantity\"}"))
+			return badRequest("quantity must be greater than zero")
 
-		// Business rule error — no field, but still structured
+		// Business rule error — custom uppercase code, same envelope
 		if qty > 100
-			return httpStatus(422, "{\"code\": \"QUANTITY_LIMIT_EXCEEDED\", \"message\": \"Maximum order quantity is 100 units\"}")
+			return httpStatus(422, "{\"ok\":false,\"err\":{\"code\":\"QUANTITY_LIMIT_EXCEEDED\",\"message\":\"Maximum order quantity is 100 units\"}}")
 
 		// Resource not found — consistent 404 shape
-		boolean product_exists = false  // would normally query DB
+		boolean product_exists = false  // would normally query the database
 		if product_exists == false
-			return notFound(jsonResponse("{\"code\": \"NOT_FOUND\", \"message\": \"Product not found\"}"))
+			return notFound("Product not found")
 
-		// Success — consistent success shape
-		return jsonResponse("{\"order_id\": \"ord-123\", \"product_id\": \"" + product_id + "\", \"quantity\": " + qty.toString() + ", \"status\": \"pending\"}")
+		// Success — {"ok": true, "data": {...}}
+		return jsonResponse("{\"ok\":true,\"data\":{\"order_id\":\"ord-123\",\"product_id\":\"" + product_id + "\",\"quantity\":" + qty.toString() + ",\"status\":\"pending\"}}")
 
 	GET "/orders/:id":
-		string id = param("id")
+		string id = req.param("id")
 		if id == "0"
-			return notFound(jsonResponse("{\"code\": \"NOT_FOUND\", \"message\": \"Order not found\"}"))
-
-		return jsonResponse("{\"order_id\": \"" + id + "\", \"status\": \"shipped\"}")
+			return notFound("Order not found")
+		return jsonResponse("{\"ok\":true,\"data\":{\"order_id\":\"" + id + "\",\"status\":\"shipped\"}}")

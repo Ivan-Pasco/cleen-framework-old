@@ -2,7 +2,7 @@
 # Clean Framework pre-push hook.
 #
 # Time budget: <2min. This runs on every `git push`.
-# See system-documents/testing/TEST_STRATEGY.md §4 for the layer mapping.
+# Test rules: tests/CONVENTIONS.md.
 #
 # Layers fired:
 #   1. Full-tree placeholder guard
@@ -32,13 +32,18 @@ ok()   { echo -e "${GREEN}[pre-push] $*${NC}"; }
 # --- Layer 1: full-tree placeholder guard ---
 info "Running placeholder guard on the full tree..."
 if ! python3 scripts/check-test-placeholders.py --quiet; then
-    fail "Placeholder patterns found. See system-documents/testing/TEST_STRATEGY.md §5."
+    fail "Placeholder patterns found. See tests/CONVENTIONS.md §6a."
 fi
 ok "Placeholder guard passed."
 
 # --- Layers 2–4: framework tests (best-effort) ---
-if ! command -v cln >/dev/null 2>&1; then
-    info "cln not found locally; skipping test runs (CI will cover them)."
+# Old-toolchain binaries (~/.cleen/bin, overridable with CLEEN_CLN /
+# CLEEN_SERVER — the same defaults scripts/run-framework-tests.sh uses).
+# Plain `cln` on PATH is a different toolchain and is never used here.
+CLN_BIN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+SERVER_BIN="${CLEEN_SERVER:-$HOME/.cleen/bin/clean-server}"
+if [ ! -x "$CLN_BIN" ] || [ ! -x "$SERVER_BIN" ]; then
+    info "cln or clean-server not found in ~/.cleen/bin; skipping test runs (CI will cover them)."
     ok "pre-push placeholder guard passed."
     exit 0
 fi

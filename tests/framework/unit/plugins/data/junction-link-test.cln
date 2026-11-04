@@ -1,4 +1,5 @@
-// Test: frame.data — one-to-many junction via foreign key traversal.
+// Test: frame.data — one-to-many via a foreign key, and many-to-many through
+// a junction model with link: (frame-data.ebnf §5.5, DAT-Q010, DAT-Q011).
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -22,11 +23,18 @@ data Book:
 		string title required
 		integer authorId required
 
+data BookTag:
+	fields:
+		integer id primary generated
+		integer bookId required
+		integer tagId required
+
 endpoints:
 	GET "/test":
 		// Table creation: `Model.migrate()` (DAT-C005).
 		Author.migrate()
 		Book.migrate()
+		BookTag.migrate()
 
 		Author newAuthor = Author()
 		newAuthor.name = "Alice"
@@ -52,7 +60,23 @@ endpoints:
 		boolean ok_count = alicesBooks.length() == 2
 		boolean ok_titles = alicesBooks[0].title == "Book One" and alicesBooks[1].title == "Book Two"
 
-		if ok_count and ok_titles
+		// Tag 7 is on Book Two only.
+		BookTag link1 = BookTag()
+		link1.bookId = bookOne.id
+		link1.tagId = 3
+		Database.save(link1)
+		BookTag link2 = BookTag()
+		link2.bookId = bookTwo.id
+		link2.tagId = 7
+		Database.save(link2)
+		list<Book> tagged = Book.find:
+			link:
+				BookTag bookId == id
+			where:
+				BookTag.tagId == 7
+		boolean ok_link = tagged.length() == 1 and tagged[0].title == "Book Two"
+
+		if ok_count and ok_titles and ok_link
 			printl("PASS: data-junction-link")
 		else
 			printl("FAIL: data-junction-link")

@@ -2,7 +2,8 @@
 // Use when: any scene that moves, animates, or responds to input
 // Anti-pattern: DON'T move objects by a fixed pixel amount per frame.
 //   If the frame rate drops from 60fps to 30fps, movement halves.
-//   Multiply ALL movement, velocity, and physics by deltaTime() so behavior
+//   Multiply ALL movement, velocity, and physics by the onFrame delta time
+//   (onFrame: param="dt") so behavior
 //   is identical regardless of frame rate.
 
 plugins:
@@ -34,18 +35,18 @@ canvasScene: width=800 height=600 fps=60
 		boolean on_ground = true
 
 	onFrame: param="dt"
-		// dt = deltaTime() in seconds (e.g. 0.016 at 60fps, 0.033 at 30fps)
+		// dt is the onFrame param= delta time in seconds (e.g. 0.016 at 60fps, 0.033 at 30fps)
 		// Multiplying by dt makes movement frame-rate-independent
 
 		// Horizontal input
 		velX = 0.0
-		if input.keyDown("ArrowLeft")
+		if input.keyDown("ArrowLeft") == 1
 			velX = -speed
-		if input.keyDown("ArrowRight")
+		if input.keyDown("ArrowRight") == 1
 			velX = speed
 
 		// Jump
-		if input.keyJustPressed("Space") and on_ground
+		if input.keyJustPressed("Space") == 1 and on_ground
 			velY = jump_force
 			on_ground = false
 
@@ -72,4 +73,4 @@ canvasScene: width=800 height=600 fps=60
 			canvas.image src="player" x=playerX y=playerY width=48 height=64
 
 		on layer "hud":
-			canvas.text "x={playerX.toInteger()} y={playerY.toInteger()}" x=10 y=20 size=14 color="white"
+			canvas.text value="x={playerX.toInteger()} y={playerY.toInteger()}" x=10 y=20 size=14 color="white"

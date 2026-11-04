@@ -5,20 +5,21 @@
 //   clean-errors/scripts/retest-cron.sh:217-237      (env-var mapping)
 //   clean-errors/deploy/sandbox/entrypoint.sh:120-212 (pass predicates)
 //
-// Canonical source of these helpers lives in
-// plugins/frame.server/dev/pass_criteria.cln. That file is mirrored into
-// plugins/frame.server/src/main.cln (embedded as fragment strings inside
-// emit_dev_capture — see the DEV-MODE CAPTURE EMISSION section) which is
-// what gets compiled into plugin.wasm and emitted per-app at build time.
-// This test file keeps its own copy because the framework has no runtime
-// module import system today; when one lands, `computePassCriteria` and
-// its helpers get deleted from here and imported from dev/pass_criteria.cln.
-// Until then: any edit to the helper logic MUST be made in all three
-// places (dev/pass_criteria.cln + src/main.cln dc_body_* strings + this file).
+// The helpers under test are the ones frame.server emits into every app
+// with a `server:` block (emit_dev_capture in plugins/frame.server/src/
+// main.cln; canonical text in plugins/frame.server/dev/pass_criteria.cln).
+// This file calls the emitted functions directly, so it exercises the code
+// that ships — there is no local copy to drift.
 //
 // Grammar: functions block, if/else if/else, while, string ops, json.get
 // Semantic: primitive types (string, integer, boolean), string
 //           concatenation, method-call syntax on strings/integers.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
 
 start:
 	test_hint_wins_over_everything()
@@ -117,81 +118,6 @@ functions:
 		// The regex field must contain \" (escaped) not raw ", and must
 		// be surrounded by unescaped delimiters.
 		assertContains(result, "\"expected_stdout_regex\":\"expected \\\"phrase\\\"\"", "escape: quotes inside regex must be JSON-escaped")
-
-	// ────────────────────────────────────────────────────────────────
-	// Helper under test — logic mirrors dev/pass_criteria.cln (moves
-	// out of this file once the framework has runtime module imports).
-	// ────────────────────────────────────────────────────────────────
-
-	string computePassCriteria(string request_log, string logs, string wrong_output_hint, string entry)
-		if wrong_output_hint.length() > 0
-			return buildWrongOutput(entry, wrong_output_hint)
-		if logsContainWasmTrap(logs)
-			return buildRuntimeCrash(entry)
-		integer failing_status = findMostRecentFailingStatus(request_log)
-		if failing_status >= 500
-			return buildRuntimeCrash(entry)
-		return ""
-
-	boolean logsContainWasmTrap(string logs)
-		if logs.contains("wasm trap")
-			return true
-		if logs.contains("Handler ") and logs.contains(" failed:")
-			return true
-		return false
-
-	integer findMostRecentFailingStatus(string request_log)
-		if request_log.length() == 0
-			return 0
-		integer count = countJsonArrayEntries(request_log)
-		if count == 0
-			return 0
-		integer i = count - 1
-		while i >= 0
-			string idx = i.toString()
-			string status_str = json.get(request_log, idx + ".status")
-			integer status = status_str.toInteger() onError 0
-			if status >= 500
-				return status
-			i = i - 1
-		return 0
-
-	integer countJsonArrayEntries(string arr)
-		integer i = 0
-		while i < 200
-			string idx = i.toString()
-			string probe = json.get(arr, idx + ".status")
-			if probe.length() == 0
-				return i
-			i = i + 1
-		return 200
-
-	string buildRuntimeCrash(string entry)
-		return "{\"kind\":\"runtime_crash\",\"entry\":\"" + entry + "\",\"expected_status\":200}"
-
-	string buildWrongOutput(string entry, string regex)
-		return "{\"kind\":\"wrong_output\",\"entry\":\"" + entry + "\",\"expected_stdout_regex\":" + jsonEscapeString(regex) + "}"
-
-	string jsonEscapeString(string s)
-		string result = "\""
-		integer i = 0
-		integer n = s.length()
-		while i < n
-			string ch = s.substring(i, i + 1)
-			if ch == "\\"
-				result = result + "\\\\"
-			else if ch == "\""
-				result = result + "\\\""
-			else if ch == "\n"
-				result = result + "\\n"
-			else if ch == "\r"
-				result = result + "\\r"
-			else if ch == "\t"
-				result = result + "\\t"
-			else
-				result = result + ch
-			i = i + 1
-		return result + "\""
 
 	// ────────────────────────────────────────────────────────────────
 	// Assertions — printl on FAIL so a test runner or human eyeballing

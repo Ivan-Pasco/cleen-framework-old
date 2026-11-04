@@ -1,0 +1,5 @@
+// Server entry: create the tables this app uses. Model.migrate() runs
+// CREATE TABLE IF NOT EXISTS (frame-data-semantics.md DAT-C005).
+
+start:
+	User.migrate()

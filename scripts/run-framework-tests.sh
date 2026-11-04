@@ -15,7 +15,8 @@ NC='\033[0m' # No Color
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRAMEWORK_DIR="$(dirname "$SCRIPT_DIR")"
-TEST_DIR="$FRAMEWORK_DIR/tests/framework"
+TESTS_ROOT="$FRAMEWORK_DIR/tests"
+TEST_DIR="$TESTS_ROOT/framework"
 OUTPUT_DIR="$TEST_DIR/output"
 COMPILER="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
 
@@ -26,18 +27,21 @@ export DATABASE_URL="${DATABASE_URL:-sqlite::memory:}"
 # (`secret = env.get("JWT_SECRET")`, AUTH-C004), so each run gets a fresh
 # random value instead of a secret committed to source.
 export JWT_SECRET="${JWT_SECRET:-$(openssl rand -hex 32)}"
-SERVER="${CLEEN_SERVER:-$HOME/Documents/Dev/Clean Language/clean-server/target/release/clean-server}"
+# frame.storage tests: clean-server confines storage.* paths to this root
+# (CLEAN_FS_WRITE_ROOT) and resolves them against its working directory.
+export CLEAN_FS_WRITE_ROOT="${CLEAN_FS_WRITE_ROOT:-$PWD}"
+SERVER="${CLEEN_SERVER:-$HOME/.cleen/bin/clean-server}"
 
 # Counters
 TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0
-SKIPPED_TESTS=0
 
 # Default filter (all tests)
 FILTER=""
 VERBOSE=false
 DRY_RUN=false
+COMPILE_ONLY=false
 
 # Print usage
 usage() {
@@ -49,21 +53,25 @@ usage() {
     echo "  -d, --dry-run    Show what would be run without executing"
     echo "  -c, --compile    Compile only, don't run tests"
     echo ""
+    echo "Environment:"
+    echo "  CLEEN_CLN        Compiler (default: ~/.cleen/bin/cln)"
+    echo "  CLEEN_SERVER     Runtime  (default: ~/.cleen/bin/clean-server)"
+    echo "  CLEEN_TEST_PORT  Port each test server binds (default: 3334)"
+    echo ""
     echo "Filters:"
+    echo "  runtime          Run only the runtime smoke test"
     echo "  unit             Run only unit tests"
     echo "  unit/plugins     Run only plugin unit tests"
-    echo "  unit/plugins/web Run only frame.web tests"
-    echo "  unit/plugins/data Run only frame.data tests"
-    echo "  unit/plugins/auth Run only frame.auth tests"
-    echo "  unit/plugins/ui  Run only frame.ui tests"
+    echo "  unit/plugins/<p> Run only one plugin's tests (server, data, auth, ui, ...)"
     echo "  unit/bridge      Run only bridge tests"
     echo "  integration      Run only integration tests"
     echo "  e2e              Run only end-to-end tests"
+    echo "  cln/bugfixes     Run only the regression tests in tests/cln/bugfixes"
     echo ""
     echo "Examples:"
     echo "  $0                    # Run all tests"
     echo "  $0 unit               # Run unit tests only"
-    echo "  $0 unit/plugins/web   # Run frame.web tests only"
+    echo "  $0 unit/plugins/server # Run frame.server tests only"
     echo "  $0 -v integration     # Run integration tests with verbose output"
 }
 
@@ -99,7 +107,7 @@ check_prerequisites() {
     # Check compiler
     if [ ! -f "$COMPILER" ]; then
         print_error "Compiler not found at: $COMPILER"
-        print_info "Install with: cleen install latest && cleen use latest"
+        print_info "Install with: ~/.cleen/bin/cleen install latest (or set CLEEN_CLN)"
         exit 1
     fi
     print_success "Compiler found: $COMPILER"
@@ -110,8 +118,8 @@ check_prerequisites() {
         print_success "Server found: $SERVER"
     else
         print_error "Server not found at: $SERVER"
-        print_info "Install with: cleen server install"
-        print_info "Override with --compile-only for compile-only mode (legacy)."
+        print_info "Install with: ~/.cleen/bin/cleen server install"
+        print_info "Override with CLEEN_SERVER, or pass --compile-only to only compile."
         if [ "$COMPILE_ONLY" != "true" ]; then
             exit 1
         fi
@@ -125,7 +133,8 @@ check_prerequisites() {
 # Compile a single test file
 compile_test() {
     local test_file="$1"
-    local relative_path="${test_file#$TEST_DIR/}"
+    local relative_path="${test_file#$TESTS_ROOT/}"
+    relative_path="${relative_path#framework/}"
     local output_name="${relative_path//\//_}"
     output_name="${output_name%.cln}.wasm"
     local output_path="$OUTPUT_DIR/$output_name"
@@ -168,7 +177,7 @@ wait_for_log() {
 
 # Run a single compiled test using clean-server.
 #
-# Two shapes are supported (per system-documents/testing/TEST_STRATEGY.md §3):
+# Two shapes are supported:
 #   1. Boot-time test — emits PASS: from `start:` immediately. Runner just
 #      captures stdout.
 #   2. Server-shaped test — declares `endpoints:` and needs the runner to
@@ -179,31 +188,30 @@ run_test() {
     local wasm_file="$1"
     local test_name="$2"
     local source_file="${3:-}"
-    local test_port=3334
+    # FRAMEWORK_TEST_PORT (or CLEEN_TEST_PORT) lets several checkouts run the
+    # suite at the same time without killing each other's servers.
+    local test_port="${FRAMEWORK_TEST_PORT:-${CLEEN_TEST_PORT:-3334}}"
 
     if [ "$VERBOSE" = true ]; then
         print_info "Running: $test_name"
     fi
 
-    # Check if server is available
-    if [ ! -f "$SERVER" ]; then
-        # No runtime available, just verify compilation
-        if [ -f "$wasm_file" ]; then
-            print_success "$test_name (compiled only)"
-            return 0
-        else
-            print_error "$test_name (compilation failed)"
-            return 1
-        fi
+    # --compile-only: the test compiled (compile_test succeeded); do not run it.
+    if [ "$COMPILE_ONLY" = true ]; then
+        print_success "$test_name (compiled only)"
+        return 0
     fi
 
     # Kill any existing server on the test port
-    pkill -f "clean-server.*$test_port" 2>/dev/null || true
+    pkill -f "clean-server.*--port $test_port\$" 2>/dev/null || true
     sleep 0.2
 
     # Start clean-server with the WASM file and capture output
-    local server_log="/tmp/test_server_$$.log"
-    "$SERVER" "$wasm_file" --port $test_port > "$server_log" 2>&1 &
+    local server_log="/tmp/test_server_$$_${test_port}.log"
+    # The server runs from the framework root so tests can name fixture files
+    # (translation tables, ...) by repo-relative paths whatever the caller's
+    # cwd; stdin is closed so a stdio app can't swallow the runner's input.
+    (cd "$FRAMEWORK_DIR" && exec "$SERVER" "$wasm_file" --port "$test_port") < /dev/null > "$server_log" 2>&1 &
     local server_pid=$!
 
     # Wait for server to initialize (it runs start() on load). start() may do
@@ -278,73 +286,6 @@ run_test() {
     fi
 }
 
-# Legacy wasmtime runner (kept for reference)
-run_test_wasmtime() {
-    local wasm_file="$1"
-    local test_name="$2"
-
-    if [ "$VERBOSE" = true ]; then
-        print_info "Running: $test_name"
-    fi
-
-    # Try running with wasmtime if available
-    if command -v wasmtime &> /dev/null; then
-        local output
-        # macOS-compatible timeout using perl
-        if output=$(perl -e 'alarm 10; exec @ARGV' wasmtime "$wasm_file" 2>&1); then
-            # Check for FAIL in output
-            if echo "$output" | grep -q "FAIL:"; then
-                print_error "$test_name"
-                if [ "$VERBOSE" = true ]; then
-                    echo "$output" | grep "FAIL:" | while read line; do
-                        echo "    $line"
-                    done
-                fi
-                return 1
-            else
-                print_success "$test_name"
-                if [ "$VERBOSE" = true ] && echo "$output" | grep -q "PASS:"; then
-                    echo "$output" | grep "PASS:" | while read line; do
-                        echo "    $line"
-                    done
-                fi
-                return 0
-            fi
-        else
-            print_error "$test_name (execution failed)"
-            if [ "$VERBOSE" = true ]; then
-                echo "    $output"
-            fi
-            return 1
-        fi
-    else
-        # No runtime available, just verify compilation
-        if [ -f "$wasm_file" ]; then
-            print_success "$test_name (compiled only)"
-            return 0
-        else
-            print_error "$test_name (compilation failed)"
-            return 1
-        fi
-    fi
-}
-
-# Find all test files matching the filter
-find_test_files() {
-    local base_dir="$TEST_DIR"
-
-    if [ -n "$FILTER" ]; then
-        base_dir="$TEST_DIR/$FILTER"
-    fi
-
-    if [ ! -d "$base_dir" ]; then
-        print_error "Test directory not found: $base_dir"
-        exit 1
-    fi
-
-    find "$base_dir" -name "*.cln" -type f | sort
-}
-
 # Run tests in a category
 run_test_category() {
     local category="$1"
@@ -352,7 +293,19 @@ run_test_category() {
 
     print_section "Running Tests: $category"
 
-    test_files=$(find "$TEST_DIR/$category" -name "*.cln" -type f 2>/dev/null | sort)
+    # Categories resolve under tests/framework/ first, then under tests/
+    # (e.g. `cln/bugfixes` for the regression tests in tests/cln/bugfixes/).
+    local category_dir="$TEST_DIR/$category"
+    if [ ! -d "$category_dir" ] && [ -d "$TESTS_ROOT/$category" ]; then
+        category_dir="$TESTS_ROOT/$category"
+    fi
+    if [ ! -d "$category_dir" ]; then
+        print_error "Test directory not found: $category"
+        FAILED_TESTS=$((FAILED_TESTS+1))
+        return
+    fi
+
+    test_files=$(find "$category_dir" -name "*.cln" -type f 2>/dev/null | sort)
 
     if [ -z "$test_files" ]; then
         print_warning "No test files found in: $category"
@@ -360,7 +313,8 @@ run_test_category() {
     fi
 
     while IFS= read -r test_file; do
-        local relative_path="${test_file#$TEST_DIR/}"
+        local relative_path="${test_file#$TESTS_ROOT/}"
+        relative_path="${relative_path#framework/}"
         local test_name="${relative_path%.cln}"
 
         # NB: use VAR=$((VAR+1)) not ((VAR++)) — the latter returns the
@@ -403,6 +357,10 @@ run_tests() {
         run_test_category "$FILTER"
     else
         # Run all categories in order
+        if [ -d "$TEST_DIR/runtime" ]; then
+            run_test_category "runtime"
+        fi
+
         if [ -d "$TEST_DIR/unit" ]; then
             run_test_category "unit"
         fi
@@ -413,6 +371,10 @@ run_tests() {
 
         if [ -d "$TEST_DIR/e2e" ]; then
             run_test_category "e2e"
+        fi
+
+        if [ -d "$TESTS_ROOT/cln/bugfixes" ]; then
+            run_test_category "cln/bugfixes"
         fi
     fi
 
@@ -425,7 +387,6 @@ run_tests() {
     echo "  Total:   $TOTAL_TESTS"
     echo -e "  ${GREEN}Passed:  $PASSED_TESTS${NC}"
     echo -e "  ${RED}Failed:  $FAILED_TESTS${NC}"
-    echo -e "  ${YELLOW}Skipped: $SKIPPED_TESTS${NC}"
     echo ""
     echo "  Duration: ${duration}s"
     echo ""
