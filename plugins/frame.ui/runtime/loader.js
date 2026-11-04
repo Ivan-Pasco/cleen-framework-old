@@ -1,6 +1,10 @@
 // Frame UI Runtime Loader
 // WASM loader with full browser API bridge
-// Version: 2.4.0
+// Version: 2.5.0
+// 2.5.0 (2026-11-04): _json_get takes the compiler's (any, LP path) shape and
+//   returns typed boxed-Any leaves (null-tag on a miss) — every json.get call
+//   now lowers to this bridge (stdlib-reference §8). The boxed-Any read/write
+//   logic of the _json_*_v2 bridges is shared (readBoxedAny / writeBoxedAny).
 // 2.4.0 (2026-07-08): __cleanRuntime companion API — added a pre-instantiate
 //   window.__cleanRuntime skeleton with registerEnv() so companion scripts
 //   like frame.client/runtime/bridge.js can contribute env imports BEFORE
@@ -568,6 +572,135 @@
 		ensureCapacity(p + padded);
 		heapPtr += padded;
 		return p;
+	}
+
+	// --- Boxed-Any JSON values (BOXED_ANY_ABI.md §1–§3) ---
+	// Shared by the _json_*_v2 bridges and _json_get. A box is 12 bytes:
+	// [tag:i32][payload:8 bytes]. Arrays and objects point at JSON-tree
+	// fragments — [count][elem_ptr × count] and [count][(key_ptr, val_ptr) ×
+	// count] — NOT Clean list<any> / pairs<string,any>. Every access
+	// re-acquires the DataView: writeString / allocBytes can grow memory.
+	const jsonView = () => new DataView(memory.buffer);
+
+	function readLPString(lpPtr) {
+		return readString(lpPtr + 4, jsonView().getUint32(lpPtr, true));
+	}
+
+	// Throws on an invalid tag — no silent "null" fallback (D5 / BOXED_ANY_ABI §6).
+	function readBoxedAny(ptr) {
+		const tag = jsonView().getInt32(ptr, true);
+		switch (tag) {
+			case 0: // Null
+				return null;
+			case 1: // Integer: i64 across offsets 4..12. Number(BigInt) loses
+				// precision above 2^53, symmetric with the decode partition (§5.2).
+				return Number(jsonView().getBigInt64(ptr + 4, true));
+			case 2: // Boolean
+				return jsonView().getInt32(ptr + 4, true) !== 0;
+			case 3: // Number: f64 at offset 4
+				return jsonView().getFloat64(ptr + 4, true);
+			case 4: // String: LP pointer at offset 4
+				return readLPString(jsonView().getInt32(ptr + 4, true));
+			case 5: { // Array fragment (§3.2), stride 4
+				const listPtr = jsonView().getInt32(ptr + 4, true);
+				const count = jsonView().getInt32(listPtr, true);
+				const result = [];
+				for (let i = 0; i < count; i++) {
+					result.push(readBoxedAny(jsonView().getInt32(listPtr + 4 + i * 4, true)));
+				}
+				return result;
+			}
+			case 6: { // Object fragment (§3.3), stride 8. Memory order is
+				// insertion order (D3); key_ptr is a raw LP string.
+				const pairsPtr = jsonView().getInt32(ptr + 4, true);
+				const count = jsonView().getInt32(pairsPtr, true);
+				const result = {};
+				for (let i = 0; i < count; i++) {
+					const entry = pairsPtr + 4 + i * 8;
+					const key = readLPString(jsonView().getInt32(entry, true));
+					result[key] = readBoxedAny(jsonView().getInt32(entry + 4, true));
+				}
+				return result;
+			}
+			default:
+				throw new Error('invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
+		}
+	}
+
+	// Writes a JSON value as a boxed-Any tree and returns the box pointer.
+	// Children are written first: their pointers stay valid when memory grows.
+	function writeBoxedAny(value) {
+		let tag;
+		let word = 0;
+		let float = null;
+		let integer = null;
+		if (value === null) {
+			tag = 0;
+		} else if (typeof value === 'boolean') {
+			tag = 2;
+			word = value ? 1 : 0;
+		} else if (typeof value === 'number') {
+			// Integers in the safe range → tag 1 (i64), everything else → tag 3 (§5.2).
+			if (Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
+				tag = 1;
+				integer = BigInt(value);
+			} else {
+				tag = 3;
+				float = value;
+			}
+		} else if (typeof value === 'string') {
+			tag = 4;
+			word = writeString(value);
+		} else if (Array.isArray(value)) {
+			const elemPtrs = value.map(writeBoxedAny);
+			const listPtr = allocBytes(4 + elemPtrs.length * 4);
+			jsonView().setInt32(listPtr, elemPtrs.length, true);
+			for (let i = 0; i < elemPtrs.length; i++) {
+				jsonView().setInt32(listPtr + 4 + i * 4, elemPtrs[i], true);
+			}
+			tag = 5;
+			word = listPtr;
+		} else {
+			// Object.entries preserves insertion order for string keys (D3).
+			const entries = Object.entries(value).map(([k, v]) => [writeString(k), writeBoxedAny(v)]);
+			const pairsPtr = allocBytes(4 + entries.length * 8);
+			jsonView().setInt32(pairsPtr, entries.length, true);
+			for (let i = 0; i < entries.length; i++) {
+				jsonView().setInt32(pairsPtr + 4 + i * 8, entries[i][0], true);
+				jsonView().setInt32(pairsPtr + 8 + i * 8, entries[i][1], true);
+			}
+			tag = 6;
+			word = pairsPtr;
+		}
+		const ptr = allocBytes(12);
+		const dv = jsonView();
+		dv.setInt32(ptr, tag, true);
+		if (integer !== null) {
+			dv.setBigInt64(ptr + 4, integer, true);
+		} else if (float !== null) {
+			dv.setFloat64(ptr + 4, float, true);
+		} else {
+			dv.setInt32(ptr + 4, word, true);
+			dv.setInt32(ptr + 8, 0, true);
+		}
+		return ptr;
+	}
+
+	// Follows a dot-separated path. A segment selects an object member by
+	// name, or an array element when it is a decimal index. undefined on a miss.
+	function jsonGetPath(value, path) {
+		let node = value;
+		for (const segment of path.split('.')) {
+			if (Array.isArray(node)) {
+				node = /^[0-9]+$/.test(segment) ? node[Number(segment)] : undefined;
+			} else if (node !== null && typeof node === 'object') {
+				node = Object.prototype.hasOwnProperty.call(node, segment) ? node[segment] : undefined;
+			} else {
+				return undefined;
+			}
+			if (node === undefined) return undefined;
+		}
+		return node;
 	}
 
 	// --- Bridge Object ---
@@ -1319,13 +1452,12 @@
 				return sha256Hex(salt + pw) === digest ? 1 : 0;
 			},
 
-			// ========== _json_* bridges (browser-side) ==========
+			// ========== legacy _json_encode / _json_decode (browser-side) ==========
 			// _json_encode round-trips through JSON.parse/stringify so the
 			// caller can rely on normalized output; non-JSON strings are
 			// encoded as JSON string values (matching server semantics).
 			// _json_decode returns the input unchanged when it parses, or an
-			// error object payload when it doesn't. _json_get walks a dotted
-			// key path into the parsed value and returns the string form.
+			// error object payload when it doesn't.
 			_json_encode: (ptr, len) => {
 				const input = readString(ptr, len);
 				try {
@@ -1343,278 +1475,49 @@
 					return writeString(JSON.stringify({ error: e.message || 'parse failure' }));
 				}
 			},
-			_json_get: (docPtr, docLen, keyPtr, keyLen) => {
-				const doc = readString(docPtr, docLen);
-				const key = readString(keyPtr, keyLen);
-				let parsed;
-				try {
-					parsed = JSON.parse(doc);
-				} catch (_) {
-					return writeString('');
-				}
-				const parts = key.split('.');
-				let node = parsed;
-				for (const p of parts) {
-					if (node == null || typeof node !== 'object') return writeString('');
-					node = node[p];
-				}
-				if (node == null) return writeString('');
-				return writeString(typeof node === 'string' ? node : String(node));
-			},
-
-			// ========== _json_*_v2 bridges — Delivery 2 / Option B shape ==========
-			// These implement the BOXED_ANY_ABI.md layout (12-byte tag+value blocks,
-			// 16-byte list headers, 8-byte pairs headers). They co-exist with the
-			// legacy _json_encode / _json_decode / _json_get bridges above, which
-			// are preserved byte-for-byte for frame.server 2.9.5 backward compat.
+			// ========== _json_*_v2 bridges and _json_get ==========
+			// The boxed-Any layout of BOXED_ANY_ABI.md (12-byte tag+payload
+			// boxes, JSON-tree array/object fragments) — see readBoxedAny /
+			// writeBoxedAny. They co-exist with the legacy _json_encode /
+			// _json_decode bridges above, preserved for frame.server 2.9.5.
 			//
-			// DataView safety: WASM memory can grow on any writeString/allocBytes
-			// call (which may call ensureCapacity → memory.grow). Every function
-			// here uses the () => new DataView(memory.buffer) pattern (dv()) so
-			// each field access always reads from the current buffer reference.
-			//
-			// Spec refs: foundation/spec/platform/BOXED_ANY_ABI.md §3–§5,
-			//            foundation/spec/platform/MEMORY_MODEL.md §List/§Pairs,
-			//            foundation/spec/platform/runtime-abi/v1.toml lines 1521–1546.
+			// Spec refs: foundation/spec/stdlib-reference.md §8,
+			//            foundation/spec/platform/BOXED_ANY_ABI.md §3–§6,
+			//            foundation/spec/platform/runtime-abi/v1.toml (JSON group).
 
-			_json_encode_v2: (boxedAnyPtr) => {
-				// Reads a boxed-Any tree from WASM memory and serialises it to
-				// compact JSON, returning the LP-string pointer. Raises (throws)
-				// on an invalid tag — no silent "null" fallback (D5 / BOXED_ANY_ABI §6).
-				//
-				// Container layouts are JSON-tree fragments per BOXED_ANY_ABI §3.2/§3.3
-				// (bit-for-bit matching the compiler's __json_from_cln_list /
-				// __json_from_cln_pairs helpers). NOT Clean list<any> / pairs<string,any>.
-				const dv = () => new DataView(memory.buffer);
+			_json_encode_v2: (boxedAnyPtr) => writeString(JSON.stringify(readBoxedAny(boxedAnyPtr))),
 
-				function readLPString(lpPtr) {
-					const len = dv().getUint32(lpPtr, true);
-					return readString(lpPtr + 4, len);
-				}
-
-				function readBoxedAny(ptr) {
-					const tag = dv().getInt32(ptr, true);
-					switch (tag) {
-						case 0: // Null
-							return null;
-						case 1: // Integer (i64 little-endian split at ptr+4 and ptr+8)
-							// Number(BigInt) is precision-lossy above 2^53; that matches
-							// the symmetric decode path (tag-1-vs-tag-3 partition in §5.2).
-							return Number(dv().getBigInt64(ptr + 4, true));
-						case 2: // Boolean
-							return dv().getInt32(ptr + 4, true) !== 0;
-						case 3: // Number (f64 little-endian at ptr+4)
-							return dv().getFloat64(ptr + 4, true);
-						case 4: { // String (LP pointer at ptr+4)
-							const lpPtr = dv().getInt32(ptr + 4, true);
-							return readLPString(lpPtr);
-						}
-						case 5: { // Array — JSON-tree Array fragment (BOXED_ANY_ABI §3.2)
-							// Layout: [count:i32 @0][elem_ptr:i32 × count @4], stride 4.
-							// No capacity, no type_id, no padding.
-							const listPtr = dv().getInt32(ptr + 4, true);
-							const count = dv().getInt32(listPtr, true);
-							const result = [];
-							for (let i = 0; i < count; i++) {
-								const elemPtr = dv().getInt32(listPtr + 4 + i * 4, true);
-								result.push(readBoxedAny(elemPtr));
-							}
-							return result;
-						}
-						case 6: { // Object — JSON-tree Object fragment (BOXED_ANY_ABI §3.3)
-							// Layout: [count:i32 @0][(key_ptr:i32, val_ptr:i32) × count @4], stride 8.
-							// Memory order IS insertion order (D3). key_ptr is a raw LP-string
-							// pointer, NOT a boxed-Any tag-4.
-							const pairsPtr = dv().getInt32(ptr + 4, true);
-							const count = dv().getInt32(pairsPtr, true);
-							const result = {};
-							for (let i = 0; i < count; i++) {
-								const entryBase = pairsPtr + 4 + i * 8;
-								const keyPtr = dv().getInt32(entryBase, true);
-								const valPtr = dv().getInt32(entryBase + 4, true);
-								result[readLPString(keyPtr)] = readBoxedAny(valPtr);
-							}
-							return result;
-						}
-						default:
-							throw new Error('_json_encode_v2: invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
-					}
-				}
-
-				const value = readBoxedAny(boxedAnyPtr);
-				return writeString(JSON.stringify(value));
-			},
-
-			_json_encode_pretty_v2: (boxedAnyPtr) => {
-				// Identical to _json_encode_v2 but produces 2-space-indented JSON
-				// (JSON.stringify(v, null, 2)). readBoxedAny is factored locally
-				// to avoid a cross-closure reference that would complicate the
-				// DataView lifecycle — each bridge is self-contained.
-				//
-				// Container layouts: JSON-tree fragments per BOXED_ANY_ABI §3.2/§3.3.
-				const dv = () => new DataView(memory.buffer);
-
-				function readLPString(lpPtr) {
-					const len = dv().getUint32(lpPtr, true);
-					return readString(lpPtr + 4, len);
-				}
-
-				function readBoxedAny(ptr) {
-					const tag = dv().getInt32(ptr, true);
-					switch (tag) {
-						case 0:
-							return null;
-						case 1:
-							return Number(dv().getBigInt64(ptr + 4, true));
-						case 2:
-							return dv().getInt32(ptr + 4, true) !== 0;
-						case 3:
-							return dv().getFloat64(ptr + 4, true);
-						case 4: {
-							const lpPtr = dv().getInt32(ptr + 4, true);
-							return readLPString(lpPtr);
-						}
-						case 5: {
-							// JSON-tree Array: [count @0][elem_ptr × count @4], stride 4.
-							const listPtr = dv().getInt32(ptr + 4, true);
-							const count = dv().getInt32(listPtr, true);
-							const result = [];
-							for (let i = 0; i < count; i++) {
-								const elemPtr = dv().getInt32(listPtr + 4 + i * 4, true);
-								result.push(readBoxedAny(elemPtr));
-							}
-							return result;
-						}
-						case 6: {
-							// JSON-tree Object: [count @0][(key_ptr, val_ptr) × count @4], stride 8.
-							const pairsPtr = dv().getInt32(ptr + 4, true);
-							const count = dv().getInt32(pairsPtr, true);
-							const result = {};
-							for (let i = 0; i < count; i++) {
-								const entryBase = pairsPtr + 4 + i * 8;
-								const keyPtr = dv().getInt32(entryBase, true);
-								const valPtr = dv().getInt32(entryBase + 4, true);
-								result[readLPString(keyPtr)] = readBoxedAny(valPtr);
-							}
-							return result;
-						}
-						default:
-							throw new Error('_json_encode_pretty_v2: invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
-					}
-				}
-
-				const value = readBoxedAny(boxedAnyPtr);
-				return writeString(JSON.stringify(value, null, 2));
-			},
+			_json_encode_pretty_v2: (boxedAnyPtr) =>
+				writeString(JSON.stringify(readBoxedAny(boxedAnyPtr), null, 2)),
 
 			_json_decode_v2: (bytesPtr, len) => {
-				// Parses the raw UTF-8 string at (bytesPtr, len) as JSON, writes a
-				// boxed-Any tree into WASM linear memory, and returns the pointer.
 				// Returns 0 (null sentinel) on JSON.parse failure — never throws.
 				// The compiler emits a post-call null-check per BOXED_ANY_ABI §6.
-				const dv = () => new DataView(memory.buffer);
-
-				const text = readString(bytesPtr, len);
 				let parsed;
 				try {
-					parsed = JSON.parse(text);
+					parsed = JSON.parse(readString(bytesPtr, len));
 				} catch (_) {
-					return 0; // parse-failure sentinel (BOXED_ANY_ABI §6)
+					return 0;
 				}
-
-				function writeLPString(str) {
-					// Delegates to the outer writeString, which bump-allocates and
-					// returns the LP pointer. Any DataView held before this call is
-					// invalid after it; always re-acquire via dv().
-					return writeString(str);
-				}
-
-				function writeBoxedAny(value) {
-					if (value === null) {
-						// tag 0: Null — allocate 12 bytes, write 0 at tag and both
-						// value words. allocBytes may grow memory; re-acquire dv().
-						const ptr = allocBytes(12);
-						dv().setInt32(ptr,     0, true); // tag = 0
-						dv().setInt32(ptr + 4, 0, true); // value low = 0
-						dv().setInt32(ptr + 8, 0, true); // value high = 0
-						return ptr;
-					}
-					if (typeof value === 'boolean') {
-						// tag 2: Boolean
-						const ptr = allocBytes(12);
-						dv().setInt32(ptr,     2, true);
-						dv().setInt32(ptr + 4, value ? 1 : 0, true);
-						dv().setInt32(ptr + 8, 0, true);
-						return ptr;
-					}
-					if (typeof value === 'number') {
-						// Partition: integers in safe range → tag 1 (i64 split),
-						// everything else → tag 3 (f64). Mirrors BOXED_ANY_ABI §5.2.
-						if (Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
-							const ptr = allocBytes(12);
-							dv().setInt32(ptr, 1, true);
-							// Write the 64-bit integer as two little-endian i32 words.
-							dv().setBigInt64(ptr + 4, BigInt(value), true);
-							return ptr;
-						} else {
-							const ptr = allocBytes(12);
-							dv().setInt32(ptr, 3, true);
-							dv().setFloat64(ptr + 4, value, true);
-							return ptr;
-						}
-					}
-					if (typeof value === 'string') {
-						// tag 4: String — LP pointer in value slot at offset 4.
-						const lpPtr = writeLPString(value);
-						// writeLPString may have grown memory; allocBytes will also
-						// grow if needed. Always re-acquire dv() after each.
-						const ptr = allocBytes(12);
-						dv().setInt32(ptr,     4, true);
-						dv().setInt32(ptr + 4, lpPtr, true);
-						dv().setInt32(ptr + 8, 0, true);
-						return ptr;
-					}
-					if (Array.isArray(value)) {
-						// tag 5: JSON-tree Array fragment (BOXED_ANY_ABI §3.2).
-						// Layout: [count:i32 @0][elem_ptr:i32 × count @4]. Total 4+count*4.
-						// No capacity, no type_id, no padding — heterogeneous by construction.
-						// Recursively encode elements first so their pointers are stable
-						// before we allocate the header (recursive calls may grow memory,
-						// which doesn't invalidate already-returned integer pointer values —
-						// only DataView snapshots are invalidated).
-						const elemPtrs = value.map(writeBoxedAny);
-						const listPtr = allocBytes(4 + elemPtrs.length * 4);
-						dv().setInt32(listPtr, elemPtrs.length, true); // count
-						for (let i = 0; i < elemPtrs.length; i++) {
-							dv().setInt32(listPtr + 4 + i * 4, elemPtrs[i], true);
-						}
-						const ptr = allocBytes(12);
-						dv().setInt32(ptr,     5, true);
-						dv().setInt32(ptr + 4, listPtr, true);
-						dv().setInt32(ptr + 8, 0, true);
-						return ptr;
-					}
-					// typeof "object" (non-null, non-array) → tag 6: JSON-tree Object fragment (§3.3).
-					// Layout: [count:i32 @0][(key_ptr:i32, val_ptr:i32) × count @4]. Total 4+count*8.
-					// key_ptr is a raw LP-string pointer, NOT a boxed-Any tag-4.
-					// Object.entries preserves insertion order for string keys (D3).
-					const entries = Object.entries(value);
-					const encodedEntries = entries.map(([k, v]) => [writeLPString(k), writeBoxedAny(v)]);
-					const pairsPtr = allocBytes(4 + encodedEntries.length * 8);
-					dv().setInt32(pairsPtr, encodedEntries.length, true); // count
-					for (let i = 0; i < encodedEntries.length; i++) {
-						const [keyLpPtr, valPtr] = encodedEntries[i];
-						dv().setInt32(pairsPtr + 4 + i * 8,     keyLpPtr, true);
-						dv().setInt32(pairsPtr + 4 + i * 8 + 4, valPtr,   true);
-					}
-					const ptr = allocBytes(12);
-					dv().setInt32(ptr,     6, true);
-					dv().setInt32(ptr + 4, pairsPtr, true);
-					dv().setInt32(ptr + 8, 0, true);
-					return ptr;
-				}
-
 				return writeBoxedAny(parsed);
+			},
+
+			// _json_get(source: any, path: LP string) -> any. A string source
+			// holds JSON text and is parsed; any other box is walked as it is.
+			// Returns the leaf as a typed box, or a null-tag box when the path
+			// does not resolve (runtime-abi/v1.toml).
+			_json_get: (sourcePtr, pathPtr) => {
+				const path = readLPString(pathPtr);
+				let source = sourcePtr === 0 ? null : readBoxedAny(sourcePtr);
+				if (typeof source === 'string') {
+					try {
+						source = JSON.parse(source);
+					} catch (_) {
+						source = null;
+					}
+				}
+				const leaf = source === null ? undefined : jsonGetPath(source, path);
+				return writeBoxedAny(leaf === undefined ? null : leaf);
 			},
 
 			// List operations — layout: [length:i32][capacity:i32][type_id:i32][pad:i32][elements...]

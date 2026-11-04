@@ -1,6 +1,10 @@
 /**
  * Clean Canvas WASM Loader
- * Version: 2.0.0
+ * Version: 2.1.0
+ *
+ * 2.1.0 (2026-11-04): JSON bridges — _json_encode_v2, _json_encode_pretty_v2,
+ *   _json_decode_v2 and _json_get (stdlib-reference §8). Every json.* call,
+ *   and the text of an `any` array or object, goes through them.
  *
  * Loads and runs Clean Language WASM modules with canvas bridge support.
  *
@@ -255,6 +259,47 @@
       const self = this;
 
       return {
+        // ================================================================
+        // JSON (stdlib-reference §8) — boxed-Any values per BOXED_ANY_ABI.md
+        // ================================================================
+
+        _json_encode_v2(boxedPtr) {
+          return self._jsonAllocString(JSON.stringify(self._jsonRead(boxedPtr)));
+        },
+
+        _json_encode_pretty_v2(boxedPtr) {
+          return self._jsonAllocString(JSON.stringify(self._jsonRead(boxedPtr), null, 2));
+        },
+
+        // Returns 0 on a parse failure (BOXED_ANY_ABI §6); the compiler
+        // turns it into a raise or a null.
+        _json_decode_v2(ptr, len) {
+          let parsed;
+          try {
+            parsed = JSON.parse(self.readString(ptr, len));
+          } catch (_) {
+            return 0;
+          }
+          return self._jsonWrite(parsed);
+        },
+
+        // (source: any, path: LP string) -> any. A string source holds JSON
+        // text; any other box is walked as it is. Typed leaf, or a null-tag
+        // box when the path does not resolve (runtime-abi/v1.toml).
+        _json_get(sourcePtr, pathPtr) {
+          const path = self._readLP(pathPtr);
+          let source = sourcePtr === 0 ? null : self._jsonRead(sourcePtr);
+          if (typeof source === 'string') {
+            try {
+              source = JSON.parse(source);
+            } catch (_) {
+              source = null;
+            }
+          }
+          const leaf = source === null ? undefined : self._jsonGetPath(source, path);
+          return self._jsonWrite(leaf === undefined ? null : leaf);
+        },
+
         // ================================================================
         // CONSOLE / PRINT
         // ================================================================
@@ -821,6 +866,146 @@
       const pad = (4 - (total % 4)) % 4;
       this.stringAllocOffset += total + pad;
       return ptr;
+    }
+
+    // ======================================================================
+    // BOXED-ANY JSON VALUES (BOXED_ANY_ABI.md §1-§3)
+    // ======================================================================
+    // A box is 12 bytes: [tag:i32][payload:8 bytes]. Arrays and objects
+    // point at JSON-tree fragments: [count][elem_ptr x count] and
+    // [count][(key_ptr, val_ptr) x count]. Everything the JSON bridges hand
+    // back is allocated with the module's exported malloc (§6), so it lives
+    // on the module's heap. Each access re-reads memory.buffer because malloc
+    // can grow memory.
+
+    _jsonView() {
+      this._checkMemoryGrowth();
+      return new DataView(this.memory.buffer);
+    }
+
+    _jsonMalloc(size) {
+      const ptr = this.instance.exports.malloc(size);
+      if (!ptr) throw new Error('JSON bridge: malloc(' + size + ') failed');
+      return ptr;
+    }
+
+    _jsonAllocString(str) {
+      const bytes = new TextEncoder().encode(str);
+      const ptr = this._jsonMalloc(4 + bytes.length);
+      this._jsonView().setUint32(ptr, bytes.length, true);
+      new Uint8Array(this.memory.buffer, ptr + 4, bytes.length).set(bytes);
+      return ptr;
+    }
+
+    // Throws on an invalid tag — no silent "null" fallback (D5).
+    _jsonRead(ptr) {
+      const tag = this._jsonView().getInt32(ptr, true);
+      switch (tag) {
+        case 0:
+          return null;
+        case 1: // i64 across offsets 4..12
+          return Number(this._jsonView().getBigInt64(ptr + 4, true));
+        case 2:
+          return this._jsonView().getInt32(ptr + 4, true) !== 0;
+        case 3:
+          return this._jsonView().getFloat64(ptr + 4, true);
+        case 4:
+          return this._readLP(this._jsonView().getInt32(ptr + 4, true));
+        case 5: {
+          const arr = this._jsonView().getInt32(ptr + 4, true);
+          const count = this._jsonView().getInt32(arr, true);
+          const out = [];
+          for (let i = 0; i < count; i++) {
+            out.push(this._jsonRead(this._jsonView().getInt32(arr + 4 + i * 4, true)));
+          }
+          return out;
+        }
+        case 6: {
+          const obj = this._jsonView().getInt32(ptr + 4, true);
+          const count = this._jsonView().getInt32(obj, true);
+          const out = {};
+          for (let i = 0; i < count; i++) {
+            const entry = obj + 4 + i * 8;
+            const key = this._readLP(this._jsonView().getInt32(entry, true));
+            out[key] = this._jsonRead(this._jsonView().getInt32(entry + 4, true));
+          }
+          return out;
+        }
+        default:
+          throw new Error('invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
+      }
+    }
+
+    // Writes a JSON value as a boxed-Any tree; returns the box pointer.
+    _jsonWrite(value) {
+      let tag = 0;
+      let word = 0;
+      let integer = null;
+      let float = null;
+      if (value === null) {
+        tag = 0;
+      } else if (typeof value === 'boolean') {
+        tag = 2;
+        word = value ? 1 : 0;
+      } else if (typeof value === 'number') {
+        // Safe-range integers are tag 1 (i64), everything else tag 3 (§5.2).
+        if (Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
+          tag = 1;
+          integer = BigInt(value);
+        } else {
+          tag = 3;
+          float = value;
+        }
+      } else if (typeof value === 'string') {
+        tag = 4;
+        word = this._jsonAllocString(value);
+      } else if (Array.isArray(value)) {
+        const elems = value.map((v) => this._jsonWrite(v));
+        const arr = this._jsonMalloc(4 + elems.length * 4);
+        this._jsonView().setInt32(arr, elems.length, true);
+        elems.forEach((e, i) => this._jsonView().setInt32(arr + 4 + i * 4, e, true));
+        tag = 5;
+        word = arr;
+      } else {
+        // Object.entries keeps insertion order for string keys (D3).
+        const entries = Object.entries(value).map(([k, v]) => [this._jsonAllocString(k), this._jsonWrite(v)]);
+        const obj = this._jsonMalloc(4 + entries.length * 8);
+        this._jsonView().setInt32(obj, entries.length, true);
+        entries.forEach(([k, v], i) => {
+          this._jsonView().setInt32(obj + 4 + i * 8, k, true);
+          this._jsonView().setInt32(obj + 8 + i * 8, v, true);
+        });
+        tag = 6;
+        word = obj;
+      }
+      const ptr = this._jsonMalloc(12);
+      const dv = this._jsonView();
+      dv.setInt32(ptr, tag, true);
+      if (integer !== null) {
+        dv.setBigInt64(ptr + 4, integer, true);
+      } else if (float !== null) {
+        dv.setFloat64(ptr + 4, float, true);
+      } else {
+        dv.setInt32(ptr + 4, word, true);
+        dv.setInt32(ptr + 8, 0, true);
+      }
+      return ptr;
+    }
+
+    // Dot-separated path: a member name, or a decimal index into an array.
+    _jsonGetPath(value, path) {
+      let node = value;
+      for (const segment of path.split('.')) {
+        if (Array.isArray(node)) {
+          node = /^[0-9]+$/.test(segment) ? node[Number(segment)] : undefined;
+        } else if (node !== null && typeof node === 'object') {
+          node = Object.prototype.hasOwnProperty.call(node, segment) ? node[segment] : undefined;
+        } else {
+          return undefined;
+        }
+        if (node === undefined) return undefined;
+      }
+      return node;
     }
 
     // ======================================================================

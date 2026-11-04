@@ -1,5 +1,5 @@
 /**
- * test_json_v2.mjs — Unit tests for the _json_encode_v2, _json_encode_pretty_v2,
+ * test_json_v2.mjs — Unit tests for the _json_encode_v2, _json_encode_pretty_v2, _json_get,
  * and _json_decode_v2 browser-runtime bridge functions.
  *
  * This file ports the algorithm from runtime/loader.js into a hermetic Node.js
@@ -8,7 +8,8 @@
  * under test here.
  *
  * IMPORTANT MAINTENANCE NOTE: Any change to the _json_encode_v2,
- * _json_encode_pretty_v2, or _json_decode_v2 implementations in
+ * _json_encode_pretty_v2, _json_decode_v2 or _json_get implementations (and
+ * the readBoxedAny / writeBoxedAny / jsonGetPath helpers they share) in
  * runtime/loader.js MUST be mirrored here. This duplication is intentional
  * and will be eliminated in [P4b] when we have a real WASM harness and the
  * canary runner (run_canaries.mjs) covers these bridges end-to-end.
@@ -87,145 +88,168 @@ function dv() {
 }
 
 // ---------------------------------------------------------------------------
-// Bridge implementations (mirrored from loader.js)
+// Bridge implementations (mirrored verbatim from loader.js)
 // ---------------------------------------------------------------------------
 
+const jsonView = () => new DataView(memory.buffer);
+
 function readLPString(lpPtr) {
-    const len = dv().getUint32(lpPtr, true);
-    return readString(lpPtr + 4, len);
+	return readString(lpPtr + 4, jsonView().getUint32(lpPtr, true));
 }
 
+// Throws on an invalid tag — no silent "null" fallback (D5 / BOXED_ANY_ABI §6).
 function readBoxedAny(ptr) {
-    const tag = dv().getInt32(ptr, true);
-    switch (tag) {
-        case 0: // Null
-            return null;
-        case 1: // Integer (i64 little-endian split at ptr+4)
-            return Number(dv().getBigInt64(ptr + 4, true));
-        case 2: // Boolean
-            return dv().getInt32(ptr + 4, true) !== 0;
-        case 3: // Number (f64 at ptr+4)
-            return dv().getFloat64(ptr + 4, true);
-        case 4: { // String — LP pointer at ptr+4
-            const lpPtr = dv().getInt32(ptr + 4, true);
-            return readLPString(lpPtr);
-        }
-        case 5: { // Array — JSON-tree fragment (BOXED_ANY_ABI §3.2)
-            //   [count:i32 @0][elem_ptr:i32 × count @4], stride 4.
-            const listPtr = dv().getInt32(ptr + 4, true);
-            const count = dv().getInt32(listPtr, true);
-            const result = [];
-            for (let i = 0; i < count; i++) {
-                const elemPtr = dv().getInt32(listPtr + 4 + i * 4, true);
-                result.push(readBoxedAny(elemPtr));
-            }
-            return result;
-        }
-        case 6: { // Object — JSON-tree fragment (BOXED_ANY_ABI §3.3)
-            //   [count:i32 @0][(key_ptr, val_ptr) × count @4], stride 8.
-            const pairsPtr = dv().getInt32(ptr + 4, true);
-            const count = dv().getInt32(pairsPtr, true);
-            const result = {};
-            for (let i = 0; i < count; i++) {
-                const entryBase = pairsPtr + 4 + i * 8;
-                const keyPtr = dv().getInt32(entryBase, true);
-                const valPtr = dv().getInt32(entryBase + 4, true);
-                result[readLPString(keyPtr)] = readBoxedAny(valPtr);
-            }
-            return result;
-        }
-        default:
-            throw new Error('readBoxedAny: invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
-    }
+	const tag = jsonView().getInt32(ptr, true);
+	switch (tag) {
+		case 0: // Null
+			return null;
+		case 1: // Integer: i64 across offsets 4..12. Number(BigInt) loses
+			// precision above 2^53, symmetric with the decode partition (§5.2).
+			return Number(jsonView().getBigInt64(ptr + 4, true));
+		case 2: // Boolean
+			return jsonView().getInt32(ptr + 4, true) !== 0;
+		case 3: // Number: f64 at offset 4
+			return jsonView().getFloat64(ptr + 4, true);
+		case 4: // String: LP pointer at offset 4
+			return readLPString(jsonView().getInt32(ptr + 4, true));
+		case 5: { // Array fragment (§3.2), stride 4
+			const listPtr = jsonView().getInt32(ptr + 4, true);
+			const count = jsonView().getInt32(listPtr, true);
+			const result = [];
+			for (let i = 0; i < count; i++) {
+				result.push(readBoxedAny(jsonView().getInt32(listPtr + 4 + i * 4, true)));
+			}
+			return result;
+		}
+		case 6: { // Object fragment (§3.3), stride 8. Memory order is
+			// insertion order (D3); key_ptr is a raw LP string.
+			const pairsPtr = jsonView().getInt32(ptr + 4, true);
+			const count = jsonView().getInt32(pairsPtr, true);
+			const result = {};
+			for (let i = 0; i < count; i++) {
+				const entry = pairsPtr + 4 + i * 8;
+				const key = readLPString(jsonView().getInt32(entry, true));
+				result[key] = readBoxedAny(jsonView().getInt32(entry + 4, true));
+			}
+			return result;
+		}
+		default:
+			throw new Error('invalid boxed-Any tag ' + tag + ' at ptr ' + ptr);
+	}
+}
+
+// Writes a JSON value as a boxed-Any tree and returns the box pointer.
+// Children are written first: their pointers stay valid when memory grows.
+function writeBoxedAny(value) {
+	let tag;
+	let word = 0;
+	let float = null;
+	let integer = null;
+	if (value === null) {
+		tag = 0;
+	} else if (typeof value === 'boolean') {
+		tag = 2;
+		word = value ? 1 : 0;
+	} else if (typeof value === 'number') {
+		// Integers in the safe range → tag 1 (i64), everything else → tag 3 (§5.2).
+		if (Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
+			tag = 1;
+			integer = BigInt(value);
+		} else {
+			tag = 3;
+			float = value;
+		}
+	} else if (typeof value === 'string') {
+		tag = 4;
+		word = writeString(value);
+	} else if (Array.isArray(value)) {
+		const elemPtrs = value.map(writeBoxedAny);
+		const listPtr = allocBytes(4 + elemPtrs.length * 4);
+		jsonView().setInt32(listPtr, elemPtrs.length, true);
+		for (let i = 0; i < elemPtrs.length; i++) {
+			jsonView().setInt32(listPtr + 4 + i * 4, elemPtrs[i], true);
+		}
+		tag = 5;
+		word = listPtr;
+	} else {
+		// Object.entries preserves insertion order for string keys (D3).
+		const entries = Object.entries(value).map(([k, v]) => [writeString(k), writeBoxedAny(v)]);
+		const pairsPtr = allocBytes(4 + entries.length * 8);
+		jsonView().setInt32(pairsPtr, entries.length, true);
+		for (let i = 0; i < entries.length; i++) {
+			jsonView().setInt32(pairsPtr + 4 + i * 8, entries[i][0], true);
+			jsonView().setInt32(pairsPtr + 8 + i * 8, entries[i][1], true);
+		}
+		tag = 6;
+		word = pairsPtr;
+	}
+	const ptr = allocBytes(12);
+	const dv = jsonView();
+	dv.setInt32(ptr, tag, true);
+	if (integer !== null) {
+		dv.setBigInt64(ptr + 4, integer, true);
+	} else if (float !== null) {
+		dv.setFloat64(ptr + 4, float, true);
+	} else {
+		dv.setInt32(ptr + 4, word, true);
+		dv.setInt32(ptr + 8, 0, true);
+	}
+	return ptr;
+}
+
+// Follows a dot-separated path. A segment selects an object member by
+// name, or an array element when it is a decimal index. undefined on a miss.
+function jsonGetPath(value, path) {
+	let node = value;
+	for (const segment of path.split('.')) {
+		if (Array.isArray(node)) {
+			node = /^[0-9]+$/.test(segment) ? node[Number(segment)] : undefined;
+		} else if (node !== null && typeof node === 'object') {
+			node = Object.prototype.hasOwnProperty.call(node, segment) ? node[segment] : undefined;
+		} else {
+			return undefined;
+		}
+		if (node === undefined) return undefined;
+	}
+	return node;
 }
 
 function _json_encode_v2(boxedAnyPtr) {
-    const value = readBoxedAny(boxedAnyPtr);
-    return writeString(JSON.stringify(value));
+	return writeString(JSON.stringify(readBoxedAny(boxedAnyPtr)));
 }
 
 function _json_encode_pretty_v2(boxedAnyPtr) {
-    const value = readBoxedAny(boxedAnyPtr);
-    return writeString(JSON.stringify(value, null, 2));
-}
-
-function writeBoxedAny(value) {
-    if (value === null) {
-        const ptr = allocBytes(12);
-        dv().setInt32(ptr,     0, true);
-        dv().setInt32(ptr + 4, 0, true);
-        dv().setInt32(ptr + 8, 0, true);
-        return ptr;
-    }
-    if (typeof value === 'boolean') {
-        const ptr = allocBytes(12);
-        dv().setInt32(ptr,     2, true);
-        dv().setInt32(ptr + 4, value ? 1 : 0, true);
-        dv().setInt32(ptr + 8, 0, true);
-        return ptr;
-    }
-    if (typeof value === 'number') {
-        if (Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
-            const ptr = allocBytes(12);
-            dv().setInt32(ptr, 1, true);
-            dv().setBigInt64(ptr + 4, BigInt(value), true);
-            return ptr;
-        } else {
-            const ptr = allocBytes(12);
-            dv().setInt32(ptr, 3, true);
-            dv().setFloat64(ptr + 4, value, true);
-            return ptr;
-        }
-    }
-    if (typeof value === 'string') {
-        const lpPtr = writeString(value);
-        const ptr = allocBytes(12);
-        dv().setInt32(ptr,     4, true);
-        dv().setInt32(ptr + 4, lpPtr, true);
-        dv().setInt32(ptr + 8, 0, true);
-        return ptr;
-    }
-    if (Array.isArray(value)) {
-        // JSON-tree Array: [count @0][elem_ptr × count @4]. Total 4 + count*4.
-        const elemPtrs = value.map(writeBoxedAny);
-        const listPtr = allocBytes(4 + elemPtrs.length * 4);
-        dv().setInt32(listPtr, elemPtrs.length, true);
-        for (let i = 0; i < elemPtrs.length; i++) {
-            dv().setInt32(listPtr + 4 + i * 4, elemPtrs[i], true);
-        }
-        const ptr = allocBytes(12);
-        dv().setInt32(ptr,     5, true);
-        dv().setInt32(ptr + 4, listPtr, true);
-        dv().setInt32(ptr + 8, 0, true);
-        return ptr;
-    }
-    // typeof "object" (non-null, non-array)
-    // JSON-tree Object: [count @0][(key_ptr, val_ptr) × count @4]. Total 4 + count*8.
-    const entries = Object.entries(value);
-    const encodedEntries = entries.map(([k, v]) => [writeString(k), writeBoxedAny(v)]);
-    const pairsPtr = allocBytes(4 + encodedEntries.length * 8);
-    dv().setInt32(pairsPtr, encodedEntries.length, true);
-    for (let i = 0; i < encodedEntries.length; i++) {
-        const [keyLpPtr, valPtr] = encodedEntries[i];
-        dv().setInt32(pairsPtr + 4 + i * 8,     keyLpPtr, true);
-        dv().setInt32(pairsPtr + 4 + i * 8 + 4, valPtr,   true);
-    }
-    const ptr = allocBytes(12);
-    dv().setInt32(ptr,     6, true);
-    dv().setInt32(ptr + 4, pairsPtr, true);
-    dv().setInt32(ptr + 8, 0, true);
-    return ptr;
+	return writeString(JSON.stringify(readBoxedAny(boxedAnyPtr), null, 2));
 }
 
 function _json_decode_v2(bytesPtr, len) {
-    const text = readString(bytesPtr, len);
-    let parsed;
-    try {
-        parsed = JSON.parse(text);
-    } catch (_) {
-        return 0; // parse-failure sentinel
-    }
-    return writeBoxedAny(parsed);
+	// Returns 0 (null sentinel) on JSON.parse failure — never throws.
+	// The compiler emits a post-call null-check per BOXED_ANY_ABI §6.
+	let parsed;
+	try {
+		parsed = JSON.parse(readString(bytesPtr, len));
+	} catch (_) {
+		return 0;
+	}
+	return writeBoxedAny(parsed);
+}
+
+// _json_get(source: any, path: LP string) -> any. A string source
+// holds JSON text and is parsed; any other box is walked as it is.
+// Returns the leaf as a typed box, or a null-tag box when the path
+// does not resolve (runtime-abi/v1.toml).
+function _json_get(sourcePtr, pathPtr) {
+	const path = readLPString(pathPtr);
+	let source = sourcePtr === 0 ? null : readBoxedAny(sourcePtr);
+	if (typeof source === 'string') {
+		try {
+			source = JSON.parse(source);
+		} catch (_) {
+			source = null;
+		}
+	}
+	const leaf = source === null ? undefined : jsonGetPath(source, path);
+	return writeBoxedAny(leaf === undefined ? null : leaf);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +555,51 @@ assertEq('decode empty string returns 0',      decode(''), 0);
     const result = readResultString(resultLp);
     assertEq('compiler-format tag-5 Array fragment ([1,2,3]) encodes bit-for-bit',
         result, '[1,2,3]');
+}
+
+// ---------------------------------------------------------------------------
+// Tests — _json_get(source: any, path: LP string) -> any
+// (runtime-abi/v1.toml: typed leaf, null-tag box on a miss)
+// ---------------------------------------------------------------------------
+
+function lpPath(path) {
+    return writeString(path);
+}
+
+{
+    const doc = '{"data":{"rows":[{"name":"Welcome","n":7},{"name":"Two"}]},"ok":true}';
+    const tree = decode(doc);
+    const text = writeBoxedAny(doc); // String-tagged box holding JSON text
+
+    for (const [label, source] of [['tree', tree], ['text', text]]) {
+        const name = _json_get(source, lpPath('data.rows.1.name'));
+        assertEq(label + ': _json_get string leaf tag', readTag(name), 4);
+        assertEq(label + ': _json_get string leaf value', readValueString(name), 'Two');
+
+        const n = _json_get(source, lpPath('data.rows.0.n'));
+        assertEq(label + ': _json_get integer leaf tag', readTag(n), 1);
+        assertEq(label + ': _json_get integer leaf value', readValueI64(n), 7);
+
+        const ok = _json_get(source, lpPath('ok'));
+        assertEq(label + ': _json_get boolean leaf tag', readTag(ok), 2);
+
+        const row = _json_get(source, lpPath('data.rows.0'));
+        assertEq(label + ': _json_get object leaf encodes', readResultString(_json_encode_v2(row)),
+            '{"name":"Welcome","n":7}');
+
+        for (const missing of ['data.rows.9.name', 'data.missing', 'ok.child', 'data.rows.x']) {
+            const miss = _json_get(source, lpPath(missing));
+            assert(label + ': _json_get miss "' + missing + '" returns a box', miss !== 0);
+            assertEq(label + ': _json_get miss "' + missing + '" is null-tag', readTag(miss), 0);
+        }
+    }
+
+    assertEq('_json_get on a null source is null-tag', readTag(_json_get(0, lpPath('a'))), 0);
+    const invalid = writeBoxedAny('not json');
+    assertEq('_json_get on invalid JSON text is null-tag', readTag(_json_get(invalid, lpPath('a'))), 0);
+    const numericKey = decode('{"0":"zero"}');
+    assertEq('_json_get numeric segment on an object is a member name',
+        readValueString(_json_get(numericKey, lpPath('0'))), 'zero');
 }
 
 // ---------------------------------------------------------------------------

@@ -1426,6 +1426,29 @@ functions:
 	string spec_field(string name, string type_name)
 		return "{\"name\":\"" + spec_esc_json(name) + "\",\"type\":\"" + spec_esc_json(type_name) + "\"}"
 
+	// Build a field entry visible outside the class: {"name":..,"type":..,
+	// "visibility":"public"}. Component inputs are set by the page that uses
+	// the component (`_comp.count = {expr}`), and class fields are private
+	// by default (semantic-rules.md §Visibility).
+	string spec_public_field(string name, string type_name)
+		return "{\"name\":\"" + spec_esc_json(name) + "\",\"type\":\"" + spec_esc_json(type_name) + "\",\"visibility\":\"public\"}"
+
+	// The class-spec entry for a state: or inputs: field; inputs are public.
+	string spec_component_field(string name, string type_name, string line, string input_lines)
+		string wanted = line.trim()
+		string remaining = input_lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string input_line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				input_line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			if input_line.trim() == wanted
+				return spec_public_field(name, type_name)
+		return spec_field(name, type_name)
+
 	// Build a class-spec method entry (inline body_handle shape, Amendment 3
 	// §3.13). params_json is an already-formatted JSON array like `[]` or
 	// `[{"name":"content","type":"string"}]`.
@@ -1714,7 +1737,7 @@ functions:
 						integer sf_ceq = sf_ctype.indexOf("=")
 						if sf_ceq != -1
 							sf_ctype = sf_ctype.substring(0, sf_ceq).trim()
-						fields_json = fields_json + "," + spec_field(sf_cname, sf_ctype)
+						fields_json = fields_json + "," + spec_component_field(sf_cname, sf_ctype, sf_line, input_lines)
 					else if sp > 0
 						string sf_type = sf_trim.substring(0, sp)
 						string sf_rest = sf_trim.substring(sp + 1, sf_trim.length()).trim()
@@ -1723,7 +1746,7 @@ functions:
 						string sf_name = sf_rest
 						if eq_pos != -1
 							sf_name = sf_rest.substring(0, eq_pos).trim()
-						fields_json = fields_json + "," + spec_field(sf_name, sf_type)
+						fields_json = fields_json + "," + spec_component_field(sf_name, sf_type, sf_line, input_lines)
 		fields_json = fields_json + "]"
 
 		// -------- Build render() method body source --------
