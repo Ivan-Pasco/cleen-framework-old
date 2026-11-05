@@ -1,0 +1,60 @@
+// Fixture for test_event_dispatch.mjs — the browser half. Declares the
+// handlers the server-rendered page (event_dispatch_page.cln) names, and
+// renders the Counter screen through an html: block, whose event attributes
+// reach the DOM as written (onclick="increment"). Every top-level handler
+// appends its name to `log` and writes it to #log; the test reads it back.
+
+plugins:
+	frame.ui
+
+start:
+	integer s = ui.updateElement("#screen-host", Counter.render())
+
+state:
+	string log = ""
+
+screen Counter:
+	state:
+		integer count = 0
+
+	functions:
+		string render()
+			html:
+				<div class="counter">
+					<span id="count">0</span>
+					<button id="inc" onclick="increment">+</button>
+					<input id="esc" onkeydown.escape="escKey">
+				</div>
+
+		void increment()
+			count = count + 1
+			integer s = ui.updateElement("#count", count.toString())
+
+		void escKey()
+			integer s = ui.updateElement("#count", "esc")
+
+functions:
+	void record(string name)
+		log = log + name + ";"
+		integer s = ui.updateElement("#log", log)
+
+	void topClick()
+		record("topClick:" + ui.eventAttr("data-id"))
+
+	void saveForm()
+		record("saveForm")
+
+	void outerClick()
+		record("outerClick")
+
+	void innerClick()
+		record("innerClick")
+
+	void onceClick()
+		record("onceClick")
+
+	void enterKey()
+		record("enterKey")
+
+	void focused()
+		record("focused")

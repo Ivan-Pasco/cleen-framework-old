@@ -88,8 +88,8 @@ keywords = [
   { name = "retry", description = "Retry configuration", context = "jobs" },
   { name = "maxAttempts", description = "Maximum retry attempts", context = "retry" },
   { name = "backoff", description = "Retry backoff strategy: fixed|exponential", context = "retry" },
-  { name = "delay", description = "Initial retry delay in seconds", context = "retry" },
-  { name = "timeout", description = "Job timeout in seconds", context = "jobs" },
+  { name = "delay", description = "Base retry delay in seconds (default 1)", context = "retry" },
+  { name = "timeout", description = "Job timeout in seconds (default 0 = unlimited)", context = "jobs" },
   { name = "queue", description = "Queue name for job routing", context = "jobs" },
 ]
 types = [
@@ -98,14 +98,14 @@ types = [
 ]
 functions = [
   { name = "queue.enqueue", signature = "queue.enqueue(jobName, argsJson) -> string", description = "Enqueue a job immediately. Returns job ID.", maps_to = "_job_enqueue", params = ["string", "string"], returns = "string" },
-  { name = "queue.enqueueAt", signature = "queue.enqueueAt(jobName, argsJson, timestamp) -> string", description = "Schedule a job for a future time. Returns job ID.", maps_to = "_job_enqueue_at", params = ["string", "string", "number"], returns = "string" },
+  { name = "queue.enqueueAt", signature = "queue.enqueueAt(jobName, argsJson, timestamp) -> string", description = "Schedule a job to run at a future Unix timestamp in seconds. Returns job ID.", maps_to = "_job_enqueue_at", params = ["string", "string", "number"], returns = "string" },
   { name = "queue.cancel", signature = "queue.cancel(jobId) -> boolean", description = "Cancel a pending job.", maps_to = "_job_cancel", params = ["string"], returns = "boolean" },
   { name = "queue.status", signature = "queue.status(jobId) -> string", description = "Get job status JSON.", maps_to = "_job_status", params = ["string"], returns = "string" },
   { name = "queue.result", signature = "queue.result(jobId) -> string", description = "Get job result payload.", maps_to = "_job_result", params = ["string"], returns = "string" },
   { name = "job.id", signature = "job.id() -> string", description = "Current job ID (inside handler).", maps_to = "_job_current_id", params = [], returns = "string" },
   { name = "job.args", signature = "job.args() -> string", description = "Current job args JSON (inside handler).", maps_to = "_job_current_args", params = [], returns = "string" },
   { name = "job.attempt", signature = "job.attempt() -> integer", description = "Current attempt number, 1-based (inside handler).", maps_to = "_job_current_attempt", params = [], returns = "integer" },
-  { name = "job.retryAfter", signature = "job.retryAfter(seconds)", description = "Request retry after N seconds.", maps_to = "_job_retry_after", params = ["integer"], returns = "void" },
+  { name = "job.retryAfter", signature = "job.retryAfter(seconds)", description = "Request the next retry after N seconds, overriding the configured backoff.", maps_to = "_job_retry_after", params = ["integer"], returns = "void" },
   { name = "job.fail", signature = "job.fail(reason)", description = "Mark job failed with reason.", maps_to = "_job_fail", params = ["string"], returns = "void" },
   { name = "job.succeed", signature = "job.succeed(resultJson)", description = "Mark job succeeded with result.", maps_to = "_job_succeed", params = ["string"], returns = "void" },
   { name = "schedule.cron", signature = "schedule.cron(scheduleName, cronExpr, handlerName) -> string", description = "Register a cron schedule that calls the named Clean function. Returns a registration ID.", maps_to = "_schedule_cron", params = ["string", "string", "string"], returns = "string" },
@@ -166,4 +166,4 @@ anti_pattern = "catching the error and returning silently — the job is marked 
 example = "patterns/retry-policy.cln"
 
 [build]
-built_with_compiler = "0.33.169"
+built_with_compiler = "0.33.170"

@@ -1,0 +1,81 @@
+// Test: frame.canvas — canvas.sprite anchorX= / anchorY= expand and run in
+// every sprite form.
+// Spec: foundation/spec/framework/grammar/frame-canvas.ebnf §17
+//       (canvas_sprite_call, canvas_sprite_opt_attr anchorX / anchorY);
+//       frame-canvas-semantics.md CVS-C006 (x, y are the top-left by
+//       default; anchors are normalized fractions of the frame), CVS-C004
+//       (anchors are the rotation pivot).
+//
+// Anchors are expressions: number literals, integer literals and state
+// variables. Each form — static, clip=, state=, sheet= clip=, tint=, flipX=
+// and the transformed form (rotation / scale / alpha) — must type-check and
+// run; a user statement after each draw counts that the frame ran. The
+// browser bridges are no-op stubs on clean-server; the drawn positions are
+// checked against the browser runtime in
+// plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas sprite anchors: start")
+
+state:
+	integer failures = 0
+	integer drawn = 0
+
+canvasScene: id="anchors" width=320 height=240
+
+	assets:
+		spritesheet "hero" src="sprites/hero.png" frameWidth=48 frameHeight=64
+		spritesheet "run" src="sprites/run.png" frameWidth=32 frameHeight=32
+
+	state:
+		number pivot = 0.5
+		number heroX = 120.0
+
+	animSprite "heroIdle":
+		sheet = "hero"
+		frames = 0..3
+		fps = 8
+		loop = true
+
+	animState "heroFSM":
+		initial = "idle"
+		state "idle":
+			play animSprite "heroIdle"
+
+	init:
+		start animState "heroFSM"
+		runFrames()
+
+	draw:
+		canvas.sprite "hero" x=heroX y=100 anchorX=0.5 anchorY=1
+		canvas.sprite "hero" x=10 y=20 clip=2 anchorX=1 anchorY=0
+		canvas.sprite "hero" x=heroX y=50.0 state="heroFSM" anchorX=pivot anchorY=pivot
+		canvas.sprite "hero" x=0 y=0 sheet="run" clip=1 anchorX=pivot * 2.0
+		canvas.sprite "hero" x=5 y=5 clip=0 tint="#ff0000" tintStrength=0.4 anchorY=0.25
+		canvas.sprite "hero" x=60 y=60 clip=0 flipX=true anchorX=0.5 anchorY=0.5
+		canvas.sprite "hero" x=heroX y=80 clip=1 rotation=45 scaleX=2.0 alpha=0.8 anchorX=pivot anchorY=1.0
+		drawn = drawn + 1
+
+functions:
+	void runFrames()
+		_frame_callback(0)
+		_frame_callback(0)
+		expectEqualInt(drawn, 2, "draw: with anchored sprites ran once per frame")
+		if failures == 0
+			printl("PASS: canvas-sprite-anchor")
+		else
+			printl("FAIL: canvas-sprite-anchor (" + failures.toString() + " assertion(s) failed)")
+
+	// Assertion helper — same contract as assertEqualInt in
+	// tests/framework/utils/assertions.cln (copied: no module import system yet).
+	boolean expectEqualInt(integer actual, integer expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected.toString())
+			printl("  Actual:   " + actual.toString())
+			failures = failures + 1
+			return false
+		return true

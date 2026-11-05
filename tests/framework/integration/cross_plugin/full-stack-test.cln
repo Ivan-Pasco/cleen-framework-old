@@ -36,7 +36,7 @@ start:
 endpoints:
 	GET "/test":
 		auth.setSession("\{\"user_id\":1,\"role\":\"user\"\}")
-		boolean ok_auth = auth.isAuthenticated() and auth.can("notes.write")
+		boolean ok_auth = auth.isAuthenticated() and auth.can(auth.getCurrentUser(), "notes.write")
 
 		// Table creation: `Model.migrate()` (DAT-C005).
 		Note.migrate()

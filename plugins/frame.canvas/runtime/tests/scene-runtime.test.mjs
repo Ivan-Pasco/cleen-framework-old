@@ -168,12 +168,27 @@ exports._on_pointer_down(1, 30, 40);
 check(vars.get('heroVX') === 200 && vars.get('attacking') === 1, 'onPointerDown stores state back');
 check(bridge.namedParticles.get('dust').emitters.length === 1, 'emit particles at the pointer');
 
+// The hero sheet's image never loads under Node: mark it loaded (4 frames
+// per row) so the sprite draws reach the 2D context.
+Object.assign(bridge.namedSprites.get('hero'), { loaded: true, framesPerRow: 4, totalFrames: 8 });
 drawCalls.length = 0;
 exports._frame_callback(1);
 check(vars.get('heroX') === 140, `onFrame: heroX += heroVX * dt (got ${vars.get('heroX')})`);
 check(bridge.namedAnimStates.get('heroFSM').current === 'attack', 'animState `when` transition evaluated each frame');
 check(bridge.cameraFollowX === 140, 'camera target re-evaluated each frame');
 check(drawCalls.some(([k]) => k === 'fillRect') && drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Lives: 3'), 'draw: ran with state values (text value= is an expression)');
+// canvas.sprite anchorX / anchorY (CVS-C006): x, y name the point at
+// (anchorX, anchorY) of the 48x64 frame; with a transform it is the pivot.
+const images = drawCalls.filter(([k]) => k === 'drawImage').map(([, a]) => a.slice(1).map((v) => Math.round(v * 1000) / 1000));
+check(images.length === 5, `five sprites drawn (got ${images.length})`);
+check(JSON.stringify(images[1]) === '[48,0,48,64,276,136,48,64]', `anchorX=0.5 anchorY=1 offsets by half the width and the full height (got ${JSON.stringify(images[1])})`);
+check(JSON.stringify(images[2] && images[2].slice(4)) === '[-38,-12,48,64]', `state= sprite honours anchors given as expressions (got ${JSON.stringify(images[2])})`);
+const transformCalls = drawCalls.filter(([k]) => k === 'translate' || k === 'rotate' || k === 'drawImage').map(([k, a]) => [k, ...a.slice(k === 'drawImage' ? 5 : 0).map((v) => Math.round(v * 1000) / 1000)]);
+check(transformCalls.some((c, i) => JSON.stringify(c) === '["translate",100,100]'
+  && JSON.stringify(transformCalls[i + 1]) === '["rotate",1.571]'
+  && JSON.stringify(transformCalls[i + 2]) === '["drawImage",-24,-32,48,64]'),
+  `rotation pivots on the anchor point (got ${JSON.stringify(transformCalls)})`);
+check(transformCalls.some((c) => JSON.stringify(c) === '["translate",62,92]'), 'flipped sprite: anchorX shifts the frame before the flip');
 check(bridge.animationFrames.size === 1, 'the frame callback does not request another animation loop');
 
 bridge.eventKey = 'ArrowLeft';

@@ -1,6 +1,6 @@
 [plugin]
 name = "frame.data"
-version = "3.0.17"
+version = "3.0.18"
 description = "ORM and database plugin for Clean Language: data models with save/delete/migrate, the query DSL (find, first, findOrFail, count, exists, paginate, cursor), transactions, migrations and raw SQL."
 author = "Clean Language Team"
 license = "MIT"
@@ -94,6 +94,11 @@ functions = [
   # frame.data without frame.server still have a timestamp source. Same bridge
   # as frame.server's declaration.
   { name = "_time_now", params = [], returns = "i64", description = "Current Unix timestamp in seconds since epoch.", hosts = ["all"] },
+
+  # Random bytes as lowercase hex for generated UUID primary keys
+  # (`uuid id primary generated`, DAT-E002). Same bridge as frame.auth's
+  # declaration.
+  { name = "_crypto_random_hex", params = ["i32"], returns = "ptr", description = "Generate random hex string of specified byte length", hosts = ["all"] },
 
   # Transactions
   { name = "_db_begin", params = [], returns = "i32", description = "Begin a database transaction; returns 1 on success, 0 on error", hosts = ["server"] },
@@ -309,4 +314,4 @@ example = "patterns/atomic-transaction.cln"
 
 
 [build]
-built_with_compiler = "0.33.169"
+built_with_compiler = "0.33.170"

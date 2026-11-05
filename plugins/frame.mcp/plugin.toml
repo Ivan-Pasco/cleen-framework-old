@@ -1,6 +1,6 @@
 [plugin]
 name = "frame.mcp"
-version = "2.0.0"
+version = "2.0.1"
 description = "MCP server plugin — define AI-callable tools, resources, and prompts inside mcp: blocks. Handles the full MCP lifecycle: capability negotiation, JSON-RPC 2.0 dispatch (__mcp_handle), param validation and deserialization, and stdio/HTTP transports. Typed emission (plugin contracts v3): generated helpers are composed with _emit_stmt_from_source + batch.func2; user handler bodies pass through _emit_stmt_from_source. See foundation/spec/framework/contracts/typed-emission.md."
 author = "Clean Language Team"
 license = "MIT"
@@ -62,6 +62,8 @@ functions = [
   { name = "_mcp_http_serve",   params = ["i32", "string"],    returns = "i32", description = "Start the HTTP+SSE listener on the given port and host (POST /mcp for JSON-RPC, GET /sse). Returns 1 immediately; the listener runs in the background.", expand_strings = true, hosts = ["server"] },
   { name = "_mcp_http_accept",  params = [],                   returns = "ptr", description = "Block until the next POST /mcp request arrives and return its raw JSON-RPC body.", hosts = ["server"] },
   { name = "_mcp_http_respond", params = ["string"],           returns = "i32", description = "Deliver the response body to the client of the most recent _mcp_http_accept. Each accept is followed by exactly one respond (an empty body for notifications).", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_http_header",  params = ["string"],           returns = "ptr", description = "Return the value of the named header (case-insensitive) of the request returned by the most recent _mcp_http_accept; empty string when absent.", expand_strings = true, hosts = ["server"] },
+  { name = "_mcp_http_require_key", params = ["string"],       returns = "i32", description = "Require Authorization: Bearer <key> on every MCP HTTP request (apiKey:). The host answers 401 Unauthorized to requests without the matching key; they never reach _mcp_http_accept. Returns 1 on success, 0 for an empty key.", expand_strings = true, hosts = ["server"] },
   { name = "_mcp_sse_send",     params = ["string", "string"], returns = "i32", description = "Send a raw SSE event to the connected client identified by clientId.", expand_strings = true, hosts = ["server"] },
   { name = "_mcp_log",          params = ["string", "string"], returns = "i32", description = "Write [frame.mcp] level: message to stderr only (never pollutes the stdio transport). level is debug, info, warn, or error.", expand_strings = true, hosts = ["server"] },
 ]
@@ -146,7 +148,7 @@ constraints = [
   "Resource bodies must not use the params: block — use a tool if you need parameterized data access",
   "Every tool and resource return must be return mcpJson(...), return mcpText(...) or return mcpError(...); prompts return the prompt text string (or mcpError on failure)",
   "Never call the _mcp_* transport bridges directly — the plugin owns the transport. For diagnostics use mcp.log(level, message); it writes to stderr and never pollutes the stdio JSON-RPC stream",
-  "apiKey: is rejected at compile time: the host's HTTP transport does not expose request headers, so the Bearer check cannot be enforced",
+  "apiKey: is valid only with transport: http: — every request must send Authorization: Bearer <key>; others get 401 Unauthorized. Read the key from the environment (apiKey: env.get(\"MCP_API_KEY\")); if it evaluates to an empty string the HTTP server is not started",
   "Do not print to stdout inside tool/resource/prompt bodies when using stdio transport — it corrupts the JSON-RPC stream",
   "Required params must be declared before optional params in the params: block",
 ]
@@ -164,4 +166,4 @@ anti_pattern = "adding unnecessary database queries just to follow a pattern —
 example = "patterns/basic-tools.cln"
 
 [build]
-built_with_compiler = "0.33.169"
+built_with_compiler = "0.33.170"

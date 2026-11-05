@@ -3,5 +3,5 @@ package: ApiServer
 	description: "REST API server with authentication"
 
 	target: server
-		plugins: [frame.server, frame.data, frame.auth]
+		plugins: [frame.server, frame.data, frame.auth, frame.ui]
 		entry: app/server/main.cln

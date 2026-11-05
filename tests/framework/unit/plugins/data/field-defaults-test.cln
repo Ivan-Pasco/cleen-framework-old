@@ -1,0 +1,82 @@
+// Test: frame.data — `default:` field values.
+// Spec: frame-data.ebnf §2.2 field_constraint `"default" , ":" , expression`;
+// typed-emission.md Amendment 14 (class-spec field `default`).
+// A new record starts with each field's declared default (also a quoted
+// default holding spaces), the default is saved with the row, and an
+// assigned value replaces it. Fields without a default start empty.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Ticket:
+	fields:
+		integer id primary generated
+		string title required
+		string status default: "in review"
+		string owner default: "nobody"
+		integer priority default: 3
+		number weight default: 1.5
+		boolean open default: true
+		boolean archived default: false
+		string note
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		Ticket.migrate()
+
+		Ticket fresh = Ticket()
+		if fresh.status != "in review"
+			printl("FAIL: string default with a space: got '" + fresh.status + "'")
+			failures = failures + 1
+		if fresh.owner != "nobody"
+			printl("FAIL: string default: got '" + fresh.owner + "'")
+			failures = failures + 1
+		if fresh.priority != 3
+			printl("FAIL: integer default: got " + fresh.priority.toString())
+			failures = failures + 1
+		if fresh.weight != 1.5
+			printl("FAIL: number default: got " + fresh.weight.toString())
+			failures = failures + 1
+		if not fresh.open
+			printl("FAIL: boolean default true: got false")
+			failures = failures + 1
+		if fresh.archived
+			printl("FAIL: boolean default false: got true")
+			failures = failures + 1
+		if fresh.note != ""
+			printl("FAIL: field without a default is not empty: '" + fresh.note + "'")
+			failures = failures + 1
+
+		// The defaults are saved with the row; an assigned value wins.
+		fresh.title = "first"
+		Database.save(fresh)
+		Ticket other = Ticket()
+		other.title = "second"
+		other.owner = "ann"
+		other.priority = 9
+		Database.save(other)
+
+		Ticket a = Ticket.findOrFail:
+			where:
+				title == "first"
+		if a.status != "in review" or a.owner != "nobody" or a.priority != 3 or not a.open
+			printl("FAIL: saved defaults not read back: " + a.status + "/" + a.owner + "/" + a.priority.toString())
+			failures = failures + 1
+		Ticket b = Ticket.findOrFail:
+			where:
+				title == "second"
+		if b.owner != "ann" or b.priority != 9 or b.status != "in review"
+			printl("FAIL: assigned values: " + b.owner + "/" + b.priority.toString() + "/" + b.status)
+			failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-field-defaults")
+		else
+			printl("FAIL: data-field-defaults (" + failures.toString() + " failure(s))")
+		return http.respond(200, "text/plain", "done")

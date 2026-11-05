@@ -2,7 +2,8 @@
 // Layer 2 canary runner (framework/browser).
 //
 // Reads the compiler's canary corpus, compiles each browser-applicable
-// canary to WASM with the installed `cln`, instantiates the module in
+// canary to WASM with the old-toolchain compiler ($CLEEN_CLN, else
+// ~/.cleen/bin/cln — never a bare `cln` from PATH), instantiates the module in
 // headless Chromium via Playwright using frame.ui's own runtime loader,
 // captures console output, and diffs against the canary's expected block.
 //
@@ -27,6 +28,7 @@ import { readFile, writeFile, mkdir, readdir, stat, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, extname } from 'node:path';
+import { homedir } from 'node:os';
 import { chromium } from 'playwright';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -34,6 +36,9 @@ const __dirname = dirname(__filename);
 const PLUGIN_DIR = resolve(__dirname, '..');
 const PLUGINS_DIR = resolve(PLUGIN_DIR, '..');
 const RUNTIME_LOADER = join(PLUGIN_DIR, 'runtime', 'loader.js');
+// The compiler: $CLEEN_CLN, else ~/.cleen/bin/cln. A bare `cln` on PATH may
+// belong to a different toolchain.
+const CLN = process.env.CLEEN_CLN || join(homedir(), '.cleen', 'bin', 'cln');
 const CLIENT_BRIDGE = join(PLUGINS_DIR, 'frame.client', 'runtime', 'bridge.js');
 
 // Layer-2 portable + browser-only canary namespaces (per Layer 1 handoff).
@@ -151,7 +156,7 @@ async function discoverCanaries(canaryDir) {
 
 function runCln(args, cwd) {
 	return new Promise((resolvePromise, reject) => {
-		const proc = spawn('cln', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+		const proc = spawn(CLN, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 		let stdout = '';
 		let stderr = '';
 		proc.stdout.on('data', (d) => (stdout += d.toString()));

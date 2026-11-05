@@ -1,0 +1,95 @@
+// Test: frame.data — schema-helper statements in migrations.
+// Spec: frame-data.ebnf §7 migration_statement = string_literal |
+// schema_helper_call; schema_helper_name = createTable | dropTable |
+// addColumn | dropColumn | renameColumn | createIndex | dropIndex |
+// addForeignKey | dropForeignKey | execute. DAT-C006 (filename order),
+// DAT-C007 (up and down). The host applies registered migrations before the
+// first request. addForeignKey/dropForeignKey need ALTER TABLE ... CONSTRAINT,
+// which SQLite does not support, so they are not exercised here.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+migrate "001_helpers_create":
+	up:
+		createTable("gadgets", "integer id primary generated", "string name required", "integer size")
+		createIndex("gadgets", ["name", "size"])
+		addColumn("gadgets", "color", string)
+		renameColumn("gadgets", "size", "weight")
+		execute("INSERT INTO gadgets (name, weight, color) VALUES ('first', 3, 'red')")
+	down:
+		dropTable("gadgets")
+
+migrate "002_helpers_change":
+	up:
+		createTable("scratch", "string code primary", "string label")
+		dropTable("scratch")
+		addColumn("gadgets", "temp", integer)
+		dropColumn("gadgets", "temp")
+		createIndex("gadgets", ["color"], unique)
+		dropIndex("gadgets", ["color"], unique)
+		createIndex("gadgets", ["weight"])
+		"INSERT INTO gadgets (name, weight, color) VALUES ('second', 5, 'blue')"
+	down:
+		dropIndex("gadgets", ["weight"])
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+
+		// createTable + addColumn + renameColumn + dropColumn: final columns.
+		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name IN ('id', 'name', 'weight', 'color')") != 4
+			printl("FAIL: gadgets columns are not id, name, weight, color")
+			failures = failures + 1
+		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name IN ('size', 'temp')") != 0
+			printl("FAIL: renamed/dropped columns still present")
+			failures = failures + 1
+		// `required` is NOT NULL, `primary` is the primary key.
+		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name = 'name' AND \"notnull\" = 1") != 1
+			printl("FAIL: required column is nullable")
+			failures = failures + 1
+		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name = 'id' AND pk = 1") != 1
+			printl("FAIL: id is not the primary key")
+			failures = failures + 1
+
+		// execute(...) and the string-literal statement both ran; the
+		// generated key auto-increments.
+		string rows = db.query("SELECT id, name FROM gadgets ORDER BY id", "[]")
+		if json.get(rows, "data.rows.0.id") != "1" or json.get(rows, "data.rows.1.id") != "2" or json.get(rows, "data.rows.1.name") != "second"
+			printl("FAIL: rows/generated keys wrong: " + rows)
+			failures = failures + 1
+
+		// createTable + dropTable in one migration leaves no table.
+		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'scratch'") != 0
+			printl("FAIL: dropTable left the scratch table")
+			failures = failures + 1
+
+		// createIndex / dropIndex.
+		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_gadgets_name_size'") != 1
+			printl("FAIL: composite index missing")
+			failures = failures + 1
+		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_gadgets_weight'") != 1
+			printl("FAIL: single-column index missing")
+			failures = failures + 1
+		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'uniq_gadgets_color'") != 0
+			printl("FAIL: dropIndex left the unique index")
+			failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-migrate-schema-helpers")
+		else
+			printl("FAIL: data-migrate-schema-helpers")
+		return json({ok: true})
+
+start:
+	printl("[boot] data-migrate-schema-helpers server ready")
+
+functions:
+	integer count_of(string sql)
+		string r = db.query(sql, "[]")
+		return json.get(r, "data.rows.0.n").toInteger()

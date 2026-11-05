@@ -1,5 +1,5 @@
 // frame.mcp plugin - MCP Server DSL
-// Version: 2.0.0
+// Version: 2.0.1
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
 //
 // Expands one `mcp "name":` block into:
@@ -189,6 +189,15 @@ functions:
 			n = n + 1
 		return n
 
+	// Every line of text (newline-terminated) indented one more tab.
+	string indent_lines(string text)
+		string out = ""
+		integer pos = 0
+		while pos < text.length()
+			out = out + "\t" + line_at(text, pos) + "\n"
+			pos = next_line(text, pos)
+		return out
+
 	boolean is_blank_or_comment(string line)
 		string t = line.trim()
 		return t == "" or t.startsWith("//")
@@ -284,6 +293,20 @@ functions:
 				string t = line.trim()
 				if t.startsWith(key + ":")
 					return member_value(t, key)
+			pos = next_line(cfg, pos)
+		return ""
+
+	// One-tab config value as written in the source (no unquoting) — the
+	// apiKey: expression is spliced into generated code verbatim.
+	string config_expr(string body, string key)
+		string cfg = config_section(body)
+		integer pos = 0
+		while pos < cfg.length()
+			string line = line_at(cfg, pos)
+			if tabs(line) == 1
+				string t = line.trim()
+				if t.startsWith(key + ":")
+					return t.substring(key.length() + 1, t.length()).trim()
 			pos = next_line(cfg, pos)
 		return ""
 
@@ -953,6 +976,9 @@ functions:
 		if emit_handle_function(ctx, init_tail, "[" + tools_json + "]", "[" + resources_json + "]", "[" + prompts_json + "]") != 0
 			return 1
 
+		if has_config(body, "apiKey")
+			if emit_api_key_functions(ctx, config_expr(body, "apiKey")) != 0
+				return 1
 		if emit_transport_loop(ctx, body) != 0
 			return 1
 		if _ctx_had_error(ctx) != 0
@@ -987,6 +1013,23 @@ functions:
 		src = src + tpl("return __mcp_err(__id, -32601, 'Method not found: ' + __method)\n")
 		return emit_src_function(ctx, "__mcp_handle", p1(ctx, "message", "string"), "string", src)
 
+	// apiKey: support (HTTP transport only — MCP-B004):
+	//   __mcp_api_key()                  the apiKey: expression, evaluated once
+	//                                     by the transport loop at startup
+	//   __mcp_authorized(header, key)    true when header is `Bearer <key>`
+	//                                     and key is not empty
+	//   __mcp_unauthorized()             JSON-RPC error answered to a request
+	//                                     whose Authorization header is wrong
+	integer emit_api_key_functions(integer ctx, string key_expr)
+		string src = "string __key = " + key_expr + "\nreturn __key\n"
+		if emit_src_function(ctx, "__mcp_api_key", p0(ctx), "string", src) != 0
+			return 1
+		src = tpl("if key == ''\n\treturn false\nreturn authorization == 'Bearer ' + key\n")
+		if emit_src_function(ctx, "__mcp_authorized", p2(ctx, "authorization", "string", "key", "string"), "boolean", src) != 0
+			return 1
+		src = tpl("return __mcp_err('null', -32001, 'Unauthorized')\n")
+		return emit_src_function(ctx, "__mcp_unauthorized", p0(ctx), "string", src)
+
 	// Transport loop in the program start slot.
 	//   stdio: read newline-delimited messages until EOF, write responses.
 	//   http:  serve, then answer every accepted request exactly once with
@@ -1001,11 +1044,28 @@ functions:
 			string host = http_attr(body, "host")
 			if host == ""
 				host = "localhost"
-			src = "_mcp_http_serve(" + port.toInteger().toString() + ", " + clit(host) + ")\n"
-			src = src + "boolean __mcp_serving = true\n"
-			src = src + "while __mcp_serving\n"
-			src = src + "\tstring __mcp_in = _mcp_http_accept()\n"
-			src = src + "\t_mcp_http_respond(__mcp_handle(__mcp_in))\n"
+			string serve = "_mcp_http_serve(" + port.toInteger().toString() + ", " + clit(host) + ")\n"
+			serve = serve + "boolean __mcp_serving = true\n"
+			serve = serve + "while __mcp_serving\n"
+			serve = serve + "\tstring __mcp_in = _mcp_http_accept()\n"
+			if has_config(body, "apiKey")
+				// The host answers 401 to requests without the key
+				// (_mcp_http_require_key); the header is checked again here so
+				// no request is dispatched without it. An empty key (unset
+				// environment variable) leaves the server stopped rather
+				// than open.
+				serve = serve + "\tif __mcp_authorized(_mcp_http_header(\"authorization\"), __mcp_key)\n"
+				serve = serve + "\t\t_mcp_http_respond(__mcp_handle(__mcp_in))\n"
+				serve = serve + "\telse\n"
+				serve = serve + "\t\t_mcp_http_respond(__mcp_unauthorized())\n"
+				src = "string __mcp_key = __mcp_api_key()\n"
+				src = src + "if _mcp_http_require_key(__mcp_key) == 0\n"
+				src = src + "\t_mcp_log(\"error\", \"apiKey: is empty (is the environment variable set?) — the MCP HTTP server was not started\")\n"
+				src = src + "else\n"
+				src = src + indent_lines(serve)
+			else
+				serve = serve + "\t_mcp_http_respond(__mcp_handle(__mcp_in))\n"
+				src = serve
 		else
 			src = "boolean __mcp_running = true\n"
 			src = src + "while __mcp_running\n"
@@ -1048,7 +1108,8 @@ functions:
 		if has_config(body, "apiKey")
 			if transport != "http"
 				return "mcp: apiKey: requires transport: http: — stdio servers have no API key authentication (MCP-B004)"
-			return "mcp: apiKey: cannot be enforced — the host's _mcp_http_accept bridge does not expose request headers, so the Authorization: Bearer check cannot run. Remove apiKey: or restrict the listener with host: \"localhost\""
+			if config_expr(body, "apiKey") == ""
+				return "mcp: apiKey: needs a value — e.g. apiKey: env.get(\"MCP_API_KEY\")"
 
 		// MCP-B006: config fields before primitives; nothing unknown at the top.
 		string seen_primitive = ""

@@ -32,7 +32,7 @@ curl -X POST http://localhost:3000/api/register \
 
 Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
 
-Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`).
 
 To compile, start and request every route in one step, run `./scripts/smoke-examples.sh registration-form` from the framework root.
 

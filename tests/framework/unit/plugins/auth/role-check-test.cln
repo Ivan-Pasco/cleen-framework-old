@@ -1,4 +1,4 @@
-// Test: frame.auth — roles: block and hasRole / can permission checks.
+// Test: frame.auth — roles: block and hasRole / can(user, permission) checks.
 // Server-shaped: runner drives /test to enter request context.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
@@ -25,13 +25,25 @@ endpoints:
 		boolean ok_role = auth.hasRole("admin")
 		boolean ok_not = not auth.hasRole("user")
 
+		// auth.can(user, permission) — frame-auth.ebnf auth_ns_can_call.
+		string user = auth.getCurrentUser()
+
 		// admin has users.create per roles: block above.
-		boolean ok_can = auth.can("users.create")
+		boolean ok_can = auth.can(user, "users.create")
 
 		// admin does NOT have an unlisted permission.
-		boolean ok_cant = not auth.can("nonexistent.permission")
+		boolean ok_cant = not auth.can(user, "nonexistent.permission")
 
-		if ok_role and ok_not and ok_can and ok_cant
+		// The check uses the user passed in, not the current session:
+		// a "user"-role principal has profile.view but not users.create.
+		string other = "{\"user_id\":2,\"role\":\"user\"}"
+		boolean ok_other_can = auth.can(other, "profile.view")
+		boolean ok_other_cant = not auth.can(other, "users.create")
+
+		// No user (unauthenticated) has no permissions.
+		boolean ok_anon = not auth.can("", "profile.view")
+
+		if ok_role and ok_not and ok_can and ok_cant and ok_other_can and ok_other_cant and ok_anon
 			printl("PASS: auth-role-check")
 		else
 			printl("FAIL: auth-role-check")

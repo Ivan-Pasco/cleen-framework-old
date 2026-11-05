@@ -9,7 +9,7 @@ members = []
 # https://github.com/Ivan-Pasco/clean-server-old.
 
 [workspace.package]
-version = "2.12.201"
+version = "2.12.202"
 edition = "2021"
 authors = ["Ivan Pasco"]
 license = "MIT"

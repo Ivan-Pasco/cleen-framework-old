@@ -91,7 +91,7 @@ scripts/               build, install and test scripts (see scripts/README.md)
 ./scripts/build-all-plugins.sh      # rebuild every plugin.wasm with ~/.cleen/bin/cln
 ./scripts/install-plugins.sh        # install this checkout's plugins into ~/.cleen/plugins
 ./scripts/run-framework-tests.sh    # run every framework suite inside clean-server
-./scripts/test-plugins.sh           # compile-check plugins/*/tests
+./scripts/test-plugins.sh           # per plugin: helper type-checks + unit suite
 ./scripts/smoke-examples.sh         # compile, boot and request every example
 ./scripts/install-hooks.sh          # pre-commit / pre-push hooks
 ```

@@ -1525,28 +1525,20 @@ functions:
 			return 0
 		return _batch_func(ctx, "verifyPassword", params, "boolean", body_arr)
 
-	// 10. can(permission: string) -> boolean
+	// 10. can(user: string, permission: string) -> boolean
+	// frame-auth.ebnf auth_ns_can_call: auth.can(user, permission). `user` is
+	// the user/session JSON (e.g. from auth.getCurrentUser()); the check uses
+	// that user's role, not the current request session.
 	integer build_can(integer ctx)
-		integer params = one_param(ctx, "permission", "string")
+		integer params = two_params(ctx, "user", "string", "permission", "string")
 		if params == 0
 			return 0
 		integer body_arr = _batch_arrayNew(ctx)
 		if body_arr == 0
 			return 0
 
-		// string session = session_get()
-		integer sg_e = call0(ctx, "session_get")
-		if sg_e == 0
-			return 0
-		integer s1 = _batch_stmtVarDecl(ctx, "session", "string", sg_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// if session == "" { return false }
-		integer cond1 = eq_ident_str(ctx, "session", "")
+		// if user == "" { return false }
+		integer cond1 = eq_ident_str(ctx, "user", "")
 		if cond1 == 0
 			return 0
 		integer ret_f = ret_bool(ctx, false)
@@ -1562,8 +1554,8 @@ functions:
 		if p2 != 0
 			return 0
 
-		// string role = _json_get(session, "claims.role")
-		integer jg_e = call2_ident_str(ctx, "_json_get", "session", "claims.role")
+		// string role = _json_get(user, "claims.role")
+		integer jg_e = call2_ident_str(ctx, "_json_get", "user", "claims.role")
 		if jg_e == 0
 			return 0
 		integer s3 = _batch_stmtVarDecl(ctx, "role", "string", jg_e)
@@ -1575,9 +1567,9 @@ functions:
 
 		// Sessions made by auth.setSession keep the role at the top level
 		// ({"role": ...}); sessions made by session_create keep it in claims.
-		// if role == "" { role = _json_get(session, "role") }
+		// if role == "" { role = _json_get(user, "role") }
 		integer cond_r = eq_ident_str(ctx, "role", "")
-		integer top_role = _batch_stmtAssign(ctx, "role", call2_ident_str(ctx, "_json_get", "session", "role"))
+		integer top_role = _batch_stmtAssign(ctx, "role", call2_ident_str(ctx, "_json_get", "user", "role"))
 		integer if_r = if_no_else(ctx, cond_r, body1(ctx, top_role))
 		if if_r == 0 or _batch_arrayPush(ctx, body_arr, if_r) != 0
 			return 0
@@ -2235,9 +2227,11 @@ functions:
 				if jwt_block.indexOf("secret") == -1
 					return "auth.jwt: secret is required when JWT is enabled"
 
+				// get_config_value unwraps env.get("X") to X, so the env.get()
+				// form is detected on the raw `secret = ...` line instead.
 				string raw_secret = get_config_value(jwt_block, "secret", "")
 				if raw_secret.length() > 0
-					boolean is_env_call = raw_secret.startsWith("env.get(")
+					boolean is_env_call = jwt_block.indexOf("secret = env.get(") != -1
 					if not is_env_call
 						return "auth.jwt: secret must reference an environment variable (use env.get(\"JWT_SECRET\")), not a hardcoded string"
 

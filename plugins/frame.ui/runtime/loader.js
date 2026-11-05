@@ -1,6 +1,18 @@
 // Frame UI Runtime Loader
 // WASM loader with full browser API bridge
-// Version: 2.5.0
+// Version: 2.7.0
+// 2.7.0 (2026-11-04): time.* calendar bridges (stdlib-reference §12) —
+//   _time_format, _time_relative, _time_parse, _time_parts, _time_add and
+//   _time_diff on Unix SECONDS with IANA zones through Intl, matching
+//   clean-server's results (cleanTime helpers).
+// 2.6.0 (2026-11-04): declarative event attributes (UI-B006 / UI-B007) —
+//   data-on-<event> markers (page mode) and on<event>="handler" attributes
+//   (html: blocks, component / screen templates) dispatch to the named WASM
+//   export through one document-level listener per event type, including
+//   markup inserted after load. Modifiers .prevent .stop .once .passive
+//   .enter .escape .space .left .right; screen-scoped exports
+//   (Counter.increment) resolve inside a data-screen / data-component
+//   wrapper; a missing export is a console error at dispatch time.
 // 2.5.0 (2026-11-04): _json_get takes the compiler's (any, LP path) shape and
 //   returns typed boxed-Any leaves (null-tag on a miss) — every json.get call
 //   now lowers to this bridge (stdlib-reference §8). The boxed-Any read/write
@@ -178,6 +190,224 @@
 		return null;
 	}
 
+	// --- time.* (stdlib-reference §12) ---
+	// Pure helpers behind the _time_format / _time_relative / _time_parse /
+	// _time_parts / _time_add / _time_diff bridges. Timestamps are Unix SECONDS
+	// (f64). A time zone is an IANA name ("" = the local zone; an unknown name
+	// falls back to UTC). Results match clean-server's host bridge
+	// (host-bridge/src/wasm_linker/env_time.rs).
+	const cleanTime = (() => {
+		const WEEKDAYS = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+		const FIXED_UNITS = { seconds: 1, minutes: 60, hours: 3600, days: 86400, weeks: 604800 };
+		const zoneFormats = new Map();
+
+		// Intl formatter for an IANA zone, or null when the zone is unknown.
+		function zoneFormat(zone) {
+			if (!zoneFormats.has(zone)) {
+				let fmt = null;
+				try {
+					fmt = new Intl.DateTimeFormat('en-US', {
+						timeZone: zone, hourCycle: 'h23', weekday: 'short',
+						year: 'numeric', month: 'numeric', day: 'numeric',
+						hour: 'numeric', minute: 'numeric', second: 'numeric',
+					});
+				} catch (_) {
+					fmt = null;
+				}
+				zoneFormats.set(zone, fmt);
+			}
+			return zoneFormats.get(zone);
+		}
+
+		// Calendar fields of `ts` in `tz`; null for a non-finite or out-of-range ts.
+		function fields(ts, tz) {
+			if (!Number.isFinite(ts)) return null;
+			const d = new Date(Math.floor(ts) * 1000);
+			if (Number.isNaN(d.getTime())) return null;
+			const zone = String(tz || '').trim();
+			if (zone === '') {
+				return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes(), second: d.getSeconds(), weekday: d.getDay() };
+			}
+			const fmt = zoneFormat(zone);
+			if (!fmt) {
+				return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: d.getUTCSeconds(), weekday: d.getUTCDay() };
+			}
+			const p = {};
+			for (const part of fmt.formatToParts(d)) p[part.type] = part.value;
+			return { year: Number(p.year), month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, minute: Number(p.minute), second: Number(p.second), weekday: WEEKDAYS[p.weekday] };
+		}
+
+		const pad = (n, width) => String(n).padStart(width, '0');
+
+		// time.format: tokens YYYY MM DD HH mm ss h A a; every other character
+		// is copied. "" for a non-finite timestamp.
+		function format(ts, pattern, tz) {
+			const f = fields(ts, tz);
+			if (!f) return '';
+			const hour12 = f.hour % 12 === 0 ? 12 : f.hour % 12;
+			const pm = f.hour >= 12;
+			const text = String(pattern);
+			let out = '';
+			let i = 0;
+			while (i < text.length) {
+				if (text.startsWith('YYYY', i)) { out += pad(f.year, 4); i += 4; }
+				else if (text.startsWith('MM', i)) { out += pad(f.month, 2); i += 2; }
+				else if (text.startsWith('DD', i)) { out += pad(f.day, 2); i += 2; }
+				else if (text.startsWith('HH', i)) { out += pad(f.hour, 2); i += 2; }
+				else if (text.startsWith('mm', i)) { out += pad(f.minute, 2); i += 2; }
+				else if (text.startsWith('ss', i)) { out += pad(f.second, 2); i += 2; }
+				else if (text[i] === 'h') { out += String(hour12); i += 1; }
+				else if (text[i] === 'A') { out += pm ? 'PM' : 'AM'; i += 1; }
+				else if (text[i] === 'a') { out += pm ? 'pm' : 'am'; i += 1; }
+				else {
+					const ch = String.fromCodePoint(text.codePointAt(i));
+					out += ch;
+					i += ch.length;
+				}
+			}
+			return out;
+		}
+
+		function daysInMonth(year, month) {
+			const d = new Date(0);
+			d.setUTCFullYear(year, month, 0);
+			return d.getUTCDate();
+		}
+
+		function validDate(year, month, day) {
+			return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+		}
+
+		// Unix seconds of a UTC calendar date-time (years below 100 included).
+		function utcSeconds(year, month, day, hour, minute, second) {
+			const d = new Date(0);
+			d.setUTCFullYear(year, month - 1, day);
+			d.setUTCHours(hour, minute, second, 0);
+			return d.getTime() / 1000;
+		}
+
+		// time.parse: ISO 8601 to fractional Unix seconds; -1 when invalid.
+		// RFC 3339 with an offset; a date-only string is UTC midnight; a
+		// date-time without an offset is local time (-1 inside a DST gap).
+		function parse(input) {
+			const s = String(input).trim();
+			let m = /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.exec(s);
+			if (m) {
+				const [y, mo, d, h, mi, sec] = m.slice(1, 7).map(Number);
+				if (!validDate(y, mo, d) || h > 23 || mi > 59 || sec > 59) return -1;
+				let offset = 0;
+				if (m[8] !== 'Z' && m[8] !== 'z') {
+					const oh = Number(m[8].slice(1, 3));
+					const om = Number(m[8].slice(4, 6));
+					if (oh > 23 || om > 59) return -1;
+					offset = (m[8][0] === '-' ? -1 : 1) * (oh * 3600 + om * 60);
+				}
+				return utcSeconds(y, mo, d, h, mi, sec) - offset + (m[7] ? Number('0' + m[7]) : 0);
+			}
+			m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+			if (m) {
+				const [y, mo, d] = m.slice(1, 4).map(Number);
+				return validDate(y, mo, d) ? utcSeconds(y, mo, d, 0, 0, 0) : -1;
+			}
+			m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?$/.exec(s);
+			if (m) {
+				const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
+				const sec = m[6] ? Number(m[6]) : 0;
+				if (!validDate(y, mo, d) || h > 23 || mi > 59 || sec > 59) return -1;
+				const local = new Date(2000, 0, 1);
+				local.setFullYear(y, mo - 1, d);
+				local.setHours(h, mi, sec, 0);
+				if (local.getFullYear() !== y || local.getMonth() !== mo - 1 || local.getDate() !== d ||
+					local.getHours() !== h || local.getMinutes() !== mi) return -1;
+				return local.getTime() / 1000 + (m[7] ? Number('0' + m[7]) : 0);
+			}
+			return -1;
+		}
+
+		// time.parts: calendar components of `ts` in `tz` as JSON.
+		function parts(ts, tz) {
+			const f = fields(ts, tz);
+			if (!f) return '{}';
+			return JSON.stringify({ year: f.year, month: f.month, day: f.day, hour: f.hour, minute: f.minute, second: f.second, dayOfWeek: f.weekday, timestamp: ts });
+		}
+
+		// `ts` moved by `months` calendar months (UTC), the day clamped to the
+		// target month's last day (2026-01-31 + 1 month = 2026-02-28).
+		function addMonths(ts, months) {
+			if (!Number.isFinite(ts)) return NaN;
+			const secs = Math.floor(ts);
+			const nanos = Math.min(Math.round((ts - secs) * 1e9), 999999999);
+			const d = new Date(secs * 1000);
+			if (Number.isNaN(d.getTime())) return NaN;
+			const total = d.getUTCFullYear() * 12 + d.getUTCMonth() + months;
+			const year = Math.floor(total / 12);
+			const month = total - year * 12 + 1;
+			const day = Math.min(d.getUTCDate(), daysInMonth(year, month));
+			return utcSeconds(year, month, day, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()) + nanos / 1e9;
+		}
+
+		// time.add: `ts` plus `amount` units; NaN for an unknown unit.
+		function add(ts, amount, unit) {
+			const u = String(unit).trim().toLowerCase();
+			if (Object.prototype.hasOwnProperty.call(FIXED_UNITS, u)) return ts + amount * FIXED_UNITS[u];
+			if (u === 'months') return addMonths(ts, amount);
+			if (u === 'years') return addMonths(ts, amount * 12);
+			return NaN;
+		}
+
+		// Calendar months from `from` to `to` (to >= from): whole months by
+		// calendar stepping plus the elapsed share of the next month.
+		function monthsBetween(from, to) {
+			let whole = 0;
+			while (addMonths(from, whole + 1) <= to) whole++;
+			const start = addMonths(from, whole);
+			const span = addMonths(from, whole + 1) - start;
+			return whole + (span > 0 ? (to - start) / span : 0);
+		}
+
+		// time.diff: `to - from` in `unit`, fractional; NaN for an unknown unit.
+		function diff(from, to, unit) {
+			const u = String(unit).trim().toLowerCase();
+			if (Object.prototype.hasOwnProperty.call(FIXED_UNITS, u)) return (to - from) / FIXED_UNITS[u];
+			const months = () => (to >= from ? monthsBetween(from, to) : -monthsBetween(to, from));
+			if (u === 'months') return months();
+			if (u === 'years') return months() / 12;
+			return NaN;
+		}
+
+		const RELATIVE_WORDS = {
+			es: { now: 'ahora mismo', units: [['minuto', 'minutos'], ['hora', 'horas'], ['día', 'días'], ['mes', 'meses'], ['año', 'años']], past: (n, w) => `hace ${n} ${w}`, future: (n, w) => `dentro de ${n} ${w}` },
+			fr: { now: "à l'instant", units: [['minute', 'minutes'], ['heure', 'heures'], ['jour', 'jours'], ['mois', 'mois'], ['an', 'ans']], past: (n, w) => `il y a ${n} ${w}`, future: (n, w) => `dans ${n} ${w}` },
+			de: { now: 'gerade eben', units: [['Minute', 'Minuten'], ['Stunde', 'Stunden'], ['Tag', 'Tagen'], ['Monat', 'Monaten'], ['Jahr', 'Jahren']], past: (n, w) => `vor ${n} ${w}`, future: (n, w) => `in ${n} ${w}` },
+			pt: { now: 'agora mesmo', units: [['minuto', 'minutos'], ['hora', 'horas'], ['dia', 'dias'], ['mês', 'meses'], ['ano', 'anos']], past: (n, w) => `há ${n} ${w}`, future: (n, w) => `em ${n} ${w}` },
+			en: { now: 'just now', units: [['minute', 'minutes'], ['hour', 'hours'], ['day', 'days'], ['month', 'months'], ['year', 'years']], past: (n, w) => `${n} ${w} ago`, future: (n, w) => `in ${n} ${w}` },
+		};
+
+		// time.relative: wording of `ts` relative to `now` (Unix seconds), with
+		// the common Intl.RelativeTimeFormat breakpoints. English, Spanish,
+		// French, German and Portuguese are worded natively; other locales
+		// use English.
+		function relative(ts, now, locale) {
+			const lang = String(locale || '').split(/[-_]/)[0].toLowerCase();
+			const words = RELATIVE_WORDS[lang] || RELATIVE_WORDS.en;
+			const delta = ts - now;
+			const abs = Math.abs(delta);
+			if (abs < 45) return words.now;
+			let unit;
+			let n;
+			if (abs < 45 * 60) { unit = 0; n = Math.round(abs / 60); }
+			else if (abs < 22 * 3600) { unit = 1; n = Math.round(abs / 3600); }
+			else if (abs < 26 * 86400) { unit = 2; n = Math.round(abs / 86400); }
+			else if (abs < 320 * 86400) { unit = 3; n = Math.round(abs / (30.4375 * 86400)); }
+			else { unit = 4; n = Math.round(abs / (365.25 * 86400)); }
+			if (!(n >= 1)) n = 1;
+			const word = words.units[unit][n === 1 ? 0 : 1];
+			return delta < 0 ? words.past(n, word) : words.future(n, word);
+		}
+
+		return { format, relative, parse, parts, add, diff };
+	})();
+
 	// --- Memory Helpers ---
 
 	function readString(ptr, len) {
@@ -252,6 +482,216 @@
 			}
 		}, options);
 	}
+
+	// --- Declarative event attributes (UI-B006 / UI-B007 / UI-B009) ---
+	//
+	// frame.ui writes an event attribute into the markup in one of two forms:
+	//   page mode (page blocks, HTML entry pages):
+	//     onclick.stop="save"  →  data-on-click='save' data-on-click-stop='true'
+	//     (several modifiers arrive as one marker: data-on-click-stop.prevent)
+	//   html: blocks, component and screen templates:
+	//     onclick.stop="save"  →  kept as written
+	// The runtime takes the written form over as data-on-* (so the browser
+	// never treats the handler name as inline script) and dispatches every
+	// data-on-<event> through one document-level listener per event type, so
+	// markup inserted later needs no extra wiring. The handler is the export
+	// named by the attribute; inside a screen / component wrapper the scoped
+	// export (Counter.increment) is used when the plain name is not exported.
+	// A name that resolves to nothing is a console error when the event fires.
+
+	const DECLARATIVE_EVENT_TYPES = new Set([
+		'click', 'input', 'change', 'submit', 'focus', 'blur',
+		'keydown', 'keyup', 'keypress',
+		'mouseover', 'mouseenter', 'mouseleave', 'mousedown', 'mouseup', 'mousemove', 'contextmenu',
+		'dragstart', 'dragend', 'dragenter', 'dragover', 'dragleave', 'drop',
+		'pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerenter', 'pointerleave',
+		'wheel', 'scroll',
+	]);
+	// Listened for in the capture phase and dispatched on their target only.
+	const NON_BUBBLING_EVENT_TYPES = new Set(['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave', 'scroll']);
+	const KEY_MODIFIERS = { enter: ['Enter'], escape: ['Escape', 'Esc'], space: [' ', 'Spacebar'] };
+	const BUTTON_MODIFIERS = { left: 0, right: 2 };
+	const KNOWN_MODIFIERS = new Set(['prevent', 'stop', 'once', 'passive', 'enter', 'escape', 'space', 'left', 'right']);
+	const HANDLER_NAME = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+	const declarativeTypesSeen = new Set();
+	const declarativeTypesListening = new Set();
+	const warnedModifiers = new Set();
+	let declarativeReady = false;
+
+	function listenDeclarative(type) {
+		declarativeTypesSeen.add(type);
+		if (!declarativeReady || declarativeTypesListening.has(type)) return;
+		declarativeTypesListening.add(type);
+		document.addEventListener(type, dispatchDeclarativeEvent, NON_BUBBLING_EVENT_TYPES.has(type));
+	}
+
+	// Rewrite written event attributes on el to data-on-* and make sure the
+	// event types el handles have a document listener.
+	function normalizeElementEvents(el) {
+		const attrs = el.attributes;
+		if (!attrs) return;
+		for (const attr of Array.from(attrs)) {
+			const name = attr.name;
+			if (name.startsWith('data-on-')) {
+				const type = name.slice(8);
+				if (DECLARATIVE_EVENT_TYPES.has(type)) listenDeclarative(type);
+				continue;
+			}
+			if (!name.startsWith('on')) continue;
+			const parts = name.split('.');
+			const type = parts[0].slice(2);
+			const handler = attr.value.trim();
+			if (!DECLARATIVE_EVENT_TYPES.has(type) || !HANDLER_NAME.test(handler)) continue;
+			el.removeAttribute(name);
+			el.setAttribute('data-on-' + type, handler);
+			for (const modifier of parts.slice(1)) {
+				if (modifier) el.setAttribute('data-on-' + type + '-' + modifier, 'true');
+			}
+			listenDeclarative(type);
+		}
+	}
+
+	function normalizeEventAttributes(root) {
+		if (!root) return;
+		if (root.nodeType === 1) normalizeElementEvents(root);
+		if (root.querySelectorAll) root.querySelectorAll('*').forEach(normalizeElementEvents);
+	}
+
+	// Modifiers of el's data-on-<type> handler: every data-on-<type>-<suffix>
+	// marker whose value is not "false"; a suffix may hold several
+	// dot-separated modifiers.
+	function eventModifiers(el, type) {
+		const prefix = 'data-on-' + type + '-';
+		const modifiers = new Set();
+		for (const attr of Array.from(el.attributes)) {
+			if (!attr.name.startsWith(prefix) || attr.value === 'false') continue;
+			for (const m of attr.name.slice(prefix.length).split('.')) {
+				if (m) modifiers.add(m);
+			}
+		}
+		return modifiers;
+	}
+
+	// Key (.enter/.escape/.space) and button (.left/.right) modifiers filter
+	// which events reach the handler.
+	function modifiersAccept(e, modifiers) {
+		const keys = [];
+		const buttons = [];
+		for (const m of modifiers) {
+			if (KEY_MODIFIERS[m]) keys.push(...KEY_MODIFIERS[m]);
+			else if (m in BUTTON_MODIFIERS) buttons.push(BUTTON_MODIFIERS[m]);
+			else if (!KNOWN_MODIFIERS.has(m) && !warnedModifiers.has(m)) {
+				warnedModifiers.add(m);
+				console.warn('[frame.ui] Unknown event modifier ".' + m + '" ignored. Valid modifiers: .' + Array.from(KNOWN_MODIFIERS).join(', .'));
+			}
+		}
+		if (keys.length && !keys.includes(e.key)) return false;
+		if (buttons.length && !buttons.includes(e.button)) return false;
+		return true;
+	}
+
+	function removeDeclarativeHandler(el, type) {
+		const prefix = 'data-on-' + type + '-';
+		for (const attr of Array.from(el.attributes)) {
+			if (attr.name === 'data-on-' + type || attr.name.startsWith(prefix)) el.removeAttribute(attr.name);
+		}
+	}
+
+	// The export a handler name refers to from el: the plain export, else the
+	// export scoped by the nearest enclosing screen / component wrapper.
+	function resolveHandler(name, el) {
+		const exports = instance.exports;
+		if (typeof exports[name] === 'function') return exports[name];
+		for (let cursor = el; cursor && cursor.nodeType === 1; cursor = cursor.parentElement) {
+			const scope = cursor.getAttribute('data-screen') || cursor.getAttribute('data-component');
+			if (scope && typeof exports[scope + '.' + name] === 'function') return exports[scope + '.' + name];
+		}
+		return null;
+	}
+
+	function invokeDeclarativeHandler(name, el, e) {
+		const fn = resolveHandler(name, el);
+		if (!fn) {
+			console.error(
+				'[frame.ui] Event handler export "' + name + '" (data-on-' + e.type +
+				') not found. Declare it as a top-level function in your Clean source.'
+			);
+			return;
+		}
+		if (fn.length > 0) {
+			console.error(
+				'[frame.ui] Event handler "' + name + '" takes parameters. Event handlers take none — ' +
+				'read event data with ui.eventValue() / ui.eventAttr() inside the handler.'
+			);
+			return;
+		}
+		const prevEvent = currentEvent;
+		const prevTarget = currentEventTarget;
+		currentEvent = e;
+		currentEventTarget = el;
+		try {
+			fn();
+		} catch (err) {
+			const boundary = findBoundary(el);
+			if (boundary) {
+				renderBoundaryFallback(boundary, err.message || String(err));
+			} else {
+				console.error('[frame.ui] Event handler "' + name + '" failed: ' + (err.message || String(err)));
+			}
+		} finally {
+			currentEvent = prevEvent;
+			currentEventTarget = prevTarget;
+		}
+		checkMemoryGrowth();
+	}
+
+	function dispatchDeclarativeEvent(e) {
+		const type = e.type;
+		const attrName = 'data-on-' + type;
+		const bubbles = !NON_BUBBLING_EVENT_TYPES.has(type);
+		let el = e.target;
+		if (el && el.nodeType !== 1) el = el.parentElement || null;
+		while (el && el.nodeType === 1) {
+			const handler = el.getAttribute(attrName);
+			if (handler !== null && handler.trim() !== '') {
+				const modifiers = eventModifiers(el, type);
+				if (modifiersAccept(e, modifiers)) {
+					if (modifiers.has('prevent') && !modifiers.has('passive')) e.preventDefault();
+					if (modifiers.has('once')) removeDeclarativeHandler(el, type);
+					invokeDeclarativeHandler(handler.trim(), el, e);
+					if (modifiers.has('stop')) {
+						e.stopPropagation();
+						return;
+					}
+				}
+			}
+			if (!bubbles) return;
+			el = el.parentElement;
+		}
+	}
+
+	// Called once the WASM instance exists: attach the listeners collected
+	// so far and keep later markup (any insertion path) normalized.
+	function initDeclarativeEvents() {
+		declarativeReady = true;
+		normalizeEventAttributes(document);
+		for (const type of declarativeTypesSeen) listenDeclarative(type);
+		if (typeof MutationObserver === 'undefined') return;
+		const observer = new MutationObserver((records) => {
+			for (const record of records) {
+				if (record.type === 'attributes') {
+					normalizeElementEvents(record.target);
+				} else {
+					record.addedNodes.forEach(node => normalizeEventAttributes(node));
+				}
+			}
+		});
+		observer.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true });
+	}
+
+	// Take over written handlers in the server-rendered markup right away,
+	// before the module loads, so none of them runs as inline script.
+	normalizeEventAttributes(document);
 
 	// --- §FEXT-5: Incremental DOM Patching Helper ---
 	// Recursively diffs oldNode against newNode, applying the minimum set of
@@ -866,7 +1306,11 @@
 
 			_ui_update_element: (selectorPtr, selectorLen, contentPtr, contentLen) => {
 				const el = document.querySelector(readString(selectorPtr, selectorLen));
-				if (el) { el.innerHTML = readString(contentPtr, contentLen); return 0; }
+				if (el) {
+					el.innerHTML = readString(contentPtr, contentLen);
+					normalizeEventAttributes(el);
+					return 0;
+				}
 				return -1;
 			},
 
@@ -1359,10 +1803,19 @@
 			// ========== time.* bridges ==========
 			// _time_now returns Unix seconds as i64 (BigInt in JS-WASM boundary).
 			// _time_now_seconds returns fractional seconds; _time_performance_now
-			// returns high-res monotonic milliseconds. See function-registry.toml.
+			// returns high-res monotonic milliseconds. The six calendar bridges
+			// below use cleanTime (stdlib-reference §12, function-registry.toml).
 			_time_now:             () => BigInt(Math.floor(Date.now() / 1000)),
 			_time_now_seconds:     () => Date.now() / 1000,
 			_time_performance_now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+			_time_format: (ts, patternPtr, patternLen, localePtr, localeLen, tzPtr, tzLen) =>
+				writeString(cleanTime.format(ts, readString(patternPtr, patternLen), readString(tzPtr, tzLen))),
+			_time_relative: (ts, localePtr, localeLen) =>
+				writeString(cleanTime.relative(ts, Date.now() / 1000, readString(localePtr, localeLen))),
+			_time_parse: (isoPtr, isoLen) => cleanTime.parse(readString(isoPtr, isoLen)),
+			_time_parts: (ts, tzPtr, tzLen) => writeString(cleanTime.parts(ts, readString(tzPtr, tzLen))),
+			_time_add: (ts, amount, unitPtr, unitLen) => cleanTime.add(ts, amount, readString(unitPtr, unitLen)),
+			_time_diff: (from, to, unitPtr, unitLen) => cleanTime.diff(from, to, readString(unitPtr, unitLen)),
 
 			// ========== http_* bridges (URL helpers + response accessors) ==========
 			// Only URL helpers and getResponseHeaders/Code run on the browser side;
@@ -1732,6 +2185,7 @@
 				const tmp = document.createElement('div');
 				tmp.innerHTML = newHtml;
 				patchNode(root, tmp);
+				normalizeEventAttributes(root);
 				return 0;
 			},
 
@@ -2845,6 +3299,10 @@
 		}
 
 		checkMemoryGrowth();
+
+		// UI-B006 / UI-B007: dispatch declarative event attributes
+		// (data-on-* / on<event>="handler") to the module's exports.
+		initDeclarativeEvents();
 
 		// Call _start — registers event handlers via _ui_on_event.
 		// Wrapped in try/catch so an error during startup triggers the error boundary

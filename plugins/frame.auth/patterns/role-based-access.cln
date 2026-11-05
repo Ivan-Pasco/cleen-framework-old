@@ -43,16 +43,17 @@ endpoints:
 		return jsonResponse("{\"users\": []}")
 
 	// Permission-based check — more granular than role-based.
-	// The [admin] modifier filters to admins; auth.can() additionally checks
-	// for the specific permission within the admin role.
+	// The [admin] modifier filters to admins; auth.can(user, permission)
+	// additionally checks for the specific permission within the user's role.
 	DELETE "/admin/users/:id" [admin]:
 		string id = param("id")
-		if auth.can("users.delete") == 0
+		string user = auth.getCurrentUser()
+		if not auth.can(user, "users.delete")
 			return unauthorized("Insufficient permissions")
 		return jsonResponse("{\"deleted\": \"" + id + "\"}")
 
 	// Settings — only admin with specific permission
 	PUT "/settings" [admin]:
-		if auth.can("settings.write") == 0
+		if not auth.can(auth.getCurrentUser(), "settings.write")
 			return unauthorized("settings.write permission required")
 		return jsonResponse("{\"updated\": true}")

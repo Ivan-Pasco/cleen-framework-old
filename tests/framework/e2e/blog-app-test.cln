@@ -48,7 +48,7 @@ start:
 endpoints:
 	GET "/test":
 		auth.setSession("\{\"user_id\":1,\"role\":\"author\"\}")
-		boolean ok_role = auth.can("posts.write")
+		boolean ok_role = auth.can(auth.getCurrentUser(), "posts.write")
 
 		Post.migrate()
 		Comment.migrate()

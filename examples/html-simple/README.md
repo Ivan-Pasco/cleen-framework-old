@@ -6,7 +6,7 @@ Two static HTML pages built with frame.ui.
 
 ```
 html-simple/
-├── main.cln                  # Package manifest (target: web, plugins: frame.ui)
+├── main.cln                  # Package manifest (target: server, plugins: frame.ui, frame.server)
 ├── app/ui/web/pages/
 │   ├── index.html            # /
 │   └── about.html            # /about
@@ -25,6 +25,6 @@ cd examples/html-simple
 
 Start the server from the example folder: `./public` is served at `/public/`, which is where the pages link their stylesheets.
 
-Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`). frame.ui routes every page file the compiler gives it, but compiler 0.33.169 passes only the manifest's entry page and pages with a companion `.cln`, so the other plain `.html` pages return 404 until the compiler passes page files to the plugin.
 
 To compile, start and request every route in one step, run `./scripts/smoke-examples.sh html-simple` from the framework root.

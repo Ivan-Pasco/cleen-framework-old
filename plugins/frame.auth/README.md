@@ -59,6 +59,19 @@ This generates:
 - `_login(email, password)` - Returns `{ok: true, token, user}` or `{ok: false, error}`
 - `_register(email, password)` - Creates user and returns token
 
+## Permission Checks
+
+`auth.can(user, permission)` takes exactly two arguments: the user (the
+session JSON returned by `auth.getCurrentUser()`) and a permission string
+declared in the `roles:` block. It checks that user's role and returns
+`false` for an empty user.
+
+```clean
+string user = auth.getCurrentUser()
+if not auth.can(user, "users.delete")
+    return unauthorized()
+```
+
 ## Generated Code
 
 The plugin expands DSL blocks into Clean code that uses Host Bridge functions:

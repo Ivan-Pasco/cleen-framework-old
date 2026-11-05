@@ -428,6 +428,91 @@ test('animate statement bridge: _tween_animate(var, to, duration, easingId) star
 });
 
 // ---------------------------------------------------------------------------
+// time.* bridges (stdlib-reference §12) — Unix seconds; expected values are
+// clean-server's (host-bridge/src/wasm_linker/env_time.rs tests)
+// ---------------------------------------------------------------------------
+
+const NEW_YEAR_2026 = 1767225600; // 2026-01-01T00:00:00Z
+
+const timeFormat = (loader, env, ts, pattern, locale, tz) =>
+  readLP(loader, env._time_format(ts, ...raw(loader, pattern), ...raw(loader, locale), ...raw(loader, tz)));
+const timeParse = (loader, env, iso) => env._time_parse(...raw(loader, iso));
+
+test('_time_now is Unix seconds as an i64 (BigInt)', () => {
+  const { env } = freshLoader();
+  const now = env._time_now();
+  eq(typeof now, 'bigint', '_time_now type');
+  ok(Math.abs(Number(now) - Date.now() / 1000) < 5, `_time_now is seconds (got ${now})`);
+});
+
+test('_time_format: pattern tokens, 12-hour clock, IANA zones', () => {
+  const { loader, env } = freshLoader();
+  const ts = NEW_YEAR_2026 + 14 * 3600 + 5 * 60 + 9;
+  eq(timeFormat(loader, env, ts, 'YYYY-MM-DD HH:mm:ss', '', 'UTC'), '2026-01-01 14:05:09', 'tokens');
+  eq(timeFormat(loader, env, ts, 'h:mm A / h a', 'en-US', 'UTC'), '2:05 PM / 2 pm', '12-hour');
+  eq(timeFormat(loader, env, ts, 'YYYY-MM-DD HH:mm', '', 'America/New_York'), '2026-01-01 09:05', 'New York is UTC-5 in January');
+  eq(timeFormat(loader, env, NEW_YEAR_2026, 'h A', '', 'UTC'), '12 AM', 'midnight');
+  eq(timeFormat(loader, env, ts, 'HH:mm', '', 'Mars/Olympus'), '14:05', 'unknown zone is UTC');
+  eq(timeFormat(loader, env, NaN, 'YYYY', '', 'UTC'), '', 'non-finite timestamp');
+});
+
+test('_time_parse: ISO 8601 to Unix seconds, -1 when invalid', () => {
+  const { loader, env } = freshLoader();
+  eq(timeParse(loader, env, '2026-01-01T00:00:00Z'), NEW_YEAR_2026, 'UTC');
+  eq(timeParse(loader, env, '2026-01-01T00:00:00.500Z'), NEW_YEAR_2026 + 0.5, 'fraction');
+  eq(timeParse(loader, env, '2026-01-01T01:00:00+01:00'), NEW_YEAR_2026, 'offset');
+  eq(timeParse(loader, env, '2026-01-01'), NEW_YEAR_2026, 'date only is UTC midnight');
+  eq(timeParse(loader, env, '2026-01-01T08:30'), new Date(2026, 0, 1, 8, 30).getTime() / 1000, 'no offset is local time');
+  eq(timeParse(loader, env, 'yesterday'), -1, 'invalid');
+  eq(timeParse(loader, env, '2026-02-30'), -1, 'no such day');
+});
+
+test('_time_parts: calendar fields JSON in a zone', () => {
+  const { loader, env } = freshLoader();
+  eq(JSON.parse(readLP(loader, env._time_parts(NEW_YEAR_2026, ...raw(loader, 'UTC')))),
+    { year: 2026, month: 1, day: 1, hour: 0, minute: 0, second: 0, dayOfWeek: 4, timestamp: NEW_YEAR_2026 }, 'UTC');
+  const ny = JSON.parse(readLP(loader, env._time_parts(NEW_YEAR_2026, ...raw(loader, 'America/New_York'))));
+  eq([ny.year, ny.day, ny.hour], [2025, 31, 19], 'New York');
+});
+
+test('_time_add: fixed units, calendar months and years', () => {
+  const { loader, env } = freshLoader();
+  const jan31 = timeParse(loader, env, '2026-01-31T10:00:00Z');
+  const add = (n, unit) => env._time_add(jan31, n, ...raw(loader, unit));
+  eq(add(1, 'months'), timeParse(loader, env, '2026-02-28T10:00:00Z'), '+1 month clamps the day');
+  eq(add(-2, 'months'), timeParse(loader, env, '2025-11-30T10:00:00Z'), '-2 months');
+  eq(env._time_add(timeParse(loader, env, '2024-02-29T00:00:00Z'), 1, ...raw(loader, 'years')), timeParse(loader, env, '2025-02-28T00:00:00Z'), 'leap day + 1 year');
+  eq([add(90, 'seconds'), add(2, 'minutes'), add(3, 'hours'), add(1, 'days'), add(2, 'weeks')].map((v) => v - jan31), [90, 120, 10800, 86400, 1209600], 'fixed units');
+  ok(Number.isNaN(add(1, 'fortnights')), 'unknown unit is NaN');
+});
+
+test('_time_diff: fractional fixed units and calendar months', () => {
+  const { loader, env } = freshLoader();
+  const a = timeParse(loader, env, '2026-01-01T00:00:00Z');
+  const b = timeParse(loader, env, '2026-01-02T12:00:00Z');
+  const diff = (from, to, unit) => env._time_diff(from, to, ...raw(loader, unit));
+  eq([diff(a, b, 'days'), diff(a, b, 'hours'), diff(b, a, 'hours'), diff(a, b, 'seconds')], [1.5, 36, -36, 129600], 'fixed units');
+  const jan31 = timeParse(loader, env, '2026-01-31T00:00:00Z');
+  const feb28 = timeParse(loader, env, '2026-02-28T00:00:00Z');
+  eq([diff(jan31, feb28, 'months'), diff(feb28, jan31, 'months')], [1, -1], 'calendar months');
+  ok(Math.abs(diff(a, timeParse(loader, env, '2027-07-01T00:00:00Z'), 'years') - 1.5) < 1e-9, 'years');
+  ok(Number.isNaN(diff(a, b, 'eons')), 'unknown unit is NaN');
+});
+
+test('_time_relative: wording relative to now, localized', () => {
+  const { loader, env } = freshLoader();
+  const now = Date.now() / 1000;
+  const rel = (ts, locale) => readLP(loader, env._time_relative(ts, ...raw(loader, locale)));
+  eq(rel(now - 5, 'en'), 'just now', 'just now');
+  eq(rel(now - 3 * 3600, 'en'), '3 hours ago', 'past');
+  eq(rel(now + 2 * 86400 + 30, 'en'), 'in 2 days', 'future');
+  eq(rel(now - 60, 'en-US'), '1 minute ago', 'singular');
+  eq(rel(now - 3 * 3600, 'es'), 'hace 3 horas', 'Spanish');
+  eq(rel(now + 2 * 86400 + 30, 'fr'), 'dans 2 jours', 'French');
+  eq(rel(now - 400 * 86400, 'de'), 'vor 1 Jahr', 'German');
+});
+
+// ---------------------------------------------------------------------------
 // Bridge contract: plugin.toml [bridge] vs the runtime
 // ---------------------------------------------------------------------------
 

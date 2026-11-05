@@ -1165,14 +1165,16 @@ functions:
 	// canvas.sprite "name" x= y= [clip= | state= | sheet= clip=] [options]
 	// (frame-canvas.ebnf §17). scaleX / scaleY / rotation / alpha wrap the
 	// draw in a transform group so they compose with the sprite position.
+	// anchorX / anchorY (CVS-C006) shift the frame so that x, y name the
+	// point at (anchorX, anchorY) of the frame; inside a transform group
+	// that point is the rotation / scale pivot.
 	integer sprite_cmd(integer ctx, string ia)
 		integer cv = ident(ctx, "__cv")
 		string name_src = "\"" + first_quoted(ia, 0) + "\""
 		string attrs = after_quoted(ia)
-		if get_iexpr(attrs, "state") != ""
-			return bcc5(ctx, "_sprite_draw_state", cv, ue(ctx, name_src), av(ctx, attrs, "state", "\"\""), av(ctx, attrs, "x", "0.0"), av(ctx, attrs, "y", "0.0"))
+		string state_src = get_iexpr(attrs, "state")
 		string sheet_src = get_iexpr(attrs, "sheet")
-		if sheet_src == ""
+		if sheet_src == "" or state_src != ""
 			sheet_src = name_src
 		boolean transformed = get_iexpr(attrs, "scaleX") != "" or get_iexpr(attrs, "scaleY") != "" or get_iexpr(attrs, "rotation") != "" or get_iexpr(attrs, "alpha") != ""
 		string x_src = "0.0"
@@ -1184,24 +1186,30 @@ functions:
 				x_src = "0.0"
 			if y_src == ""
 				y_src = "0.0"
-		integer arr = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, arr, cv)
-		_batch_arrayPush(ctx, arr, ue(ctx, sheet_src))
-		_batch_arrayPush(ctx, arr, av(ctx, attrs, "clip", "0"))
-		_batch_arrayPush(ctx, arr, ue(ctx, x_src))
-		_batch_arrayPush(ctx, arr, ue(ctx, y_src))
-		_batch_arrayPush(ctx, arr, ue(ctx, "0.0"))
-		_batch_arrayPush(ctx, arr, ue(ctx, "0.0"))
-		string draw_fn = "_sprite_draw"
-		if get_iexpr(attrs, "tint") != ""
-			draw_fn = "_sprite_draw_tint"
-			_batch_arrayPush(ctx, arr, av(ctx, attrs, "tint", "\"\""))
-			_batch_arrayPush(ctx, arr, av(ctx, attrs, "tintStrength", "0.5"))
-		else if get_iexpr(attrs, "flipX") != "" or get_iexpr(attrs, "flipY") != ""
-			draw_fn = "_sprite_draw_flipped"
-			_batch_arrayPush(ctx, arr, avflag(ctx, attrs, "flipX"))
-			_batch_arrayPush(ctx, arr, avflag(ctx, attrs, "flipY"))
-		integer draw_h = _batch_stmtCall(ctx, draw_fn, arr)
+		x_src = sprite_anchor_src(x_src, get_iexpr(attrs, "anchorX"), sheet_src, 0)
+		y_src = sprite_anchor_src(y_src, get_iexpr(attrs, "anchorY"), sheet_src, 1)
+		integer draw_h = 0
+		if state_src != ""
+			draw_h = bcc5(ctx, "_sprite_draw_state", cv, ue(ctx, name_src), ue(ctx, state_src), ue(ctx, x_src), ue(ctx, y_src))
+		else
+			integer arr = _batch_arrayNew(ctx)
+			_batch_arrayPush(ctx, arr, cv)
+			_batch_arrayPush(ctx, arr, ue(ctx, sheet_src))
+			_batch_arrayPush(ctx, arr, av(ctx, attrs, "clip", "0"))
+			_batch_arrayPush(ctx, arr, ue(ctx, x_src))
+			_batch_arrayPush(ctx, arr, ue(ctx, y_src))
+			_batch_arrayPush(ctx, arr, ue(ctx, "0.0"))
+			_batch_arrayPush(ctx, arr, ue(ctx, "0.0"))
+			string draw_fn = "_sprite_draw"
+			if get_iexpr(attrs, "tint") != ""
+				draw_fn = "_sprite_draw_tint"
+				_batch_arrayPush(ctx, arr, av(ctx, attrs, "tint", "\"\""))
+				_batch_arrayPush(ctx, arr, av(ctx, attrs, "tintStrength", "0.5"))
+			else if get_iexpr(attrs, "flipX") != "" or get_iexpr(attrs, "flipY") != ""
+				draw_fn = "_sprite_draw_flipped"
+				_batch_arrayPush(ctx, arr, avflag(ctx, attrs, "flipX"))
+				_batch_arrayPush(ctx, arr, avflag(ctx, attrs, "flipY"))
+			draw_h = _batch_stmtCall(ctx, draw_fn, arr)
 		if transformed == false
 			return draw_h
 		integer seq = _batch_arrayNew(ctx)
@@ -1209,6 +1217,49 @@ functions:
 		_batch_arrayPush(ctx, seq, draw_h)
 		_batch_arrayPush(ctx, seq, bcc1(ctx, "_canvas_group_end", ident(ctx, "__cv")))
 		return _batch_stmtBlock(ctx, seq)
+
+	// Source of the sprite position `pos_src` shifted by `anchor_src` times
+	// the frame width (axis 0) or height (axis 1) of spritesheet `sheet_src`;
+	// `pos_src` unchanged without an anchor.
+	string sprite_anchor_src(string pos_src, string anchor_src, string sheet_src, integer axis)
+		if anchor_src == ""
+			return pos_src
+		return "__canvas_sprite_anchor(" + pos_src + ", " + anchor_src + ", " + sheet_src + ", " + axis.toString() + ")"
+
+	// True when the scene uses canvas.sprite anchors anywhere.
+	boolean scene_uses_anchors(string body)
+		return body.indexOf("anchorX=") != -1 or body.indexOf("anchorY=") != -1
+
+	// __canvas_sprite_anchor(pos, anchor, sheet, axis) -> pos - anchor * frame
+	// size of `sheet` on `axis` (0 = frameWidth, 1 = frameHeight), with the
+	// frame sizes declared by the scene's spritesheet assets (§3).
+	integer emit_sprite_anchor_fn(integer ctx, string assets_body)
+		integer arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, arr, us(ctx, "number frameSize = 0.0"))
+		integer p = 0
+		while p < assets_body.length()
+			integer le = scene_line_end(assets_body, p)
+			string t = assets_body.substring(p, le).trim()
+			if line_key(t) == "spritesheet" and first_quoted(t, 0) != ""
+				string ia = after_quoted(t)
+				string fw = get_iexpr(ia, "frameWidth")
+				string fh = get_iexpr(ia, "frameHeight")
+				if fw == ""
+					fw = "32"
+				if fh == ""
+					fh = "32"
+				_batch_arrayPush(ctx, arr, us(ctx, "if sheet == " + clean_str(first_quoted(t, 0)) + "\n\tinteger frameW = " + fw + "\n\tinteger frameH = " + fh + "\n\tif axis == 0\n\t\tframeSize = frameW.toNumber()\n\telse\n\t\tframeSize = frameH.toNumber()\n"))
+			p = le + 1
+		_batch_arrayPush(ctx, arr, us(ctx, "return pos - anchor * frameSize"))
+		integer params = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "pos", "number"))
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "anchor", "number"))
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "sheet", "string"))
+		_batch_arrayPush(ctx, params, _batch_param(ctx, "axis", "integer"))
+		integer fns_arr = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, fns_arr, _batch_func(ctx, "__canvas_sprite_anchor", params, "number", arr))
+		_emit_helpers_batch(ctx, _batch_spec(ctx, fns_arr), 2)
+		return 0
 
 // ============================================================================
 // DSL STATEMENTS (frame-canvas.ebnf §20, §21, §24, §25, §26)
@@ -1922,6 +1973,8 @@ functions:
 		_emit_statement_into_start(ctx, bcc2(ctx, "_canvas_set_fps", ident(ctx, "__cv"), _batch_intLit(ctx, int_attr(attrs_json, header, "fps", 60), 0)))
 		process_assets_body(ctx, extract_scene_subblock(body, "assets"))
 		process_layers_body(ctx, extract_scene_subblock(body, "layers"))
+		if scene_uses_anchors(body)
+			emit_sprite_anchor_fn(ctx, extract_scene_subblock(body, "assets"))
 
 		// --- per-frame functions ---------------------------------------------
 		integer fcb = _batch_arrayNew(ctx)
@@ -2175,7 +2228,33 @@ functions:
 			if is_animation_control(t)
 				return "canvasScene: draw: must not start animations ('" + t + "', CVS-X003) — use init: or an event handler"
 			p = le + 1
+
+		// CVS-C006 — anchors are fractions of a spritesheet frame.
+		string assets_body = extract_scene_subblock(body, "assets")
+		p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string t = body.substring(p, le).trim()
+			if t.startsWith("canvas.sprite ") and scene_uses_anchors(t)
+				string attrs = after_quoted(t)
+				string frame_name = first_quoted(t, 0)
+				if get_iexpr(attrs, "sheet") != "" and get_iexpr(attrs, "state") == ""
+					frame_name = first_quoted(get_iexpr(attrs, "sheet"), 0)
+				if is_spritesheet_asset(assets_body, frame_name) == false
+					return "canvasScene: canvas.sprite anchorX= / anchorY= need a spritesheet asset: '" + frame_name + "' is not declared as `spritesheet` in assets: (anchors are fractions of the frame size, CVS-C006)"
+			p = le + 1
 		return ""
+
+	// True when assets: declares `spritesheet "name"`.
+	boolean is_spritesheet_asset(string assets_body, string name)
+		integer p = 0
+		while p < assets_body.length()
+			integer le = scene_line_end(assets_body, p)
+			string t = assets_body.substring(p, le).trim()
+			if line_key(t) == "spritesheet" and first_quoted(t, 0) == name
+				return true
+			p = le + 1
+		return false
 
 // ============================================================================
 // LINT (Contract 5 Phase C — FRAME-CANVAS-E040)

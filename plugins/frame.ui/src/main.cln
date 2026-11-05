@@ -409,6 +409,30 @@ functions:
 			__routes_guard_table = scan_routes_guards(__gsc, __routes_guard_table)
 			__gsi = __gsi + 1
 
+		// -------- Phase 1b: explicit GET endpoints --------
+		// "|/url|" records (":param" segments normalised to ":") for every
+		// `GET "<url>"` / `FEED "<url>"` route declared in an endpoints:
+		// block. A page whose URL an endpoint already declares is not routed
+		// (the endpoint wins; frame-server.ebnf §2 / §10).
+		string explicit_gets = "|"
+		integer __esi = 0
+		while __esi < source_files.length()
+			string __esf = source_files[__esi]
+			if extract_json_field(__esf, "path").endsWith(".cln")
+				explicit_gets = scan_explicit_get_routes(extract_json_field_escaped(__esf, "content"), explicit_gets)
+			__esi = __esi + 1
+		// ",<module>," for every page whose companion .cln (load/guard)
+		// gives it a route in Phase 2, so its .html file is not routed a
+		// second time in Phase 2b.
+		string routed_modules = ","
+		integer __rmi = 0
+		while __rmi < source_files.length()
+			string __rmf = source_files[__rmi]
+			string __rmp = extract_json_field(__rmf, "path")
+			if __rmp.endsWith(".cln") and __rmp.indexOf("pages/") != -1 and (__rmf.indexOf("any load(") != -1 or __rmf.indexOf("any guard(") != -1)
+				routed_modules = routed_modules + derive_module_name(__rmp) + ","
+			__rmi = __rmi + 1
+
 		// -------- Phase 2: walk pages, accumulate per-kind pieces --------
 		// route_registrations: source string of `_http_route(...)` statements,
 		//   with one leading tab per line (start:-block body indent).
@@ -458,7 +482,7 @@ functions:
 					boolean has_load = raw_has_load
 					boolean has_guard = raw_has_guard
 					if is_html and raw_has_screen
-						hydration_entries = hydration_entries + collect_screens_from_html(file_content)
+						hydration_entries = hydration_entries + collect_screens_from_html(decode_json_string(file_content))
 					if in_pages and (has_load or has_guard)
 						string module_name = derive_module_name(file_path)
 						// Rename the page's `any load(...)` / `any guard(...)` to
@@ -487,37 +511,35 @@ functions:
 						_transform_source_file(ctx, file_path, transformed_content)
 						if has_server
 							string url = derive_url_path(file_path)
-							string html_path = derive_html_path(file_path)
-							// Build the render() body as Clean statements at
-							// function-body scope (one leading tab per line).
-							string body_source = ""
-							string __routes_guard_roles = lookup_routes_guard(url, __routes_guard_table)
-							if __routes_guard_roles.length() > 0
-								body_source = body_source + emit_routes_guard_check(__routes_guard_roles)
-							if has_guard
-								body_source = body_source + "\tany __g = " + module_name + "_guard(null)\n"
-								body_source = body_source + "\tif __g != null\n"
-								body_source = body_source + "\t\treturn __g\n"
-							if has_load
-								// Skip _ui_normalize_load_return / _ui_promote_string_fields
-								// and go straight to json.encode — the promote pass was
-								// designed for a legacy quoted-JSON-in-string workaround
-								// and produces invalid JSON (key must be a string at col 2)
-								// when the load result is a plain object (fingerprint
-								// a2b84ca5 — companion handler returned unparseable data).
-								body_source = body_source + "\tany __rd = " + module_name + "_load(null)\n"
-								body_source = body_source + "\tstring __d = json.encode(__rd)\n"
-								body_source = body_source + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", __d))\n"
-							else
-								body_source = body_source + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", \"{}\"))\n"
-							// body_source is at function-body indent; one more tab
-							// puts it inside the functions: block.
-							route_fn_defs = route_fn_defs + "\tstring " + module_name + "_render()\n"
-							route_fn_defs = route_fn_defs + indent_lines(body_source)
-							route_fn_defs = route_fn_defs + "\n"
-							route_registrations = route_registrations + "\t_http_route(\"GET\", \"" + url + "\", \"" + module_name + "_render\")\n"
-							pages_emitted = pages_emitted + 1
+							// An explicit `GET "<url>"` endpoint owns the URL —
+							// registering the page too would replace the
+							// endpoint's handler in the server router.
+							if explicit_gets.indexOf("|" + normalize_route(url) + "|") == -1
+								route_fn_defs = route_fn_defs + page_render_fn(module_name, url, derive_html_path(file_path), has_load, has_guard, __routes_guard_table)
+								route_registrations = route_registrations + "\t_http_route(\"GET\", \"" + url + "\", \"" + module_name + "_render\")\n"
+								pages_emitted = pages_emitted + 1
 			fi = fi + 1
+
+		// -------- Phase 2b: plain .html pages (file-based routing) --------
+		// frame-ui-semantics UI-R001..R003 / frame-server.ebnf §10: every page
+		// file under the pages folder is routable — no companion, no routes:
+		// declaration needed. Pages with a companion load/guard were routed
+		// above; layouts and components are never pages.
+		integer hi = 0
+		while hi < source_files.length()
+			string h_obj = source_files[hi]
+			string h_path = extract_json_field(h_obj, "path")
+			if has_server and h_path.endsWith(".html") and h_path.indexOf("pages/") != -1
+				string h_module = derive_module_name(h_path)
+				// Skip pages already routed — by a companion (Phase 2) or as a
+				// repeated entry for the same file (the HTML entry page).
+				if routed_modules.indexOf("," + h_module + ",") == -1 and route_registrations.indexOf("\"" + h_module + "_render\"") == -1
+					string h_url = derive_url_path(h_path)
+					if explicit_gets.indexOf("|" + normalize_route(h_url) + "|") == -1
+						route_fn_defs = route_fn_defs + page_render_fn(h_module, h_url, derive_html_path(h_path), false, false, __routes_guard_table)
+						route_registrations = route_registrations + "\t_http_route(\"GET\", \"" + h_url + "\", \"" + h_module + "_render\")\n"
+						pages_emitted = pages_emitted + 1
+			hi = hi + 1
 
 		// -------- Phase 3: compose one Clean source string --------
 		// start: block (route registrations). Emitted only when we have
@@ -825,15 +847,13 @@ functions:
 	string spec_field(string name, string type_name)
 		return "{\"name\":\"" + spec_esc_json(name) + "\",\"type\":\"" + spec_esc_json(type_name) + "\"}"
 
-	// Build a field entry visible outside the class: {"name":..,"type":..,
-	// "visibility":"public"}. Component inputs are set by the page that uses
-	// the component (`_comp.count = {expr}`), and class fields are private
-	// by default (semantic-rules.md §Visibility).
-	string spec_public_field(string name, string type_name)
-		return "{\"name\":\"" + spec_esc_json(name) + "\",\"type\":\"" + spec_esc_json(type_name) + "\",\"visibility\":\"public\"}"
-
-	// The class-spec entry for a state: or inputs: field; inputs are public.
-	string spec_component_field(string name, string type_name, string line, string input_lines)
+	// The class-spec entry for a state: or inputs: field. Inputs are public:
+	// the page that uses the component sets them (`_comp.count = {expr}`),
+	// and class fields are private by default (semantic-rules.md
+	// §Visibility). `default_src` is the field's initial value as Clean
+	// expression text, or "" (typed-emission.md §3.13, Amendment 14).
+	string spec_component_field(string name, string type_name, string default_src, string line, string input_lines)
+		string visibility = ""
 		string wanted = line.trim()
 		string remaining = input_lines
 		while remaining.length() > 0
@@ -845,8 +865,91 @@ functions:
 				input_line = remaining.substring(0, nl)
 				remaining = remaining.substring(nl + 1, remaining.length())
 			if input_line.trim() == wanted
-				return spec_public_field(name, type_name)
-		return spec_field(name, type_name)
+				visibility = ",\"visibility\":\"public\""
+		string result = "{\"name\":\"" + spec_esc_json(name) + "\",\"type\":\"" + spec_esc_json(type_name) + "\"" + visibility
+		if default_src.length() > 0
+			result = result + ",\"default\":\"" + spec_esc_json(default_src) + "\""
+		return result + "}"
+
+	// The class-spec entry for one state: / inputs: line, or "" for a line
+	// that declares nothing. Forms (frame-ui.ebnf §1.1, §1.2):
+	//   type name [= expression]      typed state field
+	//   name: type [= expression]     input (or typed state) field
+	//   name: expression              state shorthand, type from the value
+	string component_field_entry(string line, string input_lines)
+		string t = line.trim()
+		if t.length() == 0
+			return ""
+		integer colon = t.indexOf(":")
+		integer eq = t.indexOf("=")
+		integer sp = t.indexOf(" ")
+		if colon > 0 and (eq == -1 or colon < eq)
+			string name = t.substring(0, colon).trim()
+			string rest = t.substring(colon + 1, t.length()).trim()
+			string type_part = rest
+			string default_src = ""
+			integer rest_eq = rest.indexOf("=")
+			if rest_eq != -1
+				type_part = rest.substring(0, rest_eq).trim()
+				default_src = rest.substring(rest_eq + 1, rest.length()).trim()
+			if is_type_text(type_part)
+				return spec_component_field(name, type_part, default_src, line, input_lines)
+			return spec_component_field(name, literal_type(rest), rest, line, input_lines)
+		if sp > 0
+			string type_name = t.substring(0, sp)
+			string after = t.substring(sp + 1, t.length()).trim()
+			string name = after
+			string default_src = ""
+			integer after_eq = after.indexOf("=")
+			if after_eq != -1
+				name = after.substring(0, after_eq).trim()
+				default_src = after.substring(after_eq + 1, after.length()).trim()
+			return spec_component_field(name, type_name, default_src, line, input_lines)
+		return ""
+
+	// True when `t` names a type: a built-in type, a generic container
+	// (`list<...>`, `pairs<...>`, `matrix<...>`), an optional `T?`, or a
+	// class name (capitalized identifier).
+	boolean is_type_text(string t)
+		string base = t.trim()
+		if base.endsWith("?")
+			base = base.substring(0, base.length() - 1)
+		if base == "integer" or base == "number" or base == "string" or base == "boolean" or base == "any"
+			return true
+		if base.startsWith("list<") or base.startsWith("pairs<") or base.startsWith("matrix<")
+			return base.endsWith(">")
+		if base.length() == 0 or not ui_lint_is_bare_identifier(base)
+			return false
+		string head = base.substring(0, 1)
+		return head != head.toLowerCase()
+
+	// The type of a state shorthand value (`label: "hits"`, `total: 40`):
+	// string, boolean, number or integer for a literal, else any.
+	string literal_type(string value)
+		string v = value.trim()
+		if v.startsWith("\"")
+			return "string"
+		if v == "true" or v == "false"
+			return "boolean"
+		string digits = v
+		if digits.startsWith("-")
+			digits = digits.substring(1, digits.length())
+		if digits.length() == 0
+			return "any"
+		boolean seen_dot = false
+		integer i = 0
+		while i < digits.length()
+			string ch = digits.substring(i, i + 1)
+			if ch == "."
+				if seen_dot
+					return "any"
+				seen_dot = true
+			else if "0123456789".indexOf(ch) == -1
+				return "any"
+			i = i + 1
+		if seen_dot
+			return "number"
+		return "integer"
 
 	// Build a class-spec method entry (inline body_handle shape, Amendment 3
 	// §3.13). params_json is an already-formatted JSON array like `[]` or
@@ -1086,41 +1189,19 @@ functions:
 		// _fallback (only when component has a fallback)
 		if fallback_html != ""
 			fields_json = fields_json + "," + spec_field("_fallback", "string")
-		// State and input fields (each line is "type name [= default]" or
-		// "name: type [= default]")
-		string state_lines_trimmed = state_fields.trim()
-		if state_lines_trimmed.length() > 0
-			string sf_remaining = state_lines_trimmed
-			while sf_remaining.length() > 0
-				integer nl_pos = sf_remaining.indexOf("\n")
-				string sf_line = ""
-				if nl_pos == -1
-					sf_line = sf_remaining
-					sf_remaining = ""
-				else
-					sf_line = sf_remaining.substring(0, nl_pos)
-					sf_remaining = sf_remaining.substring(nl_pos + 1, sf_remaining.length())
-				string sf_trim = sf_line.trim()
-				if sf_trim.length() > 0
-					integer sf_colon = sf_trim.indexOf(":")
-					integer sf_eq = sf_trim.indexOf("=")
-					integer sp = sf_trim.indexOf(" ")
-					if sf_colon > 0 and (sf_eq == -1 or sf_colon < sf_eq)
-						string sf_cname = sf_trim.substring(0, sf_colon).trim()
-						string sf_ctype = sf_trim.substring(sf_colon + 1, sf_trim.length()).trim()
-						integer sf_ceq = sf_ctype.indexOf("=")
-						if sf_ceq != -1
-							sf_ctype = sf_ctype.substring(0, sf_ceq).trim()
-						fields_json = fields_json + "," + spec_component_field(sf_cname, sf_ctype, sf_line, input_lines)
-					else if sp > 0
-						string sf_type = sf_trim.substring(0, sp)
-						string sf_rest = sf_trim.substring(sp + 1, sf_trim.length()).trim()
-						// Drop any default assignment: keep only the name segment.
-						integer eq_pos = sf_rest.indexOf("=")
-						string sf_name = sf_rest
-						if eq_pos != -1
-							sf_name = sf_rest.substring(0, eq_pos).trim()
-						fields_json = fields_json + "," + spec_component_field(sf_name, sf_type, sf_line, input_lines)
+		// State and input fields with their defaults (component_field_entry).
+		string sf_remaining = state_fields
+		while sf_remaining.length() > 0
+			integer nl_pos = sf_remaining.indexOf("\n")
+			string sf_line = sf_remaining
+			if nl_pos == -1
+				sf_remaining = ""
+			else
+				sf_line = sf_remaining.substring(0, nl_pos)
+				sf_remaining = sf_remaining.substring(nl_pos + 1, sf_remaining.length())
+			string sf_entry = component_field_entry(sf_line, input_lines)
+			if sf_entry != ""
+				fields_json = fields_json + "," + sf_entry
 		fields_json = fields_json + "]"
 
 		// -------- Build render() method body source --------
@@ -2086,17 +2167,21 @@ functions:
 			if has_value and next_space != -1 and next_space < eq_pos
 				// `name = value` is one attribute; `disabled class="x"` is two.
 				has_value = remaining.substring(next_space, eq_pos).trim() == ""
-			string attr_name = remaining
-			string attr_value = ""
-			string rest = ""
-			if has_value == false
+			if not has_value
 				// Boolean attribute (no value).
-				if next_space != -1
+				string attr_name = remaining
+				if next_space == -1
+					remaining = ""
+				else
 					attr_name = remaining.substring(0, next_space)
-					rest = remaining.substring(next_space + 1, remaining.length())
+					remaining = remaining.substring(next_space + 1, remaining.length()).trim()
+				if attr_name.length() > 0 and dropped.indexOf("," + attr_name + ",") == -1
+					result = join_attrs(result, attr_name)
 			else
-				attr_name = remaining.substring(0, eq_pos).trim()
+				string attr_name = remaining.substring(0, eq_pos).trim()
+				string attr_value = ""
 				string after_eq = remaining.substring(eq_pos + 1, remaining.length()).trim()
+				remaining = ""
 				string quote = ""
 				if after_eq.length() > 0
 					quote = after_eq.substring(0, 1)
@@ -2106,26 +2191,17 @@ functions:
 						attr_value = after_eq.substring(1, after_eq.length())
 					else
 						attr_value = after_eq.substring(1, close_quote)
-						rest = after_eq.substring(close_quote + 1, after_eq.length())
+						remaining = after_eq.substring(close_quote + 1, after_eq.length()).trim()
 				else
 					integer value_end = after_eq.indexOf(" ")
 					if value_end == -1
 						attr_value = after_eq
 					else
 						attr_value = after_eq.substring(0, value_end)
-						rest = after_eq.substring(value_end, after_eq.length())
-			remaining = rest.trim()
-			result = join_attrs(result, attr_text(attr_name, attr_value, has_value, dropped, page_mode))
+						remaining = after_eq.substring(value_end, after_eq.length()).trim()
+				if attr_name.length() > 0 and dropped.indexOf("," + attr_name + ",") == -1
+					result = join_attrs(result, attr_fragment(attr_name, attr_value, page_mode))
 		return result
-
-	// The markup for one parsed attribute: "" when it is in the dropped list,
-	// the bare name for a boolean attribute, else attr_fragment.
-	string attr_text(string attr_name, string attr_value, boolean has_value, string dropped, boolean page_mode)
-		if attr_name.length() == 0 or dropped.indexOf("," + attr_name + ",") != -1
-			return ""
-		if has_value == false
-			return attr_name
-		return attr_fragment(attr_name, attr_value, page_mode)
 
 	// One `name='value'` attribute. In page mode an event attribute
 	// (`onclick.stop="save"`) becomes `data-on-click='save'` plus one
@@ -2143,7 +2219,12 @@ functions:
 		string event_name = base_event.substring(2, base_event.length())
 		string fragment = "data-on-" + event_name + "='" + escape_attr_text(attr_value) + "'"
 		if modifier != ""
-			fragment = fragment + " data-on-" + event_name + "-" + modifier + "='true'"
+			list<string> modifiers = modifier.split(".")
+			integer mi = 0
+			while mi < modifiers.length()
+				if modifiers[mi] != ""
+					fragment = fragment + " data-on-" + event_name + "-" + modifiers[mi] + "='true'"
+				mi = mi + 1
 		return fragment
 
 	// Input assignments for a component tag's attributes (UI-C010). `client`
@@ -2786,6 +2867,106 @@ functions:
 				if p_seg != t_seg
 					return false
 		return false
+
+	// Collect the paths of `GET "<url>"` / `FEED "<url>"` route declarations
+	// from a JSON-escaped .cln source (route lines are tab-indented, so they
+	// appear as `\tGET \"/url\"` in the escaped text). Each path is added
+	// to the table as "|<normalised url>|".
+	string scan_explicit_get_routes(string esc, string table)
+		string result = table
+		list<string> methods = ["GET", "FEED"]
+		integer mi = 0
+		while mi < methods.length()
+			string needle = "\\t" + methods[mi] + " \\\""
+			integer scan_from = 0
+			integer safety = 0
+			while safety < 1000
+				safety = safety + 1
+				integer at = esc.indexOf(needle, scan_from)
+				if at == -1
+					break
+				integer p_start = at + needle.length()
+				integer p_end = esc.indexOf("\\\"", p_start)
+				if p_end == -1
+					break
+				string norm = normalize_route(esc.substring(p_start, p_end))
+				if result.indexOf("|" + norm + "|") == -1
+					result = result + norm + "|"
+				scan_from = p_end
+			mi = mi + 1
+		return result
+
+	// Route path with every ":name" segment reduced to ":" so routes that
+	// differ only in parameter names compare equal ("/blog/:id" and
+	// "/blog/:slug" are the same route to the server router).
+	string normalize_route(string url)
+		list<string> segs = url.split("/")
+		string out = ""
+		integer i = 0
+		while i < segs.length()
+			string seg = segs[i]
+			if seg.startsWith(":")
+				seg = ":"
+			if i > 0
+				out = out + "/"
+			out = out + seg
+			i = i + 1
+		if out.length() == 0
+			return "/"
+		return out
+
+	// One page render function (functions:-block indent): routes-guard role
+	// check, companion guard(request) / load(request), then the page rendered
+	// with the load result as its data. The companion receives the current
+	// request (frame-ui.ebnf companion_load_fn; frame-ui-semantics UI-C007).
+	string page_render_fn(string module_name, string url, string html_path, boolean has_load, boolean has_guard, string guard_table)
+		string body = ""
+		string roles = lookup_routes_guard(url, guard_table)
+		if roles.length() > 0
+			body = body + emit_routes_guard_check(roles)
+		if has_load or has_guard
+			body = body + emit_page_request(url)
+		if has_guard
+			body = body + "\tany __g = " + module_name + "_guard(__req)\n"
+			body = body + "\tif __g != null\n"
+			body = body + "\t\treturn __g\n"
+		if has_load
+			body = body + "\tany __rd = " + module_name + "_load(__req)\n"
+			body = body + "\tstring __d = json.encode(__rd)\n"
+			body = body + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", __d))\n"
+		else
+			body = body + "\treturn _ui_head_links(_ui_render_page(\"" + html_path + "\", \"{}\"))\n"
+		return "\tstring " + module_name + "_render()\n" + indent_lines(body) + "\n"
+
+	// Statements (function-body indent) that build `__req`, the Request a
+	// companion guard()/load() receives: params (one entry per ":name"
+	// segment of the page URL), path, method, headers, ip, body and auth
+	// (loggedIn, userId, role from the current session).
+	string emit_page_request(string url)
+		string params = ""
+		list<string> segs = url.split("/")
+		integer i = 0
+		while i < segs.length()
+			string seg = segs[i]
+			if seg.startsWith(":") and seg.length() > 1
+				string pname = seg.substring(1, seg.length())
+				if params.length() > 0
+					params = params + ", "
+				params = params + pname + ": _req_param(\"" + pname + "\")"
+			i = i + 1
+		string b = ""
+		if params.length() > 0
+			b = b + "\tany __rp = { " + params + " }\n"
+		else
+			b = b + "\tany __rp = {}\n"
+		b = b + "\tany __rh = json.decode(_req_headers())\n"
+		b = b + "\tany __ra = { loggedIn: false, userId: null, role: \"\" }\n"
+		b = b + "\tstring __rs = _auth_get_session()\n"
+		b = b + "\tif __rs.length() > 0 and __rs != \"null\"\n"
+		b = b + "\t\tany __rsd = json.decode(__rs)\n"
+		b = b + "\t\t__ra = { loggedIn: true, userId: __rsd.user_id, role: __rsd.role }\n"
+		b = b + "\tany __req = { params: __rp, path: _req_path(), method: _req_method(), headers: __rh, ip: _req_ip(), body: _req_body(), auth: __ra }\n"
+		return b
 
 	string lookup_routes_guard(string url, string table)
 		if table.length() == 0

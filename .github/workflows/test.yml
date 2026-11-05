@@ -107,6 +107,9 @@ jobs:
           node plugins/frame.canvas/runtime/tests/runtime-bridges.test.mjs
           node plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs
 
+      - name: frame.ui runtime tests (node)
+        run: node plugins/frame.ui/scripts/test_time_bridges.mjs
+
       - name: Example smoke tests (compile, boot, request routes)
         run: ./scripts/smoke-examples.sh
 

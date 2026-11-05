@@ -47,6 +47,19 @@ All bridge functions use WASM pointer+length format for strings. Handler paramet
 |----------|--------|---------|-------------|
 | `_ui_onEvent` | selector, event_type, handler_name | integer | Register event handler via document-level delegation. `handler_name` must match a top-level function export. |
 
+### Declarative Event Attributes (UI-B006 / UI-B007)
+
+Event attributes in templates need no `ui.onEvent` call. The loader reads both forms frame.ui emits:
+
+- page mode (`page` blocks, HTML entry pages): `data-on-click='save'` plus one `data-on-click-<modifier>='true'` marker (several modifiers may share one marker: `data-on-click-stop.prevent`).
+- `html:` blocks, component and screen templates: `onclick="save"` / `onsubmit.prevent="save"` as written. The loader rewrites these to the `data-on-*` form before the module loads, so the browser never runs the handler name as inline script.
+
+One document-level listener per event type dispatches to `instance.exports[name]`; inside a `data-screen` / `data-component` wrapper the scoped export (`Counter.increment`) is used when the plain name is not exported. Handlers take no parameters (read event data with the event-context functions below). A missing export is a console error when the event fires. Markup inserted later (bridge calls, navigation, any DOM insertion) is picked up automatically.
+
+Modifiers: `.prevent`, `.stop` (no ancestor handlers run), `.once`, `.passive` (no `preventDefault`), `.enter` / `.escape` / `.space` (key filter), `.left` / `.right` (mouse button filter). `focus`, `blur`, `mouseenter`, `mouseleave`, `pointerenter`, `pointerleave` and `scroll` do not bubble: only the element's own handler runs.
+
+Tests: `node scripts/test_event_dispatch.mjs` (compiles `scripts/fixtures/*.cln` with `$CLEEN_CLN` or `~/.cleen/bin/cln`).
+
 ### Event Context (inside handler)
 
 | Function | Params | Returns | Description |

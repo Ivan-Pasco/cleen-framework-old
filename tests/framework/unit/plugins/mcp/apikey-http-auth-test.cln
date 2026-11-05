@@ -1,0 +1,101 @@
+// Test: frame.mcp — apiKey: on an HTTP transport server.
+// Spec: foundation/docs/framework/plugins/mcp.md §4.1 and §8.2,
+//       foundation/spec/framework/grammar/frame-mcp.ebnf (api_key_field),
+//       foundation/spec/framework/frame-mcp-semantics.md (MCP-B004, MCP-I003),
+//       foundation/spec/platform/HOST_BRIDGE.md (_mcp_http_require_key,
+//       _mcp_http_header).
+//
+// apiKey: is accepted with transport: http: (it used to be a compile error).
+// The plugin evaluates the key once at startup (__mcp_api_key), hands it to
+// the host with _mcp_http_require_key (the host answers 401 to requests
+// without `Authorization: Bearer <key>`), and re-checks the Authorization
+// header of every accepted request (__mcp_authorized) before dispatching.
+//
+// start: checks the generated key and header check. The transport loop the
+// plugin appends to start: then registers the key and serves on an ephemeral
+// port (port: 0); the 401 / 200 round trip over a real socket cannot be driven
+// from this runner, because start: never returns once the loop runs and the
+// runner only drives GET "/test" on the app's own listener.
+
+plugins:
+	frame.mcp
+
+mcp "secured-tools":
+	version: "1.0.0"
+	description: "Tools behind an API key"
+	transport: http:
+		port: 0
+		host: "127.0.0.1"
+	apiKey: "mcp-test-key-7f3a"
+
+	tool "echo":
+		description: "Echo a message back"
+		params:
+			message: string
+		return mcpText(params.message)
+
+start:
+	integer failures = 0
+
+	// ── the key is the evaluated apiKey: expression ─────────────────────
+	if not expectEqual(__mcp_api_key(), "mcp-test-key-7f3a", "__mcp_api_key returns the apiKey: value")
+		failures = failures + 1
+
+	// ── Authorization header check (Bearer scheme, exact key) ───────────
+	if not expectTrue(__mcp_authorized("Bearer mcp-test-key-7f3a", "mcp-test-key-7f3a"), "the matching Bearer key is accepted")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("", "mcp-test-key-7f3a"), "a request without Authorization is rejected")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("Bearer wrong-key", "mcp-test-key-7f3a"), "a wrong key is rejected")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("mcp-test-key-7f3a", "mcp-test-key-7f3a"), "a key without the Bearer scheme is rejected")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("Basic mcp-test-key-7f3a", "mcp-test-key-7f3a"), "another auth scheme is rejected")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("Bearer mcp-test-key-7f3a-extra", "mcp-test-key-7f3a"), "a key with a matching prefix is rejected")
+		failures = failures + 1
+	if not expectFalse(__mcp_authorized("Bearer ", ""), "an empty key never authorizes")
+		failures = failures + 1
+
+	// ── unauthorized answer is a JSON-RPC error ──────────────────────────
+	string denied = __mcp_unauthorized()
+	if not expectEqual(json.get(denied, "error.code"), "-32001", "an unauthorized request gets error -32001")
+		failures = failures + 1
+	if not expectEqual(json.get(denied, "error.message"), "Unauthorized", "the error message is Unauthorized")
+		failures = failures + 1
+
+	// ── the dispatcher still serves authorized requests ──────────────────
+	string call = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"hi\"}}}")
+	if not expectEqual(json.get(call, "result.content.0.text"), "hi", "tools/call works on an apiKey: server")
+		failures = failures + 1
+
+	if failures == 0
+		printl("PASS: mcp-apikey-http-auth")
+	else
+		printl("FAIL: mcp-apikey-http-auth (" + failures.toString() + " assertion(s) failed)")
+
+// Assertion helpers — same contract as assertEqual / assertTrue / assertFalse
+// in tests/framework/utils/assertions.cln (copied because there is no module
+// import system yet; renamed because the compiler reserves assertEqual).
+functions:
+	boolean expectEqual(string actual, string expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected)
+			printl("  Actual:   " + actual)
+			return false
+		return true
+
+	boolean expectTrue(boolean actual, string message)
+		if not actual
+			printl("FAIL: " + message)
+			printl("  Expected: true")
+			return false
+		return true
+
+	boolean expectFalse(boolean actual, string message)
+		if actual
+			printl("FAIL: " + message)
+			printl("  Expected: false")
+			return false
+		return true

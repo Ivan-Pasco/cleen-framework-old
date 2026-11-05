@@ -1,6 +1,6 @@
 package: HtmlSimple
 	version: "1.0.0"
 
-	target: web
-		plugins: [frame.ui]
+	target: server
+		plugins: [frame.ui, frame.server]
 		entry: app/ui/web/pages/index.html

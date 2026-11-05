@@ -1,51 +1,62 @@
 #!/bin/bash
-# Run tests for all Frame plugins.
+# Run the tests of every Frame plugin.
 #
-# Plugin tests in plugins/*/tests/*.cln call expand_block / validate_block,
-# which are defined in plugins/*/src/main.cln. To make those references
-# resolve, each test file is combined with its plugin's source before being
-# passed to the compiler:
+# Each plugin is covered by up to two kinds of test:
 #
-#   1. Split test file at the first `functions:` line.
-#      Head = comments + start: + (anything before functions:)
-#      Tail = the test's functions: block
-#   2. Concatenate: head + plugin/src/main.cln + assert_helper + tail
-#      (section order required by Clean: import/start/state/class/functions)
-#   3. Run `cln check` on the combined file to verify compilation.
+#   1. Helper tests — plugins/<plugin>/tests/*.cln. They call the plugin's
+#      parsing / validation helpers (validate_block, ...) defined in
+#      plugins/<plugin>/src/main.cln. Each test file is combined with its
+#      plugin's source and type-checked with `cln check`:
+#        a. Split the test file at the first `functions:` line.
+#           Head = comments + start: (anything before functions:)
+#           Tail = the test's functions: block
+#        b. Concatenate: head + plugin/src/main.cln + assert helper + tail
+#           (section order required by Clean: start, then functions blocks)
+#      `cln check` is used instead of running them because the plugin source
+#      imports the compiler's typed-emission bridges (_batch_*, _emit_*),
+#      which no standalone runner provides.
 #
-# Usage: scripts/test-plugins.sh [plugin-name ...]   (default: every plugin)
-# The compiler is $CLEEN_CLN, default ~/.cleen/bin/cln (the toolchain these
-# plugins are built with — never the `cln` on PATH).
+#   2. Unit suite — tests/framework/unit/plugins/<short-name>/ (frame.auth ->
+#      auth). These are executed for real by run-framework-tests.sh: compiled
+#      against the installed plugin and run inside clean-server.
 #
-# `cln check` is used instead of `cln test` because the plugin runtime
-# imports (e.g. _state_reset_all) aren't provided by the standalone runner —
-# that's a cross-component gap. Compilation parity
-# catches syntax, type, and signature regressions, which is what we need
-# from CI on this layer.
+# A plugin with neither is reported as "without tests" and fails the run.
+#
+# Usage: scripts/test-plugins.sh [--no-unit] [plugin-name ...]
+#   --no-unit   only run the helper tests (the CI framework step already runs
+#               every unit suite)
+#   default     every plugin, both kinds of test
+#
+# The compiler is $CLEEN_CLN, default ~/.cleen/bin/cln (the old toolchain
+# these plugins are built with — plain `cln` on PATH is a different
+# toolchain). run-framework-tests.sh honours CLEEN_SERVER and
+# FRAMEWORK_TEST_PORT / CLEEN_TEST_PORT.
 set -e
 
-# The plugins target this repository's toolchain (~/.cleen). A different
-# compiler on PATH is never used.
-CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# The old toolchain's compiler; plain `cln` on PATH is a different toolchain.
-CLN="${CLN_COMPILER:-$HOME/.cleen/bin/cln}"
 PLUGINS_DIR="$SCRIPT_DIR/../plugins"
+UNIT_DIR="$SCRIPT_DIR/../tests/framework/unit/plugins"
 CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
-ONLY=" $* "
-TMP_DIR="$(mktemp -d)"
-# Old-toolchain compiler. Plain `cln` on PATH is a different toolchain.
-CLN="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
+
+RUN_UNIT=true
+ONLY=" "
+for arg in "$@"; do
+    case "$arg" in
+        --no-unit) RUN_UNIT=false ;;
+        -*) echo "Unknown option: $arg" >&2; exit 2 ;;
+        *) ONLY="$ONLY$arg " ;;
+    esac
+done
+
 if [ ! -x "$CLN" ]; then
     echo "Compiler not found at: $CLN (set CLEEN_CLN to override)" >&2
     exit 1
 fi
+TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Minimal assert() implementation injected into combined test files.
-# Without this, every assert() call fails validation because Clean Language
-# has no built-in assert.
+# Clean Language has no built-in assert.
 ASSERT_HELPER='
 functions:
 	void assert(boolean cond)
@@ -63,69 +74,88 @@ NO_TESTS=0
 
 for plugin_dir in "$PLUGINS_DIR"/*/; do
     plugin_name=$(basename "$plugin_dir")
-    if [ "$ONLY" != "  " ] && [[ "$ONLY" != *" $plugin_name "* ]]; then
+    if [ "$ONLY" != " " ] && [[ "$ONLY" != *" $plugin_name "* ]]; then
         continue
     fi
     src_main="$plugin_dir/src/main.cln"
     tests_dir="$plugin_dir/tests"
+    short_name="${plugin_name#frame.}"
+    unit_suite="$UNIT_DIR/$short_name"
 
-    if [ ! -d "$tests_dir" ]; then
-        echo "⚠ $plugin_name has no tests directory"
+    has_helper_tests=false
+    if [ -d "$tests_dir" ] && ls "$tests_dir"/*.cln >/dev/null 2>&1; then
+        has_helper_tests=true
+    fi
+    has_unit_suite=false
+    if [ -d "$unit_suite" ] && ls "$unit_suite"/*.cln >/dev/null 2>&1; then
+        has_unit_suite=true
+    fi
+
+    if [ "$has_helper_tests" = false ] && [ "$has_unit_suite" = false ]; then
+        echo "⚠ $plugin_name has no tests (plugins/$plugin_name/tests/ or tests/framework/unit/plugins/$short_name/)"
         echo ""
         ((NO_TESTS++)) || true
         continue
     fi
 
-    if [ ! -f "$src_main" ]; then
-        echo "⚠ $plugin_name has tests/ but no src/main.cln — skipping"
-        echo ""
-        continue
-    fi
-
     echo "Testing $plugin_name..."
 
-    for test_file in "$tests_dir"/*.cln; do
-        [ -f "$test_file" ] || continue
+    if [ "$has_helper_tests" = true ]; then
+        if [ ! -f "$src_main" ]; then
+            echo "  ✗ tests/ present but no src/main.cln"
+            ((FAILED++)) || true
+        else
+            for test_file in "$tests_dir"/*.cln; do
+                test_name=$(basename "$test_file")
+                combined="$TMP_DIR/${plugin_name}-${test_name}"
+                rm -f "$TMP_DIR/head.cln" "$TMP_DIR/tail.cln"
 
-        test_name=$(basename "$test_file")
-        combined="$TMP_DIR/${plugin_name}-${test_name}"
+                awk '
+                    BEGIN { mode = "head" }
+                    mode == "head" && /^functions:/ { mode = "tail" }
+                    mode == "head" { print > head_file; next }
+                    mode == "tail" { print > tail_file }
+                ' head_file="$TMP_DIR/head.cln" tail_file="$TMP_DIR/tail.cln" "$test_file"
+                [ -f "$TMP_DIR/head.cln" ] || : > "$TMP_DIR/head.cln"
+                [ -f "$TMP_DIR/tail.cln" ] || : > "$TMP_DIR/tail.cln"
 
-        # Split the test file at the first `functions:` line.
-        awk '
-            BEGIN { mode = "head" }
-            mode == "head" && /^functions:/ { mode = "tail" }
-            mode == "head" { print > head_file; next }
-            mode == "tail" { print > tail_file }
-        ' head_file="$TMP_DIR/head.cln" tail_file="$TMP_DIR/tail.cln" "$test_file"
+                {
+                    cat "$TMP_DIR/head.cln"
+                    cat "$src_main"
+                    printf '%s\n' "$ASSERT_HELPER"
+                    cat "$TMP_DIR/tail.cln"
+                } > "$combined"
 
-        # If the test file lacks a `functions:` line, awk leaves tail empty;
-        # treat the whole file as head and add an empty tail.
-        [ -f "$TMP_DIR/tail.cln" ] || : > "$TMP_DIR/tail.cln"
-        [ -f "$TMP_DIR/head.cln" ] || cp "$test_file" "$TMP_DIR/head.cln"
+                if "$CLN" check "$combined" >/dev/null 2>&1; then
+                    echo "  ✓ $test_name type-checks against src/main.cln"
+                    ((PASSED++)) || true
+                else
+                    echo "  ✗ $test_name failed:"
+                    "$CLN" check "$combined" 2>&1 | sed 's/^/      /' | head -20
+                    ((FAILED++)) || true
+                fi
+            done
+        fi
+    fi
 
-        # Order required by Clean: start:, then all functions: blocks.
-        {
-            cat "$TMP_DIR/head.cln"
-            cat "$src_main"
-            printf '%s\n' "$ASSERT_HELPER"
-            cat "$TMP_DIR/tail.cln"
-        } > "$combined"
-
-        if "$CLN" check "$combined" >/dev/null 2>&1; then
-            echo "  ✓ $test_name compiles cleanly"
+    if [ "$has_unit_suite" = true ] && [ "$RUN_UNIT" = true ]; then
+        log="$TMP_DIR/${plugin_name}-unit.log"
+        if "$SCRIPT_DIR/run-framework-tests.sh" "unit/plugins/$short_name" >"$log" 2>&1; then
+            count=$(grep -c '\[PASS\].*unit/plugins/' "$log" || true)
+            echo "  ✓ unit suite unit/plugins/$short_name ($count passed)"
             ((PASSED++)) || true
         else
-            echo "  ✗ $test_name failed:"
-            "$CLN" check "$combined" 2>&1 | sed 's/^/      /' | head -20
+            echo "  ✗ unit suite unit/plugins/$short_name failed:"
+            grep -E '\[FAIL\]|FAIL:' "$log" | sed 's/^/      /' | head -20
             ((FAILED++)) || true
         fi
-    done
+    fi
     echo ""
 done
 
 echo "========================"
 echo "Tests complete: $PASSED passed, $FAILED failed, $NO_TESTS plugins without tests"
 
-if [ $FAILED -gt 0 ]; then
+if [ $FAILED -gt 0 ] || [ $NO_TESTS -gt 0 ]; then
     exit 1
 fi

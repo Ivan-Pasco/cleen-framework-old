@@ -185,7 +185,7 @@ functions = [
   { name = "crypto.hmac",           signature = "crypto.hmac(data, key, algo)",                   description = "Compute HMAC using 'sha256' or 'sha512'; returns hex string",                                            maps_to = "_crypto_hmac",            params = ["string", "string", "string"],   returns = "string" },
   { name = "crypto.sha256_bytes",   signature = "crypto.sha256_bytes(handle)",                    description = "SHA-256 of an opaque byte handle (from req.body_bytes). Returns lowercase hex string. See type-system.md §9b.", maps_to = "_crypto_sha256_bytes",    params = ["integer"],                      returns = "string" },
 
-  { name = "auth.can", signature = "auth.can(permission)", description = "Check if current user has permission", maps_to_helper = "can", params = ["string"], returns = "boolean" },
+  { name = "auth.can", signature = "auth.can(user, permission)", description = "Check if the given user (user/session JSON, e.g. from auth.getCurrentUser()) has a permission from the roles: block; empty user returns false", maps_to_helper = "can", params = ["string", "string"], returns = "boolean" },
   { name = "auth.hasRole", signature = "auth.hasRole(role)", description = "Check if current user has specific role", maps_to_helper = "hasRole", params = ["string"], returns = "boolean" },
   { name = "auth.getCurrentUser", signature = "auth.getCurrentUser()", description = "Get current authenticated user session data", maps_to_helper = "getCurrentUser", params = [], returns = "string" },
   { name = "auth.isAuthenticated", signature = "auth.isAuthenticated()", description = "Check if request is authenticated", maps_to_helper = "isAuthenticated", params = [], returns = "boolean" },
@@ -290,4 +290,4 @@ anti_pattern = "no CSRF protection on POST endpoints — a third-party site can 
 example = "patterns/csrf-protection.cln"
 
 [build]
-built_with_compiler = "0.33.169"
+built_with_compiler = "0.33.170"

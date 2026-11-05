@@ -1,6 +1,6 @@
 [plugin]
 name = "frame.server"
-version = "2.9.8"
+version = "2.9.9"
 description = "HTTP endpoints, routing, middleware, and request/response helpers for Clean Language server-side applications. See CHANGELOG.md for release history."
 author = "Clean Language Team"
 license = "MIT"
@@ -189,9 +189,11 @@ functions = [
   # validation because the callback's plugin_target = "frame.ui" was missing.
   # See contracts/bridge-host-classes.md §4.1.
 
-  # JSON Encoding/Decoding (pure compute — portable Layer 2)
-  { name = "_json_encode", params = ["string"], returns = "string", description = "Encode value to JSON string", expand_strings = true, hosts = ["all"] },
-  { name = "_json_decode", params = ["string"], returns = "string", description = "Decode JSON string to value", expand_strings = true, hosts = ["all"] },
+  # JSON Encoding/Decoding (pure compute — portable Layer 2). json.* lowers
+  # to the Delivery-2 bridges below; the legacy _json_encode / _json_decode
+  # pair is not declared: no code emits it, and its registry shape
+  # (_json_encode params = ["any"]) is not the (ptr, len) string the hosts
+  # still implement for modules built before Delivery 2.
   { name = "_json_get", params = ["any", "string"], returns = "any", description = "Extract value from JSON using dot-separated path (e.g., 'user.name'). First param is Any-boxed (typically a raw SQL result or already-boxed JSON string); second param is the path.", expand_strings = false, hosts = ["all"] },
   { name = "_json_encode_v2",        params = ["any"],    returns = "string", description = "Encode boxed-Any to compact JSON. Delivery 2 shape. Raises on invalid input.", expand_strings = false, hosts = ["all"] },
   { name = "_json_encode_pretty_v2", params = ["any"],    returns = "string", description = "Encode boxed-Any to 2-space indented JSON. Delivery 2 shape. Raises on invalid input.", expand_strings = false, hosts = ["all"] },
@@ -343,11 +345,11 @@ functions = [
   { name = "req.cookie", signature = "req.cookie(name)", description = "Get cookie value by name", maps_to = "_req_cookie", params = ["string"], returns = "string" },
   # Authentication — spec-canonical aliases (foundation/spec/stdlib-reference.md §14)
   # backed by server-owned bridges (_auth_get_session, _auth_require_auth, etc.).
-  # The richer auth.session.*, auth.jwt.* wrappers live in frame.auth.
+  # The richer auth.session.*, auth.jwt.* wrappers live in frame.auth, and so does
+  # auth.can(user, permission) — the raw _auth_can bridge above stays callable.
   { name = "auth.getSession", signature = "auth.getSession()", description = "Get current session as JSON string", maps_to = "_auth_get_session", params = [], returns = "string" },
   { name = "auth.requireAuth", signature = "auth.requireAuth()", description = "Check if request is authenticated (true=yes, false=no)", maps_to = "_auth_require_auth", params = [], returns = "boolean" },
   { name = "auth.requireRole", signature = "auth.requireRole(role)", description = "Check if user has given role", maps_to = "_auth_require_role", params = ["string"], returns = "boolean" },
-  { name = "auth.can", signature = "auth.can(permission)", description = "Check if user has given permission", maps_to = "_auth_can", params = ["string"], returns = "boolean" },
   { name = "auth.hasAnyRole", signature = "auth.hasAnyRole(roles)", description = "Check if user has any of the roles (JSON array of role names)", maps_to = "_auth_has_any_role", params = ["string"], returns = "boolean" },
   # fs namespace — binary-safe filesystem writes (Layer 2 server-host).
   # fs.write_bytes takes an opaque byte handle (integer per spec/type-system.md §9b),
@@ -514,4 +516,4 @@ anti_pattern = "polling the server with repeated GET requests on a timer — use
 example = "patterns/live-feed-realtime.cln"
 
 [build]
-built_with_compiler = "0.33.169"
+built_with_compiler = "0.33.170"

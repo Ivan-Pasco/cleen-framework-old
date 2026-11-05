@@ -51,7 +51,35 @@ start:
 
 	failures = failures + check(has_nested_transaction("a = 1\ntransaction:\n\tb = 2"), "transaction: nesting detected")
 	failures = failures + check(migration_sql("\"CREATE TABLE a (id INTEGER)\"\n\"CREATE INDEX i ON a (id)\"") == "CREATE TABLE a (id INTEGER); CREATE INDEX i ON a (id)", "migrate: string-literal statements")
-	failures = failures + check(migration_sql("createTable(\"a\")").startsWith("ERR:"), "migrate: schema helper rejected")
+	// Fixed: was `migration_sql("createTable(\"a\")").startsWith("ERR:")` —
+	// schema helpers (frame-data.ebnf §7 schema_helper_call) are now
+	// implemented; a createTable without columns is still an error.
+	failures = failures + check(migration_sql("createTable(\"a\")").startsWith("ERR:"), "migrate: createTable needs columns")
+	failures = failures + check(migration_sql("createTable(\"a\", \"string code primary\", \"string name required\")") == "CREATE TABLE a (code TEXT PRIMARY KEY, name TEXT NOT NULL)", "migrate: createTable")
+	failures = failures + check(migration_sql("createTable(\"a\", \"integer id primary generated\")").contains(auto_pk_marker()), "migrate: createTable generated key per engine")
+	failures = failures + check(migration_sql("addColumn(\"a\", \"n\", integer, required, default(0))") == "ALTER TABLE a ADD COLUMN n INTEGER NOT NULL DEFAULT 0", "migrate: addColumn")
+	failures = failures + check(migration_sql("renameColumn(\"a\", \"x\", \"y\")\ndropColumn(\"a\", \"y\")") == "ALTER TABLE a RENAME COLUMN x TO y; ALTER TABLE a DROP COLUMN y", "migrate: rename/drop column")
+	failures = failures + check(migration_sql("createIndex(\"a\", [\"x\", \"y\"], unique)") == "CREATE UNIQUE INDEX uniq_a_x_y ON a (x, y)", "migrate: createIndex unique")
+	failures = failures + check(migration_sql("dropIndex(\"a\", [\"x\"])") == "DROP INDEX idx_a_x", "migrate: dropIndex")
+	failures = failures + check(migration_sql("addForeignKey(\"posts\", \"user_id\", \"users.id\", \"cascade\")") == "ALTER TABLE posts ADD CONSTRAINT fk_posts_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE", "migrate: addForeignKey")
+	failures = failures + check(migration_sql("dropForeignKey(\"posts\", \"user_id\")") == "ALTER TABLE posts DROP CONSTRAINT fk_posts_user_id", "migrate: dropForeignKey")
+	failures = failures + check(migration_sql("execute(\"DELETE FROM a\")\ndropTable(\"a\")") == "DELETE FROM a; DROP TABLE a", "migrate: execute/dropTable")
+	failures = failures + check(migration_sql("dropColumn(\"a\")").startsWith("ERR:"), "migrate: helper arity checked")
+
+	// DAT-M017 `as "column"`, DAT-E002 primary keys.
+	string renamed = synthesize_v1_body_from_v2_fields("integer id primary generated\nstring passwordHash as \"password_hash\" required\n")
+	failures = failures + check(extract_field_columns(renamed) == "id,password_hash", "as: column names")
+	failures = failures + check(generate_field_definitions(renamed, "id", "auto") == "password_hash TEXT NOT NULL", "as: column definition")
+	string keyed = synthesize_v1_body_from_v2_fields("uuid id primary generated\nstring label\n")
+	failures = failures + check(pk_kind_of(keyed, pk_field_of(keyed), "uuid") == "uuid", "primary: generated uuid key")
+	string assigned = synthesize_v1_body_from_v2_fields("string code primary\nstring name\n")
+	failures = failures + check(pk_field_of(assigned) == "code" and pk_kind_of(assigned, "code", "string") == "assigned", "primary: assigned string key")
+
+	// DAT-Q006: offset: without limit: warns, and still returns every
+	// remaining row (SQLite needs a LIMIT before OFFSET).
+	failures = failures + check(offset_without_limit("order: id asc\noffset: 2"), "offset: without limit detected")
+	failures = failures + check(not offset_without_limit("limit: 5\noffset: 2"), "offset: with limit accepted")
+	failures = failures + check(query_expr("Post", "find", "offset: 2").contains("LIMIT 9223372036854775807\" + \" OFFSET 2"), "offset: without limit keeps every remaining row")
 
 	if failures == 0
 		printl("PASS: frame-data-plugin-helpers")

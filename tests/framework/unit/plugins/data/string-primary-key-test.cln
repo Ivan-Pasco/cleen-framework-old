@@ -1,0 +1,114 @@
+// Test: frame.data — string / UUID primary keys.
+// Spec: frame-data-semantics.md DAT-E002 (`string id` for UUID keys; save
+// sets the generated key in place), DAT-S001 (save inserts when the key is
+// unset, updates by primary key otherwise), DAT-S003 (delete by primary
+// key); frame-data.ebnf §2.2 field_constraint `primary` / `generated`.
+// A `generated` string/uuid key is a UUID v4 assigned on the first save; a
+// `primary` key without `generated` is supplied by the caller.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Token:
+	fields:
+		uuid id primary generated
+		string label required
+
+data Country:
+	fields:
+		string code primary
+		string name required
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		Token.migrate()
+		Country.migrate()
+
+		// Generated UUID key: set in place on the first save.
+		Token t = Token()
+		t.label = "first"
+		Database.save(t)
+		if t.id.length() != 36 or t.id.substring(8, 9) != "-" or t.id.substring(14, 15) != "4"
+			printl("FAIL: generated key is not a UUID v4: '" + t.id + "'")
+			failures = failures + 1
+		string first_id = t.id
+
+		Token t2 = Token()
+		t2.label = "second"
+		Database.save(t2)
+		if t2.id == first_id or t2.id.length() != 36
+			printl("FAIL: second generated key is not a fresh UUID")
+			failures = failures + 1
+
+		// find by the string key.
+		Token found = Token.first:
+			where:
+				id == first_id
+		if found == null
+			printl("FAIL: first: by uuid key found nothing")
+			failures = failures + 1
+		else
+			if found.label != "first" or found.id != first_id
+				printl("FAIL: uuid row not hydrated")
+				failures = failures + 1
+			// save of a loaded row updates it, never inserts a copy.
+			found.label = "renamed"
+			Database.save(found)
+			if found.id != first_id
+				printl("FAIL: update changed the key")
+				failures = failures + 1
+		integer tokens = Token.count
+		if tokens != 2
+			printl("FAIL: expected 2 tokens after update, got " + tokens.toString())
+			failures = failures + 1
+		Token reloaded = Token.findOrFail:
+			where:
+				id == first_id
+		if reloaded.label != "renamed"
+			printl("FAIL: update by uuid key not persisted")
+			failures = failures + 1
+
+		// delete by the string key.
+		boolean removed = Database.delete(t2)
+		integer tokens_after = Token.count
+		if not removed or tokens_after != 1
+			printl("FAIL: delete by uuid key")
+			failures = failures + 1
+
+		// Caller-assigned string key: insert, then save again updates.
+		Country nz = Country()
+		nz.code = "NZ"
+		nz.name = "New Zealand"
+		Database.save(nz)
+		nz.name = "Aotearoa New Zealand"
+		Database.save(nz)
+		integer countries = Country.count
+		if countries != 1
+			printl("FAIL: assigned key saved twice gave " + countries.toString() + " rows")
+			failures = failures + 1
+		Country c = Country.findOrFail:
+			where:
+				code == "NZ"
+		if c.name != "Aotearoa New Zealand" or c.code != "NZ"
+			printl("FAIL: assigned key row not updated")
+			failures = failures + 1
+		boolean c_removed = Database.delete(c)
+		integer countries_after = Country.count
+		if not c_removed or countries_after != 0
+			printl("FAIL: delete by assigned string key")
+			failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-string-primary-key")
+		else
+			printl("FAIL: data-string-primary-key")
+		return json({ok: true})
+
+start:
+	printl("[boot] data-string-primary-key server ready")

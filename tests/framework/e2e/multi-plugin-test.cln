@@ -47,7 +47,7 @@ jobs:
 endpoints:
 	GET "/test":
 		auth.setSession("\{\"user_id\":42,\"role\":\"user\"\}")
-		boolean ok_auth = auth.isAuthenticated() and auth.can("reminders.create")
+		boolean ok_auth = auth.isAuthenticated() and auth.can(auth.getCurrentUser(), "reminders.create")
 
 		Reminder.migrate()
 		Reminder reminder = Reminder()

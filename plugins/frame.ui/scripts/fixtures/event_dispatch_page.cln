@@ -1,0 +1,27 @@
+// Fixture for test_event_dispatch.mjs — the server half. A page block is
+// rendered in page mode, so its event attributes (UI-B006 / UI-B007) reach
+// the HTML as data-on-* markers. start prints the server-rendered markup;
+// the test injects it into the DOM as the page body, then loads the browser
+// half (event_dispatch.cln) through runtime/loader.js.
+
+plugins:
+	frame.ui
+
+start:
+	EventsPage page = EventsPage()
+	printl(page.render())
+
+page EventsPage:
+	<main>
+		<p id="log"></p>
+		<button id="b1" data-id="42" onclick="topClick">a</button>
+		<form id="f1" onsubmit.prevent="saveForm"><button id="b2">go</button></form>
+		<div id="outer" onclick="outerClick"><button id="b3" onclick.stop="innerClick">s</button></div>
+		<div id="outer2" onclick="outerClick"><button id="b4" onclick="innerClick">n</button></div>
+		<button id="b5" onclick.once="onceClick">o</button>
+		<input id="i1" onkeydown.enter="enterKey">
+		<div id="outer3" onclick="outerClick"><a id="b6" href="/x" onclick.stop.prevent="innerClick">m</a></div>
+		<button id="b7" onclick="doesNotExist">x</button>
+		<input id="i2" onfocus="focused">
+		<div id="screen-host" data-screen="Counter"></div>
+	</main>

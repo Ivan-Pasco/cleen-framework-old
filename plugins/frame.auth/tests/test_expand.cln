@@ -1,69 +1,67 @@
-// Tests for frame.auth plugin
-// Fixed: functions were declared at top level — spec (grammar.ebnf) requires functions: block
-// Fixed: added type declarations and void return types — spec requires explicit types
+// Tests for the frame.auth plugin's config parsing and validation helpers.
+// scripts/test-plugins.sh splices src/main.cln between this start: and the
+// functions: below, then type-checks the result. The expansion entry point
+// (expand_block_typed) calls compiler-provided typed-emission bridges and is
+// exercised end to end by tests/framework/unit/plugins/auth/.
+// Grammar: frame-auth.ebnf auth_session_block, auth_jwt_block,
+//          jwt_secret_field (secret = env.get(...)), login_block attributes
 
 start:
-	test_auth_jwt_expansion()
-	test_auth_session_expansion()
-	test_protected_expansion()
-	test_protected_with_role()
-	test_protected_with_permission()
-	test_login_expansion()
-	test_auth_validation_missing_secret()
-	test_auth_validation_invalid_strategy()
-	test_login_validation_missing_model()
-	test_unknown_block_passthrough()
+	test_keywords()
+	test_subblock_extraction()
+	test_config_values()
+	test_login_attributes()
+	test_string_escaping()
+	test_jwt_validation()
+	test_session_validation()
 
 functions:
-	void test_auth_jwt_expansion()
-		string result = expand_block("auth", "{\"strategy\": \"jwt\", \"secret\": \"env.get(\\\"JWT_SECRET\\\")\"}", "")
-		assert(result.contains("_auth_create_token"))
-		assert(result.contains("_auth_verify_token"))
-		assert(result.contains("_auth_secret"))
-		assert(result.contains("Bearer"))
+	void test_keywords()
+		string keywords = get_keywords()
+		assert(keywords.contains("\"auth\""))
+		assert(keywords.contains("\"login\""))
+		assert(keywords.contains("\"roles\""))
+		assert(keywords.contains("\"csrf\""))
 
-	void test_auth_session_expansion()
-		string result = expand_block("auth", "{\"strategy\": \"session\", \"secret\": \"secret123\"}", "")
-		assert(result.contains("_create_session"))
-		assert(result.contains("_get_session"))
-		assert(result.contains("httpOnly"))
+	void test_subblock_extraction()
+		string cfg = "\tsession:\n\t\tcookie = \"app.sid\"\n\t\ttimeoutMinutes = 30\n\tjwt:\n\t\tsecret = env.get(\"JWT_SECRET\")\n\t\talg = \"HS512\"\n"
+		// A sub-block ends where the next sibling (jwt:, roles:, ...) starts.
+		string sess = extract_subblock(cfg, "session:")
+		assert(sess.contains("cookie = \"app.sid\""))
+		assert(not sess.contains("jwt"))
+		string jwt = extract_subblock(cfg, "jwt:")
+		assert(jwt.startsWith("secret = env.get("))
+		assert(jwt.endsWith("alg = \"HS512\""))
+		assert(extract_subblock(cfg, "tenant:") == "")
 
-	void test_protected_expansion()
-		string result = expand_block("protected", "{}", "route: method=\"GET\" path=\"/test\"")
-		assert(result.contains("_http_middleware"))
-		assert(result.contains("_extract_token"))
-		assert(result.contains("Unauthorized"))
+	void test_config_values()
+		string sess = "cookie = \"app.sid\"\n\t\ttimeoutMinutes = 30"
+		assert(get_config_value(sess, "cookie", "session") == "app.sid")
+		assert(get_config_value(sess, "timeoutMinutes", "60") == "30")
+		assert(get_config_value(sess, "sameSite", "Lax") == "Lax")
+		// env.get("X") is unwrapped to the variable name X.
+		string jwt = "secret = env.get(\"JWT_SECRET\")\n\t\talg = \"HS512\""
+		assert(get_config_value(jwt, "secret", "") == "JWT_SECRET")
+		assert(get_config_value(jwt, "alg", "HS256") == "HS512")
 
-	void test_protected_with_role()
-		string result = expand_block("protected", "{\"role\": \"admin\"}", "")
-		assert(result.contains("user.role"))
-		assert(result.contains("admin"))
-		assert(result.contains("Forbidden"))
+	void test_login_attributes()
+		assert(get_attr("{\"model\": \"User\", \"email\": \"mail\"}", "email", "email") == "mail")
+		assert(get_attr("{\"model\": \"User\"}", "model", "") == "User")
+		assert(get_attr("{\"model\": \"User\"}", "password", "password_hash") == "password_hash")
 
-	void test_protected_with_permission()
-		string result = expand_block("protected", "{\"permission\": \"delete_users\"}", "")
-		assert(result.contains("permissions.contains"))
-		assert(result.contains("delete_users"))
+	void test_string_escaping()
+		assert(escape_string_literal("a\"b\\c") == "a\\\"b\\\\c")
+		assert(escape_string_literal("plain") == "plain")
 
-	void test_login_expansion()
-		string result = expand_block("login", "{\"model\": \"User\"}", "")
-		assert(result.contains("_login"))
-		assert(result.contains("_register"))
-		assert(result.contains("_auth_hash_password"))
-		assert(result.contains("User.findBy"))
+	void test_jwt_validation()
+		assert(validate_block("auth", "{}", "\tjwt:\n\t\tsecret = env.get(\"JWT_SECRET\")\n") == "")
+		assert(validate_block("auth", "{}", "\tjwt:\n\t\tsecret = \"hardcoded\"\n").contains("must reference an environment variable"))
+		assert(validate_block("auth", "{}", "\tjwt:\n\t\talg = \"HS256\"\n").contains("secret is required"))
+		assert(validate_block("auth", "{}", "\tjwt:\n\t\tenabled = false\n") == "")
+		// Only the auth: block has plugin-side validation.
+		assert(validate_block("roles", "{}", "\tadmin: [\"*\"]\n") == "")
 
-	void test_auth_validation_missing_secret()
-		string result = validate_block("auth", "{\"strategy\": \"jwt\"}", "")
-		assert(result.contains("secret attribute is required"))
-
-	void test_auth_validation_invalid_strategy()
-		string result = validate_block("auth", "{\"strategy\": \"invalid\", \"secret\": \"test\"}", "")
-		assert(result.contains("must be 'jwt' or 'session'"))
-
-	void test_login_validation_missing_model()
-		string result = validate_block("login", "{}", "")
-		assert(result.contains("model attribute is required"))
-
-	void test_unknown_block_passthrough()
-		string result = expand_block("unknown", "{}", "original body")
-		assert(result == "original body")
+	void test_session_validation()
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"None\"\n").contains("requires secure=true"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"None\"\n\t\tsecure = true\n") == "")
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"Lax\"\n") == "")

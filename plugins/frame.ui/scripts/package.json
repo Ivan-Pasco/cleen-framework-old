@@ -5,7 +5,10 @@
   "description": "Layer 2 canary runner for frame.ui — instantiates compiler canaries in headless Chromium and diffs stdout against the canary's expected block.",
   "type": "module",
   "scripts": {
-    "canaries": "node run_canaries.mjs"
+    "canaries": "node run_canaries.mjs",
+    "test:events": "node test_event_dispatch.mjs",
+    "test:time": "node test_time_bridges.mjs",
+    "test:json": "node test_json_v2.mjs && node test_json_conformance.mjs"
   },
   "dependencies": {
     "playwright": "^1.47.0"

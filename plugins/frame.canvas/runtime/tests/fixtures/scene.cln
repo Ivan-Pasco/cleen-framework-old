@@ -29,6 +29,7 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		number pathT = 0.0
 		integer lives = 3
 		boolean attacking = false
+		number pivot = 0.5
 
 	animSprite "heroIdle":
 		sheet = "hero"
@@ -149,6 +150,10 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		canvas.circle x=500 y=80 radius=60 gradient="sun"
 		on layer "world":
 			canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
+			canvas.sprite "hero" x=300 y=200 clip=1 anchorX=0.5 anchorY=1
+			canvas.sprite "hero" x=10.0 y=20.0 state="heroFSM" anchorX=1.0 anchorY=pivot
+			canvas.sprite "hero" x=100 y=100 clip=0 rotation=90 anchorX=pivot anchorY=pivot
+			canvas.sprite "hero" x=50 y=60 clip=0 flipX=true anchorX=0.25
 		on layer "hud":
 			canvas.text value="Lives: " + lives.toString() x=10 y=20 size=14 color="#ffffff" font="pixel"
 

@@ -1,0 +1,42 @@
+// Test: frame.ui — component state and input defaults.
+// Spec: frame-ui.ebnf §1.1 state_field (typed `type name = expression` and
+// shorthand `name: expression`), §1.2 inputs_field `[ "=" , expression ]`;
+// typed-emission.md Amendment 14 (class-spec field `default`).
+// `integer visits = 2` must start at 2; an input default holds until the
+// component tag sets the input. Fields without a default start empty.
+
+plugins:
+	frame.ui
+
+component: tag="ui-visits"
+	state:
+		integer visits = 2
+		string mood = "calm, mostly"
+		boolean shown = true
+		label: "hits"
+		total: 40
+		ratio: 0.5
+		string empty
+	inputs:
+		bump: integer = 5
+		title: string = "Visits"
+
+	html:
+		<p>{title}/{label}/{visits.toString()}/{(total + bump).toString()}/{(ratio * 2.0).toString()}/{shown.toString()}/{mood}/({empty})</p>
+
+page VisitsPage:
+	<div>
+		<ui-visits></ui-visits>
+		<ui-visits bump="1" title="Days"></ui-visits>
+	</div>
+
+start:
+	VisitsPage page = VisitsPage()
+	string out = page.render()
+	string want = "<div><p>Visits/hits/2/45/1/true/calm, mostly/()</p><p>Days/hits/2/41/1/true/calm, mostly/()</p></div>"
+	if out == want
+		printl("PASS: ui-component-state-defaults")
+	else
+		printl("FAIL: ui-component-state-defaults")
+		printl("  Expected: " + want)
+		printl("  Actual:   " + out)

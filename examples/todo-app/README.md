@@ -31,7 +31,7 @@ DATABASE_URL=sqlite::memory: ~/.cleen/bin/clean-server todo-app.wasm --port 3000
 curl http://localhost:3000/api/health
 ```
 
-Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`), but the current frame.ui does not route plain `.html` pages yet, so those URLs return 404 for now.
+Page URLs follow the file path under `app/ui/web/pages/` (`index.html` → `/`).
 
 To compile, start and request every route in one step, run `./scripts/smoke-examples.sh todo-app` from the framework root.
 

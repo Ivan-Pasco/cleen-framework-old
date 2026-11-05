@@ -1,0 +1,59 @@
+// Test: frame.data — `offset:` without `limit:` (DAT-Q006, DAT-Q007).
+// Spec: frame-data.ebnf §5.3 offset_clause; frame-data-semantics.md DAT-Q006
+// (a query with offset: but no limit: compiles with a warning —
+// FRAME-DATA-W031 — and the runtime behaviour is well-defined: skip N rows,
+// return the rest). Compiling this file prints the W031 warning for the
+// find: below and for the queries: method; the run checks the behaviour.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Entry:
+	fields:
+		integer id primary generated
+		integer rank required
+	queries:
+		list<Entry> afterFirst(integer skip)
+			return find:
+				order: rank asc
+				offset: skip
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		Entry.migrate()
+		iterate i in 1 to 5
+			Entry e = Entry()
+			e.rank = i
+			Database.save(e)
+
+		list<Entry> rest = Entry.find:
+			order: rank asc
+			offset: 2
+		if rest.length() != 3
+			printl("FAIL: offset without limit returned " + rest.length().toString() + " rows, expected 3")
+			failures = failures + 1
+		else
+			if rest.get(0).rank != 3 or rest.get(2).rank != 5
+				printl("FAIL: offset without limit skipped the wrong rows")
+				failures = failures + 1
+
+		Entry probe = Entry()
+		list<Entry> viaMethod = probe.afterFirst(4)
+		if viaMethod.length() != 1 or viaMethod.get(0).rank != 5
+			printl("FAIL: queries: method with offset and no limit returned " + viaMethod.length().toString() + " rows")
+			failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-query-offset-without-limit")
+		else
+			printl("FAIL: data-query-offset-without-limit")
+		return json({ok: true})
+
+start:
+	printl("[boot] data-query-offset-without-limit server ready")

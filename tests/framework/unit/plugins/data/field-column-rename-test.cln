@@ -1,0 +1,163 @@
+// Test: frame.data — `as "column"` field renames (DAT-M017).
+// Spec: frame-data.ebnf §2.2 field_constraint `"as" , string_literal`;
+// frame-data-semantics.md DAT-M017 (the SQL column name differs from the
+// field name). The table, inserts, updates, query clauses (where/order/
+// select/count/paginate/cursor), indexes and row hydration must all use the
+// column name while application code uses the field name.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Account:
+	table "accounts"
+	fields:
+		integer id primary generated
+		string email required unique
+		string passwordHash as "password_hash" required
+		string displayName as "display_name"
+		integer loginCount as "login_count"
+	indexes:
+		passwordHash
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		Account.migrate()
+
+		// Table creation uses the column names, never the field names.
+		if column_count("password_hash") != 1 or column_count("display_name") != 1 or column_count("login_count") != 1
+			printl("FAIL: renamed columns missing from the table")
+			failures = failures + 1
+		if column_count("passwordHash") != 0 or column_count("displayName") != 0
+			printl("FAIL: table has field-named columns")
+			failures = failures + 1
+		string idx = db.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND tbl_name = 'accounts' AND sql LIKE '%password_hash%'", "[]")
+		if json.get(idx, "data.rows.0.n") != "1"
+			printl("FAIL: indexes: entry not created on the renamed column")
+			failures = failures + 1
+
+		// Insert writes to the renamed columns.
+		Account a = Account()
+		a.email = "a@example.com"
+		a.passwordHash = "h1"
+		a.displayName = "Alpha"
+		a.loginCount = 3
+		Database.save(a)
+		Account b = Account()
+		b.email = "b@example.com"
+		b.passwordHash = "h2"
+		b.displayName = "Beta"
+		b.loginCount = 0
+		Database.save(b)
+		string raw = db.query("SELECT password_hash, display_name, login_count FROM accounts WHERE email = 'a@example.com'", "[]")
+		if json.get(raw, "data.rows.0.password_hash") != "h1" or json.get(raw, "data.rows.0.display_name") != "Alpha" or json.get(raw, "data.rows.0.login_count") != "3"
+			printl("FAIL: insert did not write the renamed columns: " + raw)
+			failures = failures + 1
+
+		// where: on a renamed field, hydration back into the fields.
+		Account found = Account.first:
+			where:
+				passwordHash == "h1"
+		if found == null
+			printl("FAIL: first: where on a renamed field found nothing")
+			failures = failures + 1
+		else
+			if found.displayName != "Alpha" or found.passwordHash != "h1" or found.loginCount != 3
+				printl("FAIL: renamed columns not hydrated into the fields")
+				failures = failures + 1
+
+			// Update writes to the renamed columns.
+			found.displayName = "Alpha Prime"
+			found.loginCount = 4
+			Database.save(found)
+			string raw2 = db.query("SELECT display_name, login_count FROM accounts WHERE email = 'a@example.com'", "[]")
+			if json.get(raw2, "data.rows.0.display_name") != "Alpha Prime" or json.get(raw2, "data.rows.0.login_count") != "4"
+				printl("FAIL: update did not write the renamed columns: " + raw2)
+				failures = failures + 1
+
+		// count: / exists: with a renamed field in where:.
+		integer active = Account.count:
+			where:
+				loginCount > 0
+		if active != 1
+			printl("FAIL: count where loginCount > 0 = " + active.toString())
+			failures = failures + 1
+		boolean has_beta = Account.exists:
+			where:
+				displayName == "Beta"
+		if not has_beta
+			printl("FAIL: exists where displayName")
+			failures = failures + 1
+
+		// order: and select: on renamed fields.
+		list<Account> ordered = Account.find:
+			order: displayName desc
+		if ordered.length() != 2
+			printl("FAIL: find order: returned " + ordered.length().toString())
+			failures = failures + 1
+		else
+			if ordered.get(0).displayName != "Beta"
+				printl("FAIL: order: displayName desc not applied")
+				failures = failures + 1
+		list<Account> picked = Account.find:
+			select: id, displayName
+			where:
+				email == "b@example.com"
+		if picked.length() != 1
+			printl("FAIL: select: returned " + picked.length().toString())
+			failures = failures + 1
+		else
+			if picked.get(0).displayName != "Beta"
+				printl("FAIL: select: displayName not hydrated")
+				failures = failures + 1
+
+		// paginate: / cursor: order and filter on renamed fields.
+		PagedResult<Account> page = Account.paginate:
+			where:
+				loginCount >= 0
+			order: displayName asc
+			paginate:
+				page: 1
+				perPage: 1
+		if page.items.length() != 1 or page.totalCount != 2
+			printl("FAIL: paginate count")
+			failures = failures + 1
+		else
+			if page.items.get(0).displayName != "Alpha Prime"
+				printl("FAIL: paginate order on renamed field")
+				failures = failures + 1
+		CursorResult<Account> cur = Account.cursor:
+			cursor:
+				perPage: 5
+				after: ""
+				by: loginCount
+		if cur.items.length() != 2
+			printl("FAIL: cursor by renamed field returned " + cur.items.length().toString())
+			failures = failures + 1
+
+		// delete by key.
+		Database.delete(b)
+		integer left = Account.count
+		if left != 1
+			printl("FAIL: delete left " + left.toString() + " rows")
+			failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-field-column-rename")
+		else
+			printl("FAIL: data-field-column-rename")
+		return json({ok: true})
+
+start:
+	printl("[boot] data-field-column-rename server ready")
+
+functions:
+	// 1 when the accounts table has a column named `col`, else 0.
+	integer column_count(string col)
+		string r = db.query("SELECT COUNT(*) AS n FROM pragma_table_info('accounts') WHERE name = '" + col + "'", "[]")
+		return json.get(r, "data.rows.0.n").toInteger()

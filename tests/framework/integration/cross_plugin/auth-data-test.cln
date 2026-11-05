@@ -45,7 +45,7 @@ endpoints:
 		profile.bio = "user 1 profile"
 		Database.save(profile)
 		auth.setSession("\{\"user_id\":1,\"role\":\"user\"\}")
-		boolean ok_auth = auth.isAuthenticated() and auth.can("profile.view")
+		boolean ok_auth = auth.isAuthenticated() and auth.can(auth.getCurrentUser(), "profile.view")
 
 		Profile p = Profile.first:
 			where:

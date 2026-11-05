@@ -86,8 +86,8 @@ functions:
 //   retry:
 //     maxAttempts: 3
 //     backoff: exponential
-//     delay: 5
-//   timeout: 30
+//     delay: 5          (seconds; default 1)
+//   timeout: 30         (seconds; default 0 = unlimited)
 //   queue: "email"
 //
 // Supported top-level entry:
@@ -203,7 +203,7 @@ functions:
 
 				integer max_attempts = 3
 				string backoff = "fixed"
-				integer delay_secs = 5
+				integer delay_secs = 1
 				integer timeout_secs = 0
 				string queue_name = "default"
 				string handler_lines = ""
