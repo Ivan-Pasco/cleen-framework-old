@@ -1,0 +1,36 @@
+// Test: frame.ui — braced attributes and braced directive values
+// (frame-ui.ebnf interpolation_attribute, standard_attribute `name={expr}`,
+// cl_if_directive `cl-if={expr}`).
+//
+// `{name}` alone is the attribute `name` with the variable's value; a value
+// in braces may hold spaces; `cl-if={expression}` is the expression.
+// Regressions (Studio task board, 2026-11-05):
+//   - `<option value="{v}" {!sel}>` was sent to the browser as the attribute
+//     `{!sel}` (no option was ever shown selected). It is now FRAME-UI-E003
+//     at compile time; `{sel}` is the grammar's shorthand.
+//   - `cl-if={sel}` expanded to `if {sel}` and did not compile.
+
+plugins:
+	frame.ui
+
+start:
+	string a = option("1", true)
+	string b = option("2", false)
+	string c = shorthand("x")
+	boolean ok_a = a == "<option value='1' selected>1</option>"
+	boolean ok_b = b == "<option value='2'>2</option>"
+	boolean ok_c = c == "<p title='x'>t</p>"
+	if ok_a and ok_b and ok_c
+		printl("PASS: ui-attribute-braces")
+	else
+		printl("FAIL: ui-attribute-braces " + a + " | " + b + " | " + c)
+
+functions:
+	string option(string value, boolean picked)
+		html:
+			<option value="{value}" selected cl-if={picked and value != ""}>{value}</option>
+			<option value="{value}" cl-else>{value}</option>
+
+	string shorthand(string title)
+		html:
+			<p {title}>t</p>

@@ -54,9 +54,19 @@ functions:
 		assert(html_attributes("p title=\"Don't\"", false) == "title='Don&#39;t'")
 		assert(html_attributes("p data-x='say \"hi\"'", false) == "data-x='say &quot;hi&quot;'")
 		assert(html_attributes("input disabled class=\"c\"", false) == "disabled class='c'")
+		// `{name}` is `name={name}` (frame-ui.ebnf interpolation_attribute);
+		// a braced value may hold spaces.
+		assert(html_attributes("p \{title\}", false) == "title='\" + _html_escape((title).toString()) + \"'")
+		assert(html_attributes("p data-n=\{a + b\} id=\"x\"", false) == "data-n='\" + _html_escape((a + b).toString()) + \"' id='x'")
+		// Raw HTML in attribute position is marked for FRAME-UI-E003.
+		assert(has_bad_attribute(html_attributes("option \{!sel\}", false)))
+		assert(has_bad_attribute(expand_html_block("\{\}", "<option value=\"1\" \{!sel\}>1</option>")))
 
 	// cl-if / cl-else / cl-iterate / cl-show nest the whole element (UI-B001..B004).
 	void test_structural_directives()
+		// The braced form is the expression itself.
+		string braced_if = html_to_stmts("<p cl-if=\{ok and n > 1\}>a</p>", "h", false, "\{\}", false)
+		assert(braced_if.startsWith("if ok and n > 1\n"))
 		string if_src = html_to_stmts("<p cl-if=\"ok\">a</p><p cl-else>b</p>", "h", false, "\{\}", false)
 		assert(if_src == "if ok\n\th = h + \"<p>\"\n\th = h + \"a\"\n\th = h + \"</p>\"\nelse\n\th = h + \"<p>\"\n\th = h + \"b\"\n\th = h + \"</p>\"\n")
 		string it_src = html_to_stmts("<li cl-iterate=\"x in xs\">\{x\}</li>", "h", false, "\{\}", false)
