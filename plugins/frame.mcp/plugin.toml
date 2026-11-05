@@ -84,8 +84,8 @@ keywords = [
   { name = "tool",      description = "Declare an AI-callable tool function inside an mcp: block", context = "block" },
   { name = "resource",  description = "Declare a URI-addressable read-only resource inside an mcp: block", context = "block" },
   { name = "prompt",    description = "Declare a parameterized prompt template inside an mcp: block", context = "block" },
-  { name = "params",    description = "Declare tool input parameters (name: type or name: type = default); read them as params.name", context = "block" },
-  { name = "args",      description = "Declare prompt template arguments (name: type or name: type = default); read them as args.name", context = "block" },
+  { name = "params",    description = "Declare tool input parameters (type name or type name = default); read them as params.name", context = "block" },
+  { name = "args",      description = "Declare prompt template arguments (type name or type name = default); read them as args.name", context = "block" },
   { name = "transport", description = "Configure the transport: stdio (default) or http: with port/host sub-fields", context = "config" },
   { name = "apiKey",    description = "API key for HTTP transport Bearer authentication — use env.get(\"VAR_NAME\") to read from environment", context = "config" },
   { name = "mimeType",  description = "MIME type hint for resource content (application/json, text/plain, text/markdown, text/csv)", context = "block" },
@@ -166,4 +166,4 @@ anti_pattern = "adding unnecessary database queries just to follow a pattern —
 example = "patterns/basic-tools.cln"
 
 [build]
-built_with_compiler = "0.33.170"
+built_with_compiler = "0.33.171"

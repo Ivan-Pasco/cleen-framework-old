@@ -1,0 +1,92 @@
+// Test: frame.data — records keep their class when they travel through `any`.
+// Spec: DAT-A003 (first / find bodies), DAT-A006 (`<entity>.data.<method>`);
+// MEMORY_MODEL.md "Class instance" (object header, instances in `any`).
+// Regression: a record passed through an `any` value (an `any` helper
+// parameter, a `list<any>` response body) was encoded from its raw memory
+// (`{"":17179869251}`), and a null `first:` result boxed as an empty object.
+// The record must encode as its fields and still unbox to the same record.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Post:
+	fields:
+		integer id primary generated
+		string title required
+		integer viewCount required
+
+	queries:
+		Post? latest()
+			return Post.first:
+				order: id desc
+		Post? titled(string t)
+			return Post.first:
+				where:
+					title == t
+		list<Post> popular(integer minViews)
+			return find:
+				where:
+					viewCount >= minViews
+				order: viewCount desc
+
+start:
+	printl("[boot] data-records-through-any server ready")
+
+// The entity declares every field of its data class (DAT-P004).
+class PostEntity
+	public:
+		Post data
+		integer id
+		string title
+		integer viewCount
+
+functions:
+	string encode(any value)
+		return json.encode(value)
+
+	any wrap(any value)
+		return value
+
+	Post unwrap(any value)
+		Post post = value
+		return post
+
+endpoints:
+	GET "/test":
+		Post.migrate()
+		Post a = Post()
+		a.title = "A"
+		a.viewCount = 5
+		Database.save(a)
+		Post b = Post()
+		b.title = "B"
+		b.viewCount = 50
+		Database.save(b)
+
+		PostEntity posts = PostEntity()
+		Post last = posts.data.latest()
+		string one = encode(last)
+		boolean ok_one = one == "{\"id\":2,\"title\":\"B\",\"viewCount\":50}"
+
+		list<any> body = []
+		list<Post> pop = posts.data.popular(1)
+		iterate p in pop
+			body.add(p)
+		string many = json.encode(body)
+		boolean ok_list = many == "[{\"id\":2,\"title\":\"B\",\"viewCount\":50},{\"id\":1,\"title\":\"A\",\"viewCount\":5}]"
+
+		Post back = unwrap(wrap(last))
+		boolean ok_back = back.title == "B" and back.viewCount == 50
+
+		Post missing = posts.data.titled("Z")
+		boolean ok_null = missing == null and encode(missing) == "null"
+
+		if ok_one and ok_list and ok_back and ok_null
+			printl("PASS: data-records-through-any")
+		else
+			printl("FAIL: data-records-through-any one=" + one + " list=" + many + " back=" + ok_back.toString() + " null=" + ok_null.toString())
+		return json({ok: true})

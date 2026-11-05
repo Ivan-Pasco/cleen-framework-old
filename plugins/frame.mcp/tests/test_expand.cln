@@ -1,0 +1,33 @@
+// Plugin-internal tests for frame.mcp: block validation and the parsing of
+// params:/args: declarations. scripts/test-plugins.sh combines this file
+// with src/main.cln. The JSON-RPC behaviour of generated servers is covered
+// by tests/framework/unit/plugins/mcp/.
+
+start:
+	integer failures = 0
+	string typed = "\ttool \"add\":\n\t\tdescription: \"Add two numbers\"\n\t\tparams:\n\t\t\tnumber a\n\t\t\tnumber b = 1\n\t\treturn mcpJson(params.a + params.b)\n"
+	failures = failures + check(validate_block("mcp", "\"calc\"", typed) == "", "params: type name accepted")
+
+	string colon = "\ttool \"add\":\n\t\tdescription: \"Add two numbers\"\n\t\tparams:\n\t\t\ta: number\n\t\treturn mcpJson(params.a)\n"
+	string colon_err = validate_block("mcp", "\"calc\"", colon)
+	failures = failures + check(colon_err.contains("`a: number`") and colon_err.contains("`number a`"), "params: name: type rejected with the type name form")
+
+	string colon_default = "\tprompt \"ask\":\n\t\tdescription: \"Ask about a topic\"\n\t\targs:\n\t\t\ttone: string = \"calm\"\n\t\treturn \"Write calmly\"\n"
+	failures = failures + check(validate_block("mcp", "\"calc\"", colon_default).contains("`string tone = \"calm\"`"), "args: name: type = default rejected with the type name form")
+
+	string record = parse_decl("list<string> tags = [\"a\"]")
+	failures = failures + check(decl_field(record, 0) == "tags" and decl_field(record, 1) == "list<string>", "parse_decl: type name")
+	failures = failures + check(decl_field(record, 2) == "1" and decl_field(record, 3) == "[\"a\"]", "parse_decl: default")
+	failures = failures + check(colon_decl_error("tool \"t\"", "params", "string mode = \"a:b\"") == "", "colon in a default value is not a name: type declaration")
+
+	if failures == 0
+		printl("PASS: frame-mcp-plugin-helpers")
+	else
+		printl("FAIL: frame-mcp-plugin-helpers (" + failures.toString() + " failed)")
+
+functions:
+	integer check(boolean ok, string name)
+		if ok
+			return 0
+		printl("FAIL: " + name)
+		return 1

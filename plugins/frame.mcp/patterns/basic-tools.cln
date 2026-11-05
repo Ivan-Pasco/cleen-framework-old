@@ -16,22 +16,22 @@ mcp "math-tools":
 	tool "add":
 		description: "Add two numbers and return the sum"
 		params:
-			a: number
-			b: number
+			number a
+			number b
 		return mcpJson(params.a + params.b)
 
 	tool "multiply":
 		description: "Multiply two numbers and return the product"
 		params:
-			a: number
-			b: number
+			number a
+			number b
 		return mcpJson(params.a * params.b)
 
 	tool "greet":
 		description: "Generate a greeting in the requested language (english, spanish, french, german)"
 		params:
-			name: string
-			language: string = "english"
+			string name
+			string language = "english"
 		if params.language == "spanish"
 			return mcpText("Hola, " + params.name + "!")
 		if params.language == "french"
@@ -43,7 +43,7 @@ mcp "math-tools":
 	tool "word_count":
 		description: "Count the words in a text string"
 		params:
-			text: string
+			string text
 		integer count = 0
 		integer i = 0
 		boolean in_word = false
@@ -70,6 +70,6 @@ mcp "math-tools":
 	prompt "explain_calculation":
 		description: "Ask the AI to explain a mathematical concept for an audience level"
 		args:
-			concept: string
-			level: string = "beginner"
+			string concept
+			string level = "beginner"
 		return "Explain the mathematical concept of '{{ args.concept }}' for a {{ args.level }} audience. Use simple, concrete examples and include one worked example."

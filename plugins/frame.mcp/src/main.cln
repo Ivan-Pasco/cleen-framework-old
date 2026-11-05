@@ -445,10 +445,8 @@ functions:
 			return "args"
 		return ""
 
-	// Declarations as lines `name\0type\0has_default\0default_src`.
-	// Accepts `name: type [= default]` (mcp.md §5.2) and
-	// `type name [= default]` (frame-mcp.ebnf param_decl).
-	string block_decls(string block)
+	// The declaration lines of the params:/args: section, trimmed.
+	string block_decl_lines(string block)
 		string head = block_header(block)
 		string out = ""
 		integer pos = 0
@@ -459,33 +457,60 @@ functions:
 			if tabs(line) == 2 and t != ""
 				in_decls = t == "params:" or t == "args:"
 			else if in_decls and tabs(line) >= 3 and not is_blank_or_comment(line)
-				out = out + parse_decl(t) + "\n"
+				out = out + t + "\n"
 			pos = next_line(head, pos)
 		return out
 
+	// Declarations as lines `name\0type\0has_default\0default_src`, each
+	// written `type name [= default]` (frame-mcp.ebnf param_decl).
+	string block_decls(string block)
+		string lines = block_decl_lines(block)
+		string out = ""
+		integer pos = 0
+		while pos < lines.length()
+			string t = line_at(lines, pos)
+			if t != ""
+				out = out + parse_decl(t) + "\n"
+			pos = next_line(lines, pos)
+		return out
+
+	// The part of a declaration before its ` = default`.
+	string decl_lhs(string decl)
+		integer eq = decl.indexOf(" = ")
+		if eq >= 0
+			return decl.substring(0, eq).trim()
+		return decl
+
 	string parse_decl(string decl)
-		string lhs = decl
+		string lhs = decl_lhs(decl)
 		string def_src = ""
 		string has_def = "0"
 		integer eq = decl.indexOf(" = ")
 		if eq >= 0
-			lhs = decl.substring(0, eq).trim()
 			def_src = decl.substring(eq + 3, decl.length()).trim()
 			has_def = "1"
-		string name = ""
+		string name = lhs
 		string typ = ""
-		integer colon = lhs.indexOf(":")
-		if colon > 0
-			name = lhs.substring(0, colon).trim()
-			typ = lhs.substring(colon + 1, lhs.length()).trim()
-		else
-			integer sp = lhs.lastIndexOf(" ")
-			if sp > 0
-				typ = lhs.substring(0, sp).trim()
-				name = lhs.substring(sp + 1, lhs.length()).trim()
-			else
-				name = lhs
+		integer sp = lhs.lastIndexOf(" ")
+		if sp > 0
+			typ = lhs.substring(0, sp).trim()
+			name = lhs.substring(sp + 1, lhs.length()).trim()
 		return name + "\0" + typ + "\0" + has_def + "\0" + def_src
+
+	// "" when `decl` is not written `name: type`; otherwise the error that
+	// shows the `type name` form to use instead.
+	string colon_decl_error(string label, string kw, string decl)
+		string lhs = decl_lhs(decl)
+		integer colon = lhs.indexOf(":")
+		if colon < 0
+			return ""
+		string name = lhs.substring(0, colon).trim()
+		string typ = lhs.substring(colon + 1, lhs.length()).trim()
+		string fixed = typ + " " + name
+		integer eq = decl.indexOf(" = ")
+		if eq >= 0
+			fixed = fixed + decl.substring(eq, decl.length())
+		return label + " declares `" + decl + "` in " + kw + ": — write the type first, as everywhere in Clean: `" + fixed + "` (frame-mcp.ebnf param_decl)"
 
 	string decl_field(string decl, integer index)
 		return record_field_n(decl, index, 4)
@@ -1175,6 +1200,18 @@ functions:
 		if block_member(block, "mimeType") != "" and kind != "resource"
 			return label + " mimeType: is only valid on resources"
 
+		// Declarations are `type name [= default]`; `name: type` is rejected
+		// with the form to use.
+		string raw_decls = block_decl_lines(block)
+		integer rp = 0
+		while rp < raw_decls.length()
+			string raw = line_at(raw_decls, rp)
+			rp = next_line(raw_decls, rp)
+			if raw != ""
+				string colon_err = colon_decl_error(label, kw, raw)
+				if colon_err != ""
+					return colon_err
+
 		// Declarations: well-formed, unique, required before optional (MCP-T005).
 		string decls = block_decls(block)
 		string seen = "\0"
@@ -1187,7 +1224,7 @@ functions:
 				string pname = decl_field(d, 0)
 				string ptype = decl_field(d, 1)
 				if not is_identifier(pname) or ptype == ""
-					return label + " has a malformed " + kw + " declaration — use name: type or name: type = default"
+					return label + " has a malformed " + kw + " declaration — use type name or type name = default"
 				if seen.indexOf("\0" + pname + "\0") >= 0
 					return label + " declares " + pname + " twice"
 				seen = seen + pname + "\0"

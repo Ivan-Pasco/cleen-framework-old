@@ -34,7 +34,7 @@ mcp "blog-tools":
 	tool "list_posts":
 		description: "List published posts, newest first. Returns an array of post objects."
 		params:
-			limit: integer = 10
+			integer limit = 10
 		list<Post> posts = Post.find:
 			where:
 				published == true
@@ -47,7 +47,7 @@ mcp "blog-tools":
 	tool "get_post":
 		description: "Get one post by its numeric id. Fails with NOT_FOUND when it does not exist."
 		params:
-			id: integer
+			integer id
 		list<Post> found = Post.find:
 			where:
 				id == params.id
@@ -58,8 +58,8 @@ mcp "blog-tools":
 	tool "create_post":
 		description: "Create a draft post (published = false). Returns the created post with its id."
 		params:
-			title: string
-			content: string
+			string title
+			string content
 		Post post = Post()
 		post.title = params.title
 		post.content = params.content
@@ -70,7 +70,7 @@ mcp "blog-tools":
 	tool "publish_post":
 		description: "Publish a draft post. Fails when the post does not exist or is already published."
 		params:
-			id: integer
+			integer id
 		list<Post> found = Post.find:
 			where:
 				id == params.id
@@ -86,9 +86,9 @@ mcp "blog-tools":
 	tool "add_comment":
 		description: "Add a comment to a post. Returns the created comment."
 		params:
-			postId: integer
-			authorName: string
-			body: string
+			integer postId
+			string authorName
+			string body
 		list<Post> found = Post.find:
 			where:
 				id == params.postId
@@ -121,8 +121,8 @@ mcp "blog-tools":
 	prompt "summarize_post":
 		description: "Prompt for a social media summary of one post"
 		args:
-			postId: integer
-			platform: string = "twitter"
+			integer postId
+			string platform = "twitter"
 		list<Post> found = Post.find:
 			where:
 				id == args.postId

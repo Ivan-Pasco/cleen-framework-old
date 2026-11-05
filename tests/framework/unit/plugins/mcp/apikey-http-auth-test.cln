@@ -31,7 +31,7 @@ mcp "secured-tools":
 	tool "echo":
 		description: "Echo a message back"
 		params:
-			message: string
+			string message
 		return mcpText(params.message)
 
 start:

@@ -15,8 +15,8 @@ mcp "model-tools":
 	tool "get_book":
 		description: "Return one book as JSON"
 		params:
-			title: string
-			pages: integer
+			string title
+			integer pages
 		mcp.log("debug", "building book " + params.title)
 		Book book = Book(params.title, params.pages)
 		return mcpJson(book)
