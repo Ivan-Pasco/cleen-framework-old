@@ -99,8 +99,6 @@ tier = "heavy"
 process_html = "process_html_typed"
 expand = "expand_block_typed"
 validate = "validate_block"
-validate_html = "validate_html"
-get_page_meta = "get_page_meta"
 get_keywords = "get_keywords"
 assemble = "assemble_typed"
 # Contract 5 Phase C — cross-file lint pass. Emits FRAME-UI-C005 (event
