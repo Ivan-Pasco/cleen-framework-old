@@ -115,6 +115,10 @@ accepts('particles with every sub-block', `\tparticles "p":\n\t\tsize = 3\n\t\ts
 rejects('particle attribute in the wrong sub-block', `\tparticles "p":\n\t\temitter:\n\t\t\tgravity = 10\n\n${DRAW}`, /FRAME-CANVAS-E721|'gravity = 10' is not a valid emitter attribute/);
 rejects('unknown particles sub-block', `\tparticles "p":\n\t\tspawn:\n\t\t\trate = 10\n\n${DRAW}`, /unknown sub-block 'spawn:'/);
 
+// --- path commands (frame-canvas.ebnf §11) --------------------------------
+
+rejects('unknown path command', `\tpath "p":\n\t\tmoveTo x=0 y=0\n\t\tsplineTo x=1 y=1\n\n${DRAW}`, /unknown command 'splineTo x=1 y=1'/);
+
 rmSync(work, { recursive: true, force: true });
 if (failures > 0) {
   console.log('FAIL: frame.canvas scene diagnostics');

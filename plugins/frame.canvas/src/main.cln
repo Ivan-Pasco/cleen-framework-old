@@ -1622,7 +1622,10 @@ functions:
 			return ""
 		return base + "Angle"
 
-	// path "name": moveTo / lineTo / curveTo / arcTo / closePath (§11).
+	// path "name": moveTo / lineTo / curveTo / quadTo / arcTo / closePath (§11).
+	// curveTo takes cx= cy= (one control point, drawn quadratic) or
+	// cp1x= cp1y= cp2x= cp2y= (cubic); quadTo cpX= cpY= is the quadratic
+	// segment of the prose spec (§15 "Path Command Attributes").
 	integer declare_path(integer ctx, integer arr, string name, string sub)
 		_batch_arrayPush(ctx, arr, bcc1(ctx, "_path_begin", sl(ctx, name)))
 		integer p = 0
@@ -1640,10 +1643,14 @@ functions:
 				_batch_arrayPush(ctx, arr, bcc7(ctx, "_path_cubic_to", n, av(ctx, ia, "cp1x", "0.0"), av(ctx, ia, "cp1y", "0.0"), av(ctx, ia, "cp2x", "0.0"), av(ctx, ia, "cp2y", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
 			else if op == "curveTo"
 				_batch_arrayPush(ctx, arr, bcc5(ctx, "_path_curve_to", n, av(ctx, ia, "cx", "0.0"), av(ctx, ia, "cy", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
+			else if op == "quadTo"
+				_batch_arrayPush(ctx, arr, bcc5(ctx, "_path_curve_to", n, av(ctx, ia, "cpX", "0.0"), av(ctx, ia, "cpY", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
 			else if op == "arcTo"
 				_batch_arrayPush(ctx, arr, bcc6(ctx, "_path_arc_to", n, av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0"), av(ctx, ia, "radius", "0.0"), av(ctx, ia, "startAngle", "0.0"), av(ctx, ia, "endAngle", "6.283185307179586")))
 			else if op == "closePath" or (op == "closed" and line_value(t) == "true")
 				_batch_arrayPush(ctx, arr, bcc1(ctx, "_path_close", n))
+			else if t.length() > 0 and t.startsWith("//") == false and (op == "closed" and line_value(t) == "false") == false
+				plugin_error(ctx, "FRAME-CANVAS-E730", "path \"" + name + "\": unknown command '" + t + "' (frame-canvas.ebnf §11: moveTo, lineTo, curveTo, quadTo, arcTo, closePath, closed =)")
 			p = le + 1
 		return 0
 

@@ -164,6 +164,8 @@ check(dust && dust.config.speedStart === 1 && dust.config.speedEnd === 0.5 && du
   && dust.config.colorEnd === '#000000', 'overLifetime speed / color ramps');
 check(bridge.gradients.get('skyFade').stops.length === 2 && bridge.gradients.get('sun').type === 'radial', 'gradients and stops');
 check(bridge.namedPaths.get('loop').length >= 5, 'path segments registered');
+check(JSON.stringify(bridge.namedPaths.get('wave')) === '[{"op":"move","x":0,"y":0},{"op":"curve","cpx":50,"cpy":-40,"x":100,"y":0}]',
+  `quadTo cpX= cpY= is a quadratic segment (got ${JSON.stringify(bridge.namedPaths.get('wave'))})`);
 check(bridge.cameraFollowX === 40 && bridge.cameraFollowY === 160 && bridge.cameraZoom === 1.5, 'camera follows state expressions');
 
 // A path tween writes the path position into its X / Y variables and the
