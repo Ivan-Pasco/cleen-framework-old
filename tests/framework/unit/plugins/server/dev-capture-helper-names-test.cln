@@ -1,0 +1,41 @@
+// Test: frame.server — the dev-capture helpers do not take app names.
+// Spec: SERVER_EXTENSIONS.md (GET /_debug/capture), lifecycle.md §3.1
+// (plugin-contributed functions must not conflict with other names).
+// Regression: every app with a server: block got public functions named
+// jsonEscapeString, computePassCriteria, ... so an app defining one of
+// those names failed to compile (other signature) or silently replaced the
+// capture route's helper (same signature).
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+start:
+	printl("[boot] server-dev-capture-helper-names server ready")
+
+functions:
+	string jsonEscapeString(string s, string quote)
+		return quote + s + quote
+
+	integer countJsonArrayEntries(string arr)
+		return 42
+
+	string computePassCriteria(string a, string b, string c, string d)
+		return "app-criteria"
+
+endpoints:
+	GET "/test":
+		boolean ok_escape = jsonEscapeString("x", "'") == "'x'"
+		boolean ok_count = countJsonArrayEntries("[1]") == 42
+		boolean ok_criteria = computePassCriteria("", "", "", "") == "app-criteria"
+		// The capture route keeps its own selector: a wrong-output hint
+		// still yields the wrong_output criteria.
+		string plugin_pc = __dc_computePassCriteria("[]", "[]", "expected", "app/server/main.cln")
+		boolean ok_plugin = plugin_pc.contains("wrong_output")
+		if ok_escape and ok_count and ok_criteria and ok_plugin
+			printl("PASS: server-dev-capture-helper-names")
+		else
+			printl("FAIL: server-dev-capture-helper-names escape=" + ok_escape.toString() + " count=" + ok_count.toString() + " criteria=" + ok_criteria.toString() + " plugin=" + ok_plugin.toString())
+		return json({ok: true})

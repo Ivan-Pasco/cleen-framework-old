@@ -9,7 +9,7 @@
 //   - Gated on CLEAN_DEV=1. If unset → return 404 with empty body.
 //   - Calls _dev_snapshot() → raw JSON snapshot from clean-server.
 //     Bridge itself returns "" when CLEAN_DEV != "1"; framework 404s on "".
-//   - Optional ?wrong_output_hint=... query param feeds computePassCriteria.
+//   - Optional ?wrong_output_hint=... query param feeds __dc_computePassCriteria.
 //   - Merges the computed pass_criteria (when non-empty) into the snapshot's
 //     top-level JSON via string splice — inserted immediately after the
 //     opening `{`. No re-parse. Matches SERVER_EXTENSIONS.md §pass_criteria.
@@ -33,18 +33,18 @@ functions:
 		string logs = _json_get(snapshot, "last_log_lines")
 		string entry = "app/server/main.cln"
 
-		string pc = computePassCriteria(request_log, logs, hint, entry)
+		string pc = __dc_computePassCriteria(request_log, logs, hint, entry)
 
 		string body = snapshot
 		if pc.length() > 0
-			body = mergePassCriteriaIntoSnapshot(snapshot, pc)
+			body = __dc_mergePassCriteriaIntoSnapshot(snapshot, pc)
 
 		return http.respond(200, "application/json", body)
 
 	// Splice `"pass_criteria":<json>,` immediately after the top-level `{`.
 	// The snapshot is produced by clean-server's snapshot_json() and starts
 	// with `{"source_tree":...}` — a well-formed object. We do not re-parse.
-	string mergePassCriteriaIntoSnapshot(string snapshot, string pass_criteria_json)
+	string __dc_mergePassCriteriaIntoSnapshot(string snapshot, string pass_criteria_json)
 		if snapshot.length() < 2
 			return snapshot
 		string first = snapshot.substring(0, 1)

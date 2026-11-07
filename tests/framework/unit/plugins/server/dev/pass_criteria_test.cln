@@ -1,4 +1,4 @@
-// Test: framework/dev — computePassCriteria helper for /_debug/capture
+// Test: framework/dev — __dc_computePassCriteria helper for /_debug/capture
 //
 // Verifies the pass_criteria selection rules described in the team prompt
 // dated 2026-07-14, against errors' shipped schema:
@@ -40,7 +40,7 @@ functions:
 		string log = "[]"
 		string logs = ""
 		string hint = "expected_greeting"
-		string result = computePassCriteria(log, logs, hint, "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, logs, hint, "app/server/main.cln")
 		assertContains(result, "\"kind\":\"wrong_output\"", "hint-only: kind must be wrong_output")
 		assertContains(result, "\"entry\":\"app/server/main.cln\"", "hint-only: entry must be passed through")
 		assertContains(result, "\"expected_stdout_regex\":\"expected_greeting\"", "hint-only: regex must equal hint")
@@ -52,7 +52,7 @@ functions:
 		string log = "[{\"method\":\"GET\",\"path\":\"/x\",\"status\":500}]"
 		string logs = "Handler render failed: wasm trap: unreachable"
 		string hint = "expected_output"
-		string result = computePassCriteria(log, logs, hint, "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, logs, hint, "app/server/main.cln")
 		assertContains(result, "\"kind\":\"wrong_output\"", "hint-with-crash: hint wins")
 		assertNotContains(result, "\"kind\":\"runtime_crash\"", "hint-with-crash: must NOT be runtime_crash")
 
@@ -61,7 +61,7 @@ functions:
 	// entrypoint.sh:121): a pass means the same path now returns < 500.
 	void test_500_status_maps_to_runtime_crash()
 		string log = "[{\"method\":\"GET\",\"path\":\"/syntax\",\"status\":200},{\"method\":\"GET\",\"path\":\"/syntax\",\"status\":500}]"
-		string result = computePassCriteria(log, "", "", "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, "", "", "app/server/main.cln")
 		assertContains(result, "\"kind\":\"runtime_crash\"", "500: kind must be runtime_crash")
 		assertContains(result, "\"entry\":\"app/server/main.cln\"", "500: entry must be passed through")
 		assertContains(result, "\"expected_status\":200", "500: expected_status defaults to 200")
@@ -74,7 +74,7 @@ functions:
 	void test_wasm_trap_in_logs_maps_to_runtime_crash()
 		string log = "[]"
 		string logs = "[info] server ready\n[error] wasm trap: unreachable executed"
-		string result = computePassCriteria(log, logs, "", "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, logs, "", "app/server/main.cln")
 		assertContains(result, "\"kind\":\"runtime_crash\"", "trap: kind must be runtime_crash")
 
 	// ── clean-server wraps traps in its own format:
@@ -85,7 +85,7 @@ functions:
 	void test_handler_failed_marker_maps_to_runtime_crash()
 		string log = "[]"
 		string logs = "[info] request start\n[error] Handler render_syntax failed: (truncated)"
-		string result = computePassCriteria(log, logs, "", "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, logs, "", "app/server/main.cln")
 		assertContains(result, "\"kind\":\"runtime_crash\"", "handler-failed: kind must be runtime_crash")
 
 	// ── Selection rule 3 — no failing signal anywhere: omit pass_criteria
@@ -93,7 +93,7 @@ functions:
 	void test_clean_signals_omit_pass_criteria()
 		string log = "[{\"method\":\"GET\",\"path\":\"/health\",\"status\":200}]"
 		string logs = "[info] server ready\n[info] handled 1 request"
-		string result = computePassCriteria(log, logs, "", "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, logs, "", "app/server/main.cln")
 		assertEquals(result, "", "clean-signals: must return empty string (omit)")
 
 	// ── The most recent failing request's status wins. If an older 503
@@ -104,7 +104,7 @@ functions:
 	// on the walk finding a >=500 entry.)
 	void test_most_recent_failing_wins()
 		string log = "[{\"method\":\"GET\",\"path\":\"/a\",\"status\":503},{\"method\":\"GET\",\"path\":\"/b\",\"status\":200},{\"method\":\"GET\",\"path\":\"/c\",\"status\":502}]"
-		string result = computePassCriteria(log, "", "", "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, "", "", "app/server/main.cln")
 		assertContains(result, "\"kind\":\"runtime_crash\"", "walk: kind must be runtime_crash")
 
 	// ── Escape sanity — regex hints containing a double-quote MUST be
@@ -114,7 +114,7 @@ functions:
 	void test_json_escape_regex_with_quote()
 		string log = "[]"
 		string hint = "expected \"phrase\""
-		string result = computePassCriteria(log, "", hint, "app/server/main.cln")
+		string result = __dc_computePassCriteria(log, "", hint, "app/server/main.cln")
 		// The regex field must contain \" (escaped) not raw ", and must
 		// be surrounded by unescaped delimiters.
 		assertContains(result, "\"expected_stdout_regex\":\"expected \\\"phrase\\\"\"", "escape: quotes inside regex must be JSON-escaped")

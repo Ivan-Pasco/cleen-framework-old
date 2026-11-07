@@ -1302,21 +1302,21 @@ functions:
 	// Canonical source of the emitted text: plugins/frame.server/dev/*.cln.
 	// The strings below MUST match those files verbatim.
 	integer emit_dev_capture(integer ctx)
-		if emit_dc_helper(ctx, "jsonEscapeString", "s", "string", dc_body_jsonEscapeString()) != 0
+		if emit_dc_helper(ctx, "__dc_jsonEscapeString", "s", "string", dc_body_jsonEscapeString()) != 0
 			return 1
-		if emit_dc_helper(ctx, "buildRuntimeCrash", "entry", "string", dc_body_buildRuntimeCrash()) != 0
+		if emit_dc_helper(ctx, "__dc_buildRuntimeCrash", "entry", "string", dc_body_buildRuntimeCrash()) != 0
 			return 1
-		if emit_dc_helper(ctx, "buildWrongOutput", "entry,regex", "string", dc_body_buildWrongOutput()) != 0
+		if emit_dc_helper(ctx, "__dc_buildWrongOutput", "entry,regex", "string", dc_body_buildWrongOutput()) != 0
 			return 1
-		if emit_dc_helper(ctx, "countJsonArrayEntries", "arr", "integer", dc_body_countJsonArrayEntries()) != 0
+		if emit_dc_helper(ctx, "__dc_countJsonArrayEntries", "arr", "integer", dc_body_countJsonArrayEntries()) != 0
 			return 1
-		if emit_dc_helper(ctx, "findMostRecentFailingStatus", "request_log", "integer", dc_body_findMostRecentFailingStatus()) != 0
+		if emit_dc_helper(ctx, "__dc_findMostRecentFailingStatus", "request_log", "integer", dc_body_findMostRecentFailingStatus()) != 0
 			return 1
-		if emit_dc_helper(ctx, "logsContainWasmTrap", "logs", "boolean", dc_body_logsContainWasmTrap()) != 0
+		if emit_dc_helper(ctx, "__dc_logsContainWasmTrap", "logs", "boolean", dc_body_logsContainWasmTrap()) != 0
 			return 1
-		if emit_dc_helper(ctx, "computePassCriteria", "request_log,logs,wrong_output_hint,entry", "string", dc_body_computePassCriteria()) != 0
+		if emit_dc_helper(ctx, "__dc_computePassCriteria", "request_log,logs,wrong_output_hint,entry", "string", dc_body_computePassCriteria()) != 0
 			return 1
-		if emit_dc_helper(ctx, "mergePassCriteriaIntoSnapshot", "snapshot,pass_criteria_json", "string", dc_body_mergePassCriteriaIntoSnapshot()) != 0
+		if emit_dc_helper(ctx, "__dc_mergePassCriteriaIntoSnapshot", "snapshot,pass_criteria_json", "string", dc_body_mergePassCriteriaIntoSnapshot()) != 0
 			return 1
 		if emit_dc_helper(ctx, "__debug_capture_handler", "", "string", dc_body_handler()) != 0
 			return 1
@@ -1385,7 +1385,7 @@ functions:
 		return "return \"{\\\"kind\\\":\\\"runtime_crash\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_status\\\":200}\"\n"
 
 	string dc_body_buildWrongOutput()
-		return "return \"{\\\"kind\\\":\\\"wrong_output\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_stdout_regex\\\":\" + jsonEscapeString(regex) + \"}\"\n"
+		return "return \"{\\\"kind\\\":\\\"wrong_output\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_stdout_regex\\\":\" + __dc_jsonEscapeString(regex) + \"}\"\n"
 
 	string dc_body_countJsonArrayEntries()
 		// The fragment parser used by _emit_stmt_from_source folds a statement
@@ -1410,7 +1410,7 @@ functions:
 		string s = ""
 		s = s + "if request_log.length() == 0\n"
 		s = s + "\treturn 0\n"
-		s = s + "integer count = countJsonArrayEntries(request_log)\n"
+		s = s + "integer count = __dc_countJsonArrayEntries(request_log)\n"
 		s = s + "if count == 0\n"
 		s = s + "\treturn 0\n"
 		s = s + "integer i = count - 1\n"
@@ -1437,12 +1437,12 @@ functions:
 	string dc_body_computePassCriteria()
 		string s = ""
 		s = s + "if wrong_output_hint.length() > 0\n"
-		s = s + "\treturn buildWrongOutput(entry, wrong_output_hint)\n"
-		s = s + "if logsContainWasmTrap(logs)\n"
-		s = s + "\treturn buildRuntimeCrash(entry)\n"
-		s = s + "integer failing_status = findMostRecentFailingStatus(request_log)\n"
+		s = s + "\treturn __dc_buildWrongOutput(entry, wrong_output_hint)\n"
+		s = s + "if __dc_logsContainWasmTrap(logs)\n"
+		s = s + "\treturn __dc_buildRuntimeCrash(entry)\n"
+		s = s + "integer failing_status = __dc_findMostRecentFailingStatus(request_log)\n"
 		s = s + "if failing_status >= 500\n"
-		s = s + "\treturn buildRuntimeCrash(entry)\n"
+		s = s + "\treturn __dc_buildRuntimeCrash(entry)\n"
 		s = s + "return \"\"\n"
 		return s
 
@@ -1469,10 +1469,10 @@ functions:
 		s = s + "string request_log = _json_get(snapshot, \"request_log\")\n"
 		s = s + "string logs = _json_get(snapshot, \"last_log_lines\")\n"
 		s = s + "string entry = \"app/server/main.cln\"\n"
-		s = s + "string pc = computePassCriteria(request_log, logs, hint, entry)\n"
+		s = s + "string pc = __dc_computePassCriteria(request_log, logs, hint, entry)\n"
 		s = s + "string body = snapshot\n"
 		s = s + "if pc.length() > 0\n"
-		s = s + "\tbody = mergePassCriteriaIntoSnapshot(snapshot, pc)\n"
+		s = s + "\tbody = __dc_mergePassCriteriaIntoSnapshot(snapshot, pc)\n"
 		s = s + "return http.respond(200, \"application/json\", body)\n"
 		return s
 
