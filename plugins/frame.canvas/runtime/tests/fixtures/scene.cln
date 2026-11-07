@@ -32,6 +32,7 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		integer lives = 3
 		boolean attacking = false
 		number pivot = 0.5
+		boolean skipRest = false
 
 	animSprite "heroIdle":
 		sheet = "hero"
@@ -162,6 +163,12 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		on layer "hud":
 			canvas.text value="Lives: " + lives.toString() x=10 y=20 size=14 color="#ffffff" font="pixel"
 			canvas.text value="Key: " + input.lastKey x=10 y=40 size=14 color="#ffffff"
+			canvas.clip x=0 y=0 width=640 height=360:
+				canvas.save
+				if skipRest
+					return
+				canvas.circle x=1 y=1 radius=1 color="#ffffff"
+				canvas.restore
 
 	onFrame: param="dt"
 		heroX = heroX + heroVX * dt

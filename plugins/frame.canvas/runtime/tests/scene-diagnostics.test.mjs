@@ -100,6 +100,15 @@ rejects('play timeline naming an undeclared timeline', scene(['play timeline "no
 rejects('start animState naming an undeclared animState', scene(['start animState "nosuch"'], []), /animState "nosuch" is not declared.*CVS-A005/);
 rejects('emit particles naming an undeclared emitter', scene(['emit particles "nosuch" x=0 y=0'], []), /particles "nosuch" is not declared.*CVS-P005/);
 
+// --- canvas.save / canvas.restore balance (CVS-X007) -----------------------
+
+const drawOnly = (lines) => `\tdraw:\n${lines.map((l) => `\t\t${l}\n`).join('')}`;
+accepts('balanced save / restore, also inside a branch', drawOnly(['canvas.save', 'canvas.translate x=1 y=1', 'if 1 > 0',
+  '\tcanvas.save', '\tcanvas.restore', 'canvas.restore']));
+rejects('canvas.save without restore', drawOnly(['canvas.save']), /1 canvas.save without a matching canvas.restore.*CVS-X007/);
+rejects('canvas.restore before any save', drawOnly(['canvas.restore']), /canvas.restore has no canvas.save before it.*CVS-X007/);
+rejects('save inside a branch, restore after it', drawOnly(['if 1 > 0', '\tcanvas.save', 'canvas.restore']), /CVS-X007/);
+
 rmSync(work, { recursive: true, force: true });
 if (failures > 0) {
   console.log('FAIL: frame.canvas scene diagnostics');

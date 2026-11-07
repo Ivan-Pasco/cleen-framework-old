@@ -218,6 +218,17 @@ check(transformCalls.some((c, i) => JSON.stringify(c) === '["translate",100,100]
 check(transformCalls.some((c) => JSON.stringify(c) === '["translate",62,92]'), 'flipped sprite: anchorX shifts the frame before the flip');
 check(bridge.animationFrames.size === 1, 'the frame callback does not request another animation loop');
 
+// `return` inside open scopes (on layer, canvas.clip, canvas.save) closes
+// them first: the 2D state stack is balanced at the end of the frame.
+vars.set('skipRest', 1);
+drawCalls.length = 0;
+exports._frame_callback(1);
+vars.set('skipRest', 0);
+const saves = drawCalls.filter(([k]) => k === 'save').length;
+const restores = drawCalls.filter(([k]) => k === 'restore').length;
+check(saves > 0 && saves === restores, `return inside scoped blocks restores every save (save ${saves}, restore ${restores})`);
+check(bridge.currentLayer === null, 'return inside on layer ends the layer');
+
 bridge.eventKey = 'ArrowLeft';
 exports._on_key_down(1);
 check(vars.get('heroVX') === -50 && vars.get('lives') === 3, 'onKeyDown reads the key; return stores state first');

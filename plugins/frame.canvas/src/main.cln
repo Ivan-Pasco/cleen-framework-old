@@ -841,6 +841,15 @@ functions:
 	// `state_body` is the scene's state: block ("" when the body must not
 	// store state, e.g. draw:).
 	integer scene_expand_lines(integer ctx, integer body_arr, string body, string state_body)
+		return scene_expand_block(ctx, body_arr, body, state_body, "")
+
+	// scene_expand_lines with `closers`: the end calls of the scopes open
+	// around this body, innermost first (`_canvas_clip_end;_layer_end;`). A
+	// `return` runs them before it leaves, so a scope opened in this frame is
+	// always closed (canvas state stack, CVS-X007). An unmatched canvas.save
+	// earlier in the same body adds `_canvas_restore` for the lines after it.
+	integer scene_expand_block(integer ctx, integer body_arr, string body, string state_body, string closers)
+		string open = closers
 		integer pos = 0
 		integer len = body.length()
 		while pos < len
@@ -860,33 +869,38 @@ functions:
 			if t.length() > 0
 				if t.startsWith("on layer ")
 					_batch_arrayPush(ctx, body_arr, bcc1(ctx, "_layer_begin", sl(ctx, first_quoted(t, 0))))
-					scene_expand_lines(ctx, body_arr, child, state_body)
+					scene_expand_block(ctx, body_arr, child, state_body, "_layer_end;" + open)
 					_batch_arrayPush(ctx, body_arr, bcc0(ctx, "_layer_end"))
 				else if t.startsWith("canvas.")
-					scene_expand_canvas(ctx, body_arr, t, child, state_body)
+					scene_expand_canvas(ctx, body_arr, t, child, state_body, open)
+					if line_key(t) == "canvas.save"
+						open = "_canvas_restore;" + open
+					else if line_key(t) == "canvas.restore" and open.startsWith("_canvas_restore;")
+						open = open.substring(16, open.length())
 				else if is_dsl_statement(t)
 					_batch_arrayPush(ctx, body_arr, dsl_statement(ctx, t, state_body))
 				else if t == "return"
 					if state_body != ""
 						state_stmts(ctx, body_arr, state_body, 1)
+					close_scopes(ctx, body_arr, open)
 					_batch_arrayPush(ctx, body_arr, us(ctx, "return"))
 				else if child.trim().length() == 0
 					_batch_arrayPush(ctx, body_arr, us(ctx, t))
 				else if t.startsWith("while ")
 					integer w_arr = _batch_arrayNew(ctx)
-					scene_expand_lines(ctx, w_arr, child, state_body)
+					scene_expand_block(ctx, w_arr, child, state_body, open)
 					_batch_arrayPush(ctx, body_arr, _batch_stmtWhile(ctx, ue(ctx, t.substring(6, t.length()).trim()), w_arr))
 				else if t.startsWith("if ")
-					next_pos = scene_expand_if(ctx, body_arr, body, pos, ind, t.substring(3, t.length()).trim(), state_body)
+					next_pos = scene_expand_if(ctx, body_arr, body, pos, ind, t.substring(3, t.length()).trim(), state_body, open)
 				else if t.startsWith("iterate ") and t.indexOf(" in ") != -1
 					integer in_at = t.indexOf(" in ")
 					string iter_var = t.substring(8, in_at).trim()
 					string iterable = t.substring(in_at + 4, t.length()).trim()
 					if iterable.indexOf(" to ") != -1
-						_batch_arrayPush(ctx, body_arr, range_loop(ctx, iter_var, iterable, child, state_body))
+						_batch_arrayPush(ctx, body_arr, range_loop(ctx, iter_var, iterable, child, state_body, open))
 					else
 						integer f_arr = _batch_arrayNew(ctx)
-						scene_expand_lines(ctx, f_arr, child, state_body)
+						scene_expand_block(ctx, f_arr, child, state_body, open)
 						_batch_arrayPush(ctx, body_arr, _batch_stmtFor(ctx, iter_var, ue(ctx, iterable), f_arr))
 				else
 					// Any other block statement is user-authored as a whole.
@@ -902,7 +916,7 @@ functions:
 	//         __it_v = __it_v + (S)
 	//         integer v = __it_v
 	//         <body> }
-	integer range_loop(integer ctx, string var_name, string iterable, string child, string state_body)
+	integer range_loop(integer ctx, string var_name, string iterable, string child, string state_body, string closers)
 		integer to_at = iterable.indexOf(" to ")
 		string from_src = iterable.substring(0, to_at).trim()
 		string rest = iterable.substring(to_at + 4, iterable.length()).trim()
@@ -925,7 +939,7 @@ functions:
 		integer w_arr = _batch_arrayNew(ctx)
 		_batch_arrayPush(ctx, w_arr, us(ctx, it + " = " + next_src))
 		_batch_arrayPush(ctx, w_arr, us(ctx, "integer " + var_name + " = " + it))
-		scene_expand_lines(ctx, w_arr, child, state_body)
+		scene_expand_block(ctx, w_arr, child, state_body, closers)
 		_batch_arrayPush(ctx, seq, _batch_stmtWhile(ctx, ue(ctx, cond), w_arr))
 		return _batch_stmtBlock(ctx, seq)
 
@@ -943,12 +957,12 @@ functions:
 	// The `if` (or `else if`) header line at `pos` (indentation `ind`) with
 	// condition `cond`, plus its `else if` / `else` siblings at the same
 	// indentation. Pushes one if statement and returns the offset after the chain.
-	integer scene_expand_if(integer ctx, integer body_arr, string body, integer pos, integer ind, string cond, string state_body)
+	integer scene_expand_if(integer ctx, integer body_arr, string body, integer pos, integer ind, string cond, string state_body, string closers)
 		integer le = scene_line_end(body, pos)
 		integer child_end = scene_child_end(body, pos, ind)
 		integer then_arr = _batch_arrayNew(ctx)
 		if child_end > le + 1
-			scene_expand_lines(ctx, then_arr, body.substring(le + 1, child_end), state_body)
+			scene_expand_block(ctx, then_arr, body.substring(le + 1, child_end), state_body, closers)
 		integer next_pos = le + 1
 		if child_end > next_pos
 			next_pos = child_end
@@ -961,17 +975,32 @@ functions:
 			if scene_indent(sline) == ind
 				if st.startsWith("else if ")
 					else_arr = _batch_arrayNew(ctx)
-					next_pos = scene_expand_if(ctx, else_arr, body, sib, ind, st.substring(8, st.length()).trim(), state_body)
+					next_pos = scene_expand_if(ctx, else_arr, body, sib, ind, st.substring(8, st.length()).trim(), state_body, closers)
 				else if st == "else"
 					integer else_end = scene_child_end(body, sib, ind)
 					else_arr = _batch_arrayNew(ctx)
 					if else_end > sle + 1
-						scene_expand_lines(ctx, else_arr, body.substring(sle + 1, else_end), state_body)
+						scene_expand_block(ctx, else_arr, body.substring(sle + 1, else_end), state_body, closers)
 					next_pos = sle + 1
 					if else_end > next_pos
 						next_pos = else_end
 		_batch_arrayPush(ctx, body_arr, _batch_stmtIf(ctx, ue(ctx, cond), then_arr, else_arr))
 		return next_pos
+
+	// Calls closing the scopes listed in `closers` (see scene_expand_block).
+	integer close_scopes(integer ctx, integer arr, string closers)
+		integer p = 0
+		while p < closers.length()
+			integer semi = closers.indexOf(";", p)
+			if semi == -1
+				semi = closers.length()
+			string fn = closers.substring(p, semi)
+			if fn == "_layer_end"
+				_batch_arrayPush(ctx, arr, bcc0(ctx, fn))
+			else if fn != ""
+				_batch_arrayPush(ctx, arr, bcc1(ctx, fn, ident(ctx, "__cv")))
+			p = semi + 1
+		return 0
 
 	// Run a handler body between a state load and a state store.
 	integer handler_body(integer ctx, integer arr, string body, string state_body)
@@ -987,7 +1016,7 @@ functions:
 functions:
 	// One `canvas.<cmd> attrs` line, with its child block for the scoped
 	// forms (group, clip, alpha, shadow, blur, glow, blendMode).
-	integer scene_expand_canvas(integer ctx, integer body_arr, string t, string child, string state_body)
+	integer scene_expand_canvas(integer ctx, integer body_arr, string t, string child, string state_body, string closers)
 		string line = t
 		if line.endsWith(":")
 			line = line.substring(0, line.length() - 1).trim()
@@ -1029,7 +1058,7 @@ functions:
 				end_fn = "_canvas_blend_end"
 			if end_fn == ""
 				return plugin_error(ctx, "FRAME-CANVAS-E701", "canvas." + cmd + " does not take a child block (frame-canvas.ebnf §18)")
-			scene_expand_lines(ctx, body_arr, child, state_body)
+			scene_expand_block(ctx, body_arr, child, state_body, end_fn + ";" + closers)
 			_batch_arrayPush(ctx, body_arr, bcc1(ctx, end_fn, ident(ctx, "__cv")))
 			return 0
 		integer h = scene_expand_cmd(ctx, cmd, ia)
@@ -2282,6 +2311,10 @@ functions:
 				return "canvasScene: draw: must not start animations ('" + t + "', CVS-X003) — use init: or an event handler"
 			p = le + 1
 
+		string save_problem = save_balance_problem(draw_body)
+		if save_problem != ""
+			return "canvasScene: draw: " + save_problem
+
 		string tween_problem = validate_tweens(body, state_body)
 		if tween_problem != ""
 			return tween_problem
@@ -2303,6 +2336,37 @@ functions:
 				if is_spritesheet_asset(assets_body, frame_name) == false
 					return "canvasScene: canvas.sprite anchorX= / anchorY= need a spritesheet asset: '" + frame_name + "' is not declared as `spritesheet` in assets: (anchors are fractions of the frame size, CVS-C006)"
 			p = le + 1
+		return ""
+
+	// CVS-X007: within each statement list of draw:, every canvas.save is
+	// matched by a canvas.restore later in the same list (a save inside an
+	// `if` with the restore after it would unbalance the stack on frames
+	// that skip the branch). "" when balanced.
+	string save_balance_problem(string block)
+		integer open = 0
+		integer p = 0
+		while p < block.length()
+			integer le = scene_line_end(block, p)
+			string line = block.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if t.length() > 0 and t.startsWith("//") == false
+				if line_key(t) == "canvas.save"
+					open = open + 1
+				else if line_key(t) == "canvas.restore"
+					if open == 0
+						return "canvas.restore has no canvas.save before it in the same block (CVS-X007)"
+					open = open - 1
+				integer ce = scene_child_end(block, p, scene_indent(line))
+				if ce > le + 1
+					string inner = save_balance_problem(block.substring(le + 1, ce))
+					if inner != ""
+						return inner
+				if ce > nxt
+					nxt = ce
+			p = nxt
+		if open > 0
+			return open.toString() + " canvas.save without a matching canvas.restore in the same block (CVS-X007: save / restore pairs must balance within one draw:)"
 		return ""
 
 	// True when the scene body declares `keyword "name"` at sub-block level
