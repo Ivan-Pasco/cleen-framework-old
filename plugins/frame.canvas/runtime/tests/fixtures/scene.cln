@@ -165,6 +165,8 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 	draw:
 		canvas.rect x=0 y=0 width=640 height=360 gradient="skyFade"
 		canvas.circle x=500 y=80 radius=60 gradient="sun"
+
+		// A blank line and a comment inside a body keep the lines after them.
 		on layer "world":
 			canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
 			canvas.sprite "hero" x=300 y=200 clip=1 anchorX=0.5 anchorY=1
@@ -182,6 +184,7 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 				canvas.restore
 
 	onFrame: param="dt"
+
 		heroX = heroX + heroVX * dt
 
 

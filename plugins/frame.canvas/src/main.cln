@@ -862,10 +862,12 @@ functions:
 			if child_end > le + 1
 				child = body.substring(le + 1, child_end)
 			integer next_pos = le + 1
-			if child_end > next_pos
-				next_pos = child_end
 			if t.startsWith("//")
 				t = ""
+			// A blank or comment line owns no child block: a blank line has
+			// no indentation, so every following line would look deeper.
+			if child_end > next_pos and t.length() > 0
+				next_pos = child_end
 			if t.length() > 0
 				if t.startsWith("on layer ")
 					_batch_arrayPush(ctx, body_arr, bcc1(ctx, "_layer_begin", sl(ctx, first_quoted(t, 0))))
