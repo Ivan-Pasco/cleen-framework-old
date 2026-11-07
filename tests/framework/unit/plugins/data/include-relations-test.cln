@@ -1,0 +1,108 @@
+// Test: frame.data — include: joins the declared relation.
+// Spec: frame-data.ebnf §2.4 (relation_entry = name ":" cardinality Target
+// "on" fk), §5.4 (include_clause), DAT-M020, DAT-Q008 (each parent row
+// once), DAT-Q020 (`<relation>.<column>` in where:).
+// Regression: include: ignored relations:, guessed the table from the
+// relation name (mangling irregular names) and the foreign key from the
+// parent table, and a has_many LEFT JOIN returned each parent once per
+// child row.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Author:
+	fields:
+		integer id primary generated
+		string name required
+
+	relations:
+		books: has_many Book on writerId
+
+data Book:
+	table "library_books"
+
+	fields:
+		integer id primary generated
+		string title required
+		integer writerId required
+		boolean inPrint
+
+	relations:
+		writer: belongs_to Author on writerId
+
+start:
+	printl("[boot] data-include-relations server ready")
+
+endpoints:
+	GET "/test":
+		Author.migrate()
+		Book.migrate()
+		Author ann = Author()
+		ann.name = "Ann"
+		Database.save(ann)
+		Author bob = Author()
+		bob.name = "Bob"
+		Database.save(bob)
+		Author cy = Author()
+		cy.name = "Cy"
+		Database.save(cy)
+		Book b1 = Book()
+		b1.title = "A1"
+		b1.writerId = ann.id
+		b1.inPrint = true
+		Database.save(b1)
+		Book b2 = Book()
+		b2.title = "A2"
+		b2.writerId = ann.id
+		b2.inPrint = true
+		Database.save(b2)
+		Book b3 = Book()
+		b3.title = "B1"
+		b3.writerId = bob.id
+		b3.inPrint = false
+		Database.save(b3)
+
+		// has_many: Ann matches through two books but appears once.
+		list<Author> printed = Author.find:
+			include: books
+			where:
+				books.inPrint == true
+			order: name
+		boolean ok_many = printed.length() == 1 and printed[0].name == "Ann"
+
+		// Without a where: every author once, including Cy (no books).
+		list<Author> everyone = Author.find:
+			include: books
+			order: name
+		boolean ok_all = everyone.length() == 3
+
+		string wanted = "B1"
+		integer n_count = Author.count:
+			include: books
+			where:
+				books.title == wanted or books.title == "A1"
+		boolean ok_count = n_count == 2
+
+		// belongs_to: the declared foreign key on the child.
+		list<Book> annsBooks = Book.find:
+			include: writer
+			where:
+				writer.name == "Ann"
+			order: title
+		boolean ok_belongs = annsBooks.length() == 2 and annsBooks[0].title == "A1"
+
+		boolean has_bob = Book.exists:
+			include: writer
+			where:
+				writer.name == "Bob"
+		boolean ok_exists = has_bob
+
+		if ok_many and ok_all and ok_count and ok_belongs and ok_exists
+			printl("PASS: data-include-relations")
+		else
+			printl("FAIL: data-include-relations many=" + ok_many.toString() + " all=" + ok_all.toString() + " count=" + ok_count.toString() + " belongs=" + ok_belongs.toString() + " exists=" + ok_exists.toString())
+		return json({ok: true})

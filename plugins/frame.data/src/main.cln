@@ -1359,6 +1359,10 @@ functions:
 							string rewritten = rewrite_query_method_body(body_src, model_name)
 							string emit_body = body_src
 							if rewritten.length() > 0
+								string q_scope_err = include_scope_error(model_name + "." + method_name, body_src)
+								if q_scope_err.length() > 0
+									plugin_error(ctx, "FRAME-DATA-E010", q_scope_err)
+									return ""
 								emit_body = rewritten
 								string first_body_line = body_src.trim()
 								integer fbl_end = first_body_line.indexOf("\n")
@@ -2292,6 +2296,42 @@ functions:
 			return 1
 		return 0
 
+	// __M_pk() — M's primary-key column — and, for every declared relation
+	// (DAT-M020, tuples `<name>|<cardinality>|<Target>|<fk>`),
+	// __M_include_<name>() — the LEFT JOIN an `include: <name>` adds, with
+	// the relation name as the alias (DAT-Q020):
+	//   belongs_to  fk is M's field:      <name>.<Target pk> = <M table>.<fk>
+	//   has_many /  fk is Target's field: <name>.<fk> = <M table>.<M pk>
+	//   has_one
+	integer emit_relation_helpers(integer ctx, string model_name, string table_name, string field_names, string field_columns, string pk_field, string relations_tuples)
+		string pk_col = column_of(field_names, field_columns, pk_field)
+		if emit_fn(ctx, "__" + model_name + "_pk", "[]", _type_string(ctx), "return " + clean_str(pk_col) + "\n") != 0
+			return 1
+		integer line_start = 0
+		while line_start < relations_tuples.length()
+			integer line_end = relations_tuples.indexOf("\n", line_start)
+			if line_end == -1
+				line_end = relations_tuples.length()
+			string tuple = relations_tuples.substring(line_start, line_end)
+			integer sep1 = tuple.indexOf("|")
+			integer sep2 = tuple.indexOf("|", sep1 + 1)
+			integer sep3 = tuple.indexOf("|", sep2 + 1)
+			if sep1 > 0 and sep2 > sep1 and sep3 > sep2
+				string rel = tuple.substring(0, sep1)
+				string cardinality = tuple.substring(sep1 + 1, sep2)
+				string target = tuple.substring(sep2 + 1, sep3)
+				string fk = tuple.substring(sep3 + 1, tuple.length())
+				string src = "return " + clean_str(" LEFT JOIN ") + " + __" + target + "_table() + " + clean_str(" " + rel + " ON " + rel + ".")
+				if cardinality == "belongs_to"
+					string fk_col = column_of(field_names, field_columns, fk)
+					src = src + " + __" + target + "_pk() + " + clean_str(" = " + table_name + "." + fk_col) + "\n"
+				else
+					src = src + " + __" + target + "_cols(" + clean_str(fk) + ") + " + clean_str(" = " + table_name + "." + pk_col) + "\n"
+				if emit_fn(ctx, "__" + model_name + "_include_" + rel, "[]", _type_string(ctx), src) != 0
+					return 1
+			line_start = line_end + 1
+		return 0
+
 	// DAT-Q021 — the per-model pagination result classes and the functions
 	// that build them from the host's result envelope:
 	//   PagedResult_<M>:  items, totalCount, totalPages, currentPage, perPage,
@@ -2510,6 +2550,11 @@ functions:
 			return 1
 
 		if emit_model_helpers(ctx, model_name, table_name, field_names, field_types, field_columns) != 0
+			return 1
+		string relations_tuples = ""
+		if v2_form
+			relations_tuples = parse_v2_relations_body(extract_v2_sub_block(orig_v2_body, "relations"))
+		if emit_relation_helpers(ctx, model_name, table_name, field_names, field_columns, pk_field, relations_tuples) != 0
 			return 1
 		if emit_pagination_classes(ctx, model_name) != 0
 			return 1
@@ -3124,27 +3169,73 @@ functions:
 			pos = e + 1
 		return out
 
-	// include: relations (DAT-Q008/Q020) as LEFT JOINs. The relation table is
-	// the snake_case plural of the relation name; its foreign key column is
-	// inferred from the parent's default table name (users -> user_id).
-	string parse_include_clause(string include_body, string model_name)
-		string names = csv_of(include_body)
-		string parent_default = default_table_name(model_name)
-		string fk = to_snake_case(parent_default) + "_id"
-		if fk.endsWith("s_id")
-			fk = fk.substring(0, fk.length() - 4) + "_id"
+	// include: relations (DAT-Q008/Q020) as LEFT JOINs: one
+	// __M_include_<rel>() call per name, emitted with the model from its
+	// declared `relations:` entry (DAT-M020), so the join uses the declared
+	// target and foreign key. An undeclared relation is a compile error
+	// (undefined function).
+	string include_joins_expr(string model_name, string include_names)
 		string result = ""
 		integer pos = 0
-		while pos <= names.length()
-			integer e = names.indexOf(",", pos)
+		while pos <= include_names.length()
+			integer e = include_names.indexOf(",", pos)
 			if e == -1
-				e = names.length()
-			string rel = names.substring(pos, e).trim()
+				e = include_names.length()
+			string rel = include_names.substring(pos, e).trim()
 			if rel.length() > 0
-				string rel_table = pluralize(to_snake_case(rel))
-				result = result + " LEFT JOIN " + rel_table + " ON " + rel_table + "." + fk + " = " + table_ref(model_name) + ".id"
+				result = cat_expr(result, "__" + model_name + "_include_" + rel + "()")
 			pos = e + 1
 		return result
+
+	// The where: condition `w` (part "sql" or "inline") of a query with
+	// include: as a semi-join: `<T>.<pk> IN (SELECT <T>.<pk> FROM <T>
+	// <joins> [WHERE w])`. Each matching parent row appears once, however
+	// many has_many rows match (DAT-Q008), and relation-scoped where: terms
+	// (DAT-Q020) still see the joined tables.
+	string include_semijoin_expr(string model_name, string include_names, string w, boolean has_where)
+		string t = table_ref(model_name)
+		string pk = "__" + model_name + "_pk()"
+		string e = cat_expr(sql_lit(t + "."), pk)
+		e = cat_expr(e, sql_lit(" IN (SELECT " + t + "."))
+		e = cat_expr(e, pk)
+		e = cat_expr(e, sql_lit(" FROM " + t))
+		e = cat_expr(e, include_joins_expr(model_name, include_names))
+		if has_where
+			e = cat_expr(e, clean_str(" WHERE "))
+			e = cat_expr(e, w)
+		return cat_expr(e, clean_str(")"))
+
+	// A query with include: and no group: filters through the semi-join, so
+	// its outer SELECT has no relation tables: select:/order: may only name
+	// the model's own columns. "" when the query is fine, else the message.
+	string include_scope_error(string model_name, string dsl_body)
+		string inc = csv_of(extract_subblock(dsl_body, "include:"))
+		if inc.length() == 0 or extract_subblock(dsl_body, "group:").length() > 0
+			return ""
+		string sel = extract_subblock(dsl_body, "select:")
+		string ord = extract_subblock(dsl_body, "order:")
+		integer pos = 0
+		while pos <= inc.length()
+			integer e = inc.indexOf(",", pos)
+			if e == -1
+				e = inc.length()
+			string rel = inc.substring(pos, e).trim()
+			if rel.length() > 0 and (word_ref_in(sel, rel + ".") or word_ref_in(ord, rel + "."))
+				return model_name + ": `" + rel + ".<column>` in select:/order: — an include:d relation filters rows (each " + model_name + " once); select and order by " + model_name + "'s own columns, or add group: (spec DAT-Q008/DAT-Q020)"
+			pos = e + 1
+		return ""
+
+	// True when `ref` occurs in `s` at the start of a word.
+	boolean word_ref_in(string s, string ref)
+		integer at = s.indexOf(ref)
+		while at != -1
+			if at == 0
+				return true
+			string before = s.substring(at - 1, at)
+			if not ((before >= "a" and before <= "z") or (before >= "A" and before <= "Z") or (before >= "0" and before <= "9") or before == "_" or before == ".")
+				return true
+			at = s.indexOf(ref, at + 1)
+		return false
 
 	// link: junction traversal (DAT-Q010/Q011). Each line is
 	// `<JunctionModel> <cond>`; a bare `id` in the condition is the primary
@@ -3322,8 +3413,14 @@ functions:
 
 	// The condition of a query (without WHERE) in part `part` (see
 	// build_condition_expr), with `<Model>.` references resolved.
+	// With include: the condition is the semi-join include_semijoin_expr
+	// builds (except for a grouped find, see select_sql_expr).
 	string query_where_expr(string model_name, string dsl_body, string part)
-		return clause_expr(model_name, dsl_body, "where:", part)
+		string w = clause_expr(model_name, dsl_body, "where:", part)
+		string inc = csv_of(extract_subblock(dsl_body, "include:"))
+		if inc.length() == 0 or part == "params"
+			return w
+		return include_semijoin_expr(model_name, inc, w, extract_subblock(dsl_body, "where:").length() > 0)
 
 	// A where:/having: clause of a query in part `part`.
 	string clause_expr(string model_name, string dsl_body, string clause, string part)
@@ -3385,7 +3482,7 @@ functions:
 		string projection = "*"
 		if select_clause.length() > 0
 			projection = parse_select_clause(resolve_model_refs(select_clause, model_name, join_clause), q)
-		else if join_clause.length() > 0 or link_clause.length() > 0 or include_clause.length() > 0
+		else if join_clause.length() > 0 or link_clause.length() > 0 or (include_clause.length() > 0 and group_clause.length() > 0)
 			// Rows are materialized as the primary model: keep its columns.
 			projection = table_ref(model_name) + ".*"
 		string head = "SELECT " + projection + " FROM " + table_ref(model_name)
@@ -3393,11 +3490,16 @@ functions:
 			head = head + parse_join_clause(join_clause, model_name, q)
 		if link_clause.length() > 0
 			head = head + parse_link_clause(link_clause, model_name)
-		if include_clause.length() > 0
-			head = head + parse_include_clause(include_clause, model_name)
 		// __M_cols resolves `as "<column>"` field names (DAT-M017); the
 		// condition is resolved inside __M_where.
-		string expr = cat_expr(cols_expr(model_name, sql_lit(head)), "__" + model_name + "_where(" + query_where_expr(model_name, dsl_body, "sql") + ")")
+		string expr = cols_expr(model_name, sql_lit(head))
+		string cond = query_where_expr(model_name, dsl_body, "sql")
+		if include_clause.length() > 0 and group_clause.length() > 0
+			// group: decides the row multiplicity: join the relations
+			// directly so aggregates and group keys can use their columns.
+			expr = cat_expr(expr, include_joins_expr(model_name, csv_of(include_clause)))
+			cond = clause_expr(model_name, dsl_body, "where:", "sql")
+		expr = cat_expr(expr, "__" + model_name + "_where(" + cond + ")")
 
 		if group_clause.length() > 0
 			expr = cat_expr(expr, cols_expr(model_name, sql_lit(" GROUP BY " + parse_group_clause(group_clause))))
@@ -3523,6 +3625,9 @@ functions:
 		_ctx_set_error_context(ctx, code, model_name + "." + verb)
 		if verb == "find"
 			warn_offset_without_limit(ctx, model_name, strip_binding_line(body))
+		string scope_err = include_scope_error(model_name, strip_binding_line(body))
+		if scope_err.length() > 0
+			return plugin_error(ctx, code, scope_err)
 		return emit_binding_stmt(ctx, body, query_expr(model_name, verb, strip_binding_line(body)), code)
 
 	// A queries: method body `return [<Model>.]<verb>: <dsl>` (DAT-A004) as
