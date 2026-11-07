@@ -1475,11 +1475,17 @@ class CanvasBridge {
           const name = self.readString(namePtr, nameLen);
           const segs = self.namedPaths.get(name);
           const ctx = entry.ctx;
+          // The save pairs with _canvas_clip_end. The clip path always starts
+          // empty, so an unknown name masks everything instead of clipping to
+          // whatever path was drawn last.
           ctx.save();
-          if (segs) {
-            ctx.beginPath();
-            self._replayPathSegments(ctx, segs);
+          ctx.beginPath();
+          if (!segs) {
+            console.error(`[CanvasBridge] canvas.clip path="${name}": no such path is declared (CVS-X006)`);
+            ctx.clip();
+            return -1;
           }
+          self._replayPathSegments(ctx, segs);
           ctx.clip();
           return 0;
         },

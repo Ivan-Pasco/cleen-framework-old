@@ -2285,6 +2285,9 @@ functions:
 		string tween_problem = validate_tweens(body, state_body)
 		if tween_problem != ""
 			return tween_problem
+		string ref_problem = validate_references(body)
+		if ref_problem != ""
+			return ref_problem
 
 		// CVS-C006 — anchors are fractions of a spritesheet frame.
 		string assets_body = extract_scene_subblock(body, "assets")
@@ -2359,6 +2362,90 @@ functions:
 				else if orient
 					return "canvasScene: tween \"" + name + "\" has orient = true without along = \"path\" (CVS-A012: orient rotates along a path)"
 			p = nxt
+		return ""
+
+	// Every resource named by a string literal is declared in this scene:
+	// paths (canvas.clip path=, CVS-D012 / CVS-X006 — paths are scene-local),
+	// gradients (gradient=, CVS-D007), sprite sheets and images (asset names,
+	// CVS-D009), animStates (state=, start animState, animState.force,
+	// CVS-A005), tweens, timelines, animSprites (§6, §7, §9) and particle
+	// emitters (CVS-P005).
+	string validate_references(string body)
+		string assets_body = extract_scene_subblock(body, "assets")
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string t = body.substring(p, le).trim()
+			string problem = ""
+			if t.startsWith("//") == false
+				problem = line_reference_problem(body, assets_body, t)
+			if problem != ""
+				return "canvasScene: " + problem
+			p = le + 1
+		return ""
+
+	string line_reference_problem(string body, string assets_body, string t)
+		string ia = after_quoted(t)
+		if t.startsWith("canvas.")
+			string attrs = t
+			integer sp = t.indexOf(" ")
+			if sp != -1
+				attrs = t.substring(sp + 1, t.length()).trim()
+			if attrs.endsWith(":")
+				attrs = attrs.substring(0, attrs.length() - 1).trim()
+			string grad = first_quoted(get_iexpr(attrs, "gradient"), 0)
+			if grad != "" and scene_declares(body, "gradient", grad) == false
+				return "gradient \"" + grad + "\" is not declared in this scene; declare it at scene level with `gradient \"" + grad + "\" linear|radial ...:` (CVS-D007)"
+			if t.startsWith("canvas.clip ")
+				string clip_path = first_quoted(get_iexpr(attrs, "path"), 0)
+				if clip_path != "" and scene_declares(body, "path", clip_path) == false
+					return "canvas.clip path=\"" + clip_path + "\" names no path declared in this scene (CVS-D012; paths are scene-local, CVS-X006)"
+			if t.startsWith("canvas.image ")
+				string img = get_iexpr(attrs, "src")
+				if img.startsWith("\"") and asset_kind(assets_body, first_quoted(img, 0)) != "image"
+					return "canvas.image src=" + img + " is not an `image` asset declared in assets: — src names the asset, not a file path (CVS-D009)"
+			if t.startsWith("canvas.sprite ")
+				string state_name_src = get_iexpr(ia, "state")
+				string sheet_src = get_iexpr(ia, "sheet")
+				string sheet = first_quoted(t, 0)
+				if sheet_src.startsWith("\"") and state_name_src == ""
+					sheet = first_quoted(sheet_src, 0)
+				if asset_kind(assets_body, sheet) != "spritesheet"
+					return "canvas.sprite \"" + sheet + "\" is not a `spritesheet` asset declared in assets: — the sprite names the asset, not a file path (CVS-D009)"
+				if state_name_src.startsWith("\"") and scene_declares(body, "animState", first_quoted(state_name_src, 0)) == false
+					return "canvas.sprite state=" + state_name_src + " names no animState declared in this scene (CVS-A005)"
+			return ""
+		string name = first_quoted(t, 0)
+		if name == ""
+			return ""
+		if t.startsWith("play tween ") or t.startsWith("pause tween ") or t.startsWith("stop tween ") or t.startsWith("resume tween ") or t.startsWith("tween \"")
+			if t.startsWith("tween \"") and t.endsWith(":")
+				return ""
+			if scene_declares(body, "tween", name) == false
+				return "tween \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §6: `tween \"" + name + "\":` at scene level)"
+		if t.startsWith("play timeline ") or t.startsWith("pause timeline ") or t.startsWith("stop timeline ") or t.startsWith("resume timeline ") or t.startsWith("seek timeline ")
+			if scene_declares(body, "timeline", name) == false
+				return "timeline \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §7)"
+		if t.startsWith("start animState ") or t.startsWith("animState.force ")
+			if scene_declares(body, "animState", name) == false
+				return "animState \"" + name + "\" is not declared in this scene (CVS-A005)"
+		if t.startsWith("play animSprite ")
+			if scene_declares(body, "animSprite", name) == false
+				return "animSprite \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §9)"
+		if t.startsWith("emit particles ") or t.startsWith("start particles ") or t.startsWith("stop particles ")
+			if scene_declares(body, "particles", name) == false
+				return "particles \"" + name + "\" is not declared in this scene; emitters are declared at scene level and triggered by name (CVS-P005)"
+		return ""
+
+	// Kind (image, spritesheet, sound, music, font) of asset `name` in assets:, or "".
+	string asset_kind(string assets_body, string name)
+		integer p = 0
+		while p < assets_body.length()
+			integer le = scene_line_end(assets_body, p)
+			string t = assets_body.substring(p, le).trim()
+			if first_quoted(t, 0) == name and name != ""
+				return line_key(t)
+			p = le + 1
 		return ""
 
 	// True when assets: declares `spritesheet "name"`.

@@ -21,7 +21,6 @@ canvasScene: width=800 height=400 fps=60
 		number velX = 0.0
 		number speed = 180.0
 		boolean on_ground = true
-		boolean facing_right = true
 
 	// Define named animation clips from the spritesheet
 	animSprite "hero-idle":
@@ -51,13 +50,13 @@ canvasScene: width=800 height=400 fps=60
 	// FSM: transitions between clips based on game state
 	animState "heroFSM":
 		state "idle":
-			canvas.sprite "hero" x=heroX y=heroY state="hero-idle"
+			play animSprite "hero-idle"
 		state "walk":
-			canvas.sprite "hero" x=heroX y=heroY state="hero-walk"
+			play animSprite "hero-walk"
 		state "run":
-			canvas.sprite "hero" x=heroX y=heroY state="hero-run"
+			play animSprite "hero-run"
 		state "jump":
-			canvas.sprite "hero" x=heroX y=heroY state="hero-jump"
+			play animSprite "hero-jump"
 		transitions:
 			"idle" -> "walk" when velX != 0.0 and on_ground
 			"walk" -> "run" when math.abs(velX) > 150.0
@@ -73,23 +72,21 @@ canvasScene: width=800 height=400 fps=60
 	init:
 		start animState "heroFSM"
 
+	draw:
+		canvas.clear color="#87CEEB"
+		canvas.rect x=0 y=340 width=800 height=60 color="#2d5a27"
+
+		// state= draws the current frame of the clip the FSM is playing
+		canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
+
 	onFrame: param="dt"
 		velX = 0.0
 		if input.keyDown("ArrowLeft") == 1
 			velX = -speed
-			facing_right = false
 		if input.keyDown("ArrowRight") == 1
 			velX = speed
-			facing_right = true
 		if input.keyDown("ShiftLeft") == 1
 			if velX != 0.0
 				velX = velX * 1.6  // run
 
 		heroX = heroX + velX * dt
-
-		canvas.clear color="#87CEEB"
-		canvas.rect x=0 y=340 width=800 height=60 color="#2d5a27"
-
-		// animState draws the correct clip automatically
-		// flipX mirrors the sprite when moving left
-		canvas.sprite "hero" x=heroX y=heroY flipX={facing_right == false} state="heroFSM"

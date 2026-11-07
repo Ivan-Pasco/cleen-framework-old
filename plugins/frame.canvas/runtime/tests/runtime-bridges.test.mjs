@@ -429,6 +429,35 @@ test('path sampling follows the curve shape, not the segment endpoints', () => {
   ok(Math.abs(tangent.angle - Math.atan2(100, 50)) < 0.05, `tangent at the start points at the control point (got ${tangent.angle})`);
 });
 
+// A canvas entry whose 2D context records its calls.
+function recordingCanvas(bridge, id = 1) {
+  const calls = [];
+  const ctx = new Proxy({}, { get: (_, key) => (...args) => { calls.push([key, ...args]); } });
+  bridge.canvases.set(id, { ctx, width: 100, height: 100 });
+  return calls;
+}
+
+test('canvas.clip path= with an undeclared name masks everything, not the last drawn path', () => {
+  const { loader, env, bridge } = freshLoader();
+  const calls = recordingCanvas(bridge);
+  const original = console.error;
+  let logged = '';
+  console.error = (m) => { logged = m; };
+  try {
+    eq(env._canvas_clip_path(1, ...raw(loader, 'ghost')), -1, 'unknown path reported');
+  } finally {
+    console.error = original;
+  }
+  eq(calls.map((c) => c[0]), ['save', 'beginPath', 'clip'], 'empty clip region, balanced with clip_end');
+  ok(logged.includes('ghost') && logged.includes('CVS-X006'), 'error names the path and the rule');
+  env._path_begin(...raw(loader, 'box'));
+  env._path_move_to(...raw(loader, 'box'), 0, 0);
+  env._path_line_to(...raw(loader, 'box'), 5, 0);
+  calls.length = 0;
+  eq(env._canvas_clip_path(1, ...raw(loader, 'box')), 0, 'declared path');
+  eq(calls.map((c) => c[0]), ['save', 'beginPath', 'moveTo', 'lineTo', 'clip'], 'clip to the named path');
+});
+
 test('particles: config from _particles_define_json drives spawn ranges', () => {
   const { loader, env, bridge } = freshLoader();
   const cfg = { lifeMin: 1, lifeMax: 1, speedMin: 10, speedMax: 10, angleMin: -90, angleMax: -90, sizeMin: 4, sizeMax: 4, color: '#fff', burst: 3 };

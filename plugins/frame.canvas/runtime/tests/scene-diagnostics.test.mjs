@@ -81,6 +81,25 @@ rejects('orient = true without the angle variable in state:',
 rejects('orient = true without along=',
   `${STATE}\n\ttween "spin":\n\t\tshipAngle to=90\n\t\torient = true\n\n${DRAW}`, /orient = true without along.*CVS-A012/);
 
+// --- names of scene resources (CVS-D007, CVS-D009, CVS-D012, CVS-A005, CVS-P005)
+
+const ASSETS = `\tassets:\n\t\tspritesheet "hero" src="hero.png" frameWidth=8 frameHeight=8\n\t\timage "logo" src="logo.png"\n`;
+const DECLS = `\ttween "t":\n\t\tshipX to=1.0\n\n\ttimeline "tl":\n\t\tat 0.0:\n\t\t\ttween "t"\n\n\tpath "mask":\n\t\tmoveTo x=0 y=0\n\t\tlineTo x=10 y=0\n\n\tgradient "g" linear x1=0 y1=0 x2=10 y2=0:\n\t\tstop 0.0 color="#000000"\n\t\tstop 1.0 color="#ffffff"\n`;
+const scene = (init, draw) => `${ASSETS}\n${STATE}\n${DECLS}\n\tinit:\n${init.map((l) => `\t\t${l}\n`).join('')}\n\tdraw:\n\t\tcanvas.clear\n${draw.map((l) => `\t\t${l}\n`).join('')}`;
+
+accepts('declared resources', scene(['play tween "t"', 'play timeline "tl"'], [
+  'canvas.clip path="mask":', '\tcanvas.rect x=0 y=0 width=1 height=1 gradient="g"',
+  'canvas.sprite "hero" x=0 y=0 clip=0', 'canvas.image src="logo" x=0 y=0']));
+rejects('canvas.clip path= naming an undeclared path', scene([], ['canvas.clip path="ghost":', '\tcanvas.clear']), /path="ghost" names no path declared.*CVS-X006/);
+rejects('gradient= naming an undeclared gradient', scene([], ['canvas.rect x=0 y=0 width=1 height=1 gradient="nope"']), /gradient "nope" is not declared.*CVS-D007/);
+rejects('canvas.sprite naming a file instead of a spritesheet asset', scene([], ['canvas.sprite "hero.png" x=0 y=0 clip=0']), /canvas.sprite "hero.png" is not a `spritesheet` asset.*CVS-D009/);
+rejects('canvas.image src= naming a file instead of an image asset', scene([], ['canvas.image src="images/logo.png" x=0 y=0']), /canvas.image src="images\/logo.png" is not an `image` asset.*CVS-D009/);
+rejects('canvas.sprite state= naming an undeclared animState', scene([], ['canvas.sprite "hero" x=0 y=0 state="fsm"']), /state="fsm" names no animState.*CVS-A005/);
+rejects('play tween naming an undeclared tween', scene(['play tween "nosuch"'], []), /tween "nosuch" is not declared/);
+rejects('play timeline naming an undeclared timeline', scene(['play timeline "nosuch"'], []), /timeline "nosuch" is not declared/);
+rejects('start animState naming an undeclared animState', scene(['start animState "nosuch"'], []), /animState "nosuch" is not declared.*CVS-A005/);
+rejects('emit particles naming an undeclared emitter', scene(['emit particles "nosuch" x=0 y=0'], []), /particles "nosuch" is not declared.*CVS-P005/);
+
 rmSync(work, { recursive: true, force: true });
 if (failures > 0) {
   console.log('FAIL: frame.canvas scene diagnostics');
