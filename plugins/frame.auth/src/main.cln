@@ -1,6 +1,6 @@
 // frame.auth plugin - Authentication and Authorization DSL
 // Provides: auth config, session handling, JWT, roles/permissions, CSRF
-// Version: 2.3.0
+// Version: 2.4.5
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
 
 // ============================================================================
@@ -63,21 +63,6 @@ external:
 	integer _emit_stmt_from_source(integer ctx, string source, integer origin_offset)
 	// Diagnostics (§5)
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
-
-// ============================================================================
-// V3 LIFECYCLE SLOTS
-// ============================================================================
-// typed-emission.md §7: atomic migration — every lifecycle slot must be typed.
-
-functions:
-	integer emit_module_helpers_typed(integer ctx, string ctx_json)
-		return 0
-
-	integer emit_server_init_typed(integer ctx, string ctx_json)
-		return 0
-
-	integer emit_per_request_typed(integer ctx, string ctx_json)
-		return 0
 
 // ============================================================================
 // V3 BLOCK EXPAND ENTRY POINT
@@ -450,19 +435,6 @@ functions:
 	integer no_params(integer ctx)
 		return _batch_arrayNew(ctx)
 
-	// Build a call-expression with one string-literal argument
-	integer call1_str(integer ctx, string callee, string arg_val)
-		integer arg_e = _batch_stringLit(ctx, arg_val)
-		if arg_e == 0
-			return 0
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		integer push_err = _batch_arrayPush(ctx, args, arg_e)
-		if push_err != 0
-			return 0
-		return _batch_call(ctx, callee, args)
-
 	// Build a call-expression with one integer-literal argument
 	integer call1_int(integer ctx, string callee, integer arg_val)
 		integer arg_e = _batch_intLit(ctx, arg_val, 0)
@@ -534,67 +506,23 @@ functions:
 			return 0
 		return _batch_call(ctx, callee, args)
 
-	// Build a call-expression: callee(str_lit, ident1, ident2)
-	integer call3_str_ident_ident(integer ctx, string callee, string str_val, string id1, string id2)
-		integer e1 = _batch_stringLit(ctx, str_val)
-		if e1 == 0
-			return 0
-		integer e2 = _batch_ident(ctx, id1)
-		if e2 == 0
-			return 0
-		integer e3 = _batch_ident(ctx, id2)
-		if e3 == 0
-			return 0
+	// Statement: _session_store(<sid_ident>, "", <data_ident>, 0, 0) — stores
+	// the whole session blob (empty key) under the session id.
+	integer session_store_stmt(integer ctx, string sid_ident, string data_ident)
 		integer args = _batch_arrayNew(ctx)
 		if args == 0
 			return 0
-		integer push1 = _batch_arrayPush(ctx, args, e1)
-		if push1 != 0
+		if _batch_arrayPush(ctx, args, _batch_ident(ctx, sid_ident)) != 0
 			return 0
-		integer push2 = _batch_arrayPush(ctx, args, e2)
-		if push2 != 0
+		if _batch_arrayPush(ctx, args, _batch_stringLit(ctx, "")) != 0
 			return 0
-		integer push3 = _batch_arrayPush(ctx, args, e3)
-		if push3 != 0
+		if _batch_arrayPush(ctx, args, _batch_ident(ctx, data_ident)) != 0
 			return 0
-		return _batch_call(ctx, callee, args)
-
-	// Build a call-expression: callee(ident, ident, ident, int, int) for _session_store
-	integer call_session_store(integer ctx, string sid_ident, string empty_str, string data_ident)
-		integer e_sid = _batch_ident(ctx, sid_ident)
-		if e_sid == 0
+		if _batch_arrayPush(ctx, args, _batch_intLit(ctx, 0, 0)) != 0
 			return 0
-		integer e_key = _batch_stringLit(ctx, empty_str)
-		if e_key == 0
+		if _batch_arrayPush(ctx, args, _batch_intLit(ctx, 0, 0)) != 0
 			return 0
-		integer e_data = _batch_ident(ctx, data_ident)
-		if e_data == 0
-			return 0
-		integer e_zero1 = _batch_intLit(ctx, 0, 0)
-		if e_zero1 == 0
-			return 0
-		integer e_zero2 = _batch_intLit(ctx, 0, 0)
-		if e_zero2 == 0
-			return 0
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, args, e_sid)
-		if p1 != 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, args, e_key)
-		if p2 != 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, args, e_data)
-		if p3 != 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, args, e_zero1)
-		if p4 != 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, args, e_zero2)
-		if p5 != 0
-			return 0
-		return _batch_call(ctx, "_session_store", args)
+		return _batch_stmtCall(ctx, "_session_store", args)
 
 	// stmtReturn an ident
 	integer ret_ident(integer ctx, string name)
@@ -696,27 +624,6 @@ functions:
 			return 0
 		return arr
 
-	// stmtAssign: target = call-expression (no-arg call)
-	integer assign_call0(integer ctx, string target, string callee)
-		integer call_e = call0(ctx, callee)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
-	// stmtAssign: target = call1_ident(callee, arg)
-	integer assign_call1_ident(integer ctx, string target, string callee, string arg)
-		integer call_e = call1_ident(ctx, callee, arg)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
-	// stmtAssign: target = call2_ident_str(callee, ident, str)
-	integer assign_call2_ident_str(integer ctx, string target, string callee, string ident_name, string str_val)
-		integer call_e = call2_ident_str(ctx, callee, ident_name, str_val)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
 // ============================================================================
 // PER-HELPER FACTORY FUNCTIONS (18 factories)
 // ============================================================================
@@ -761,24 +668,8 @@ functions:
 		if p2 != 0
 			return 0
 
-		// string sessionData = "{\"userId\":" + userId.toString() + ...}
-		// v3 does not build this string via concatenation — it uses a typed call
-		// to a bridge helper. In v3 the session data encoding is handled by
-		// _session_store accepting structured args. However _session_store in the
-		// bridge contract takes (sessionId, key, data_str, ttl, flags). The data
-		// string was built by concatenation in v1. In v3 we delegate to a
-		// pre-existing bridge that accepts the structured form, or we accept that
-		// the sessionData variable is a compile-time-known template.
-		// The correct v3 approach: use _batch_stmtCall with a _build_session_json
-		// bridge that produces the data from its typed args. No such bridge exists.
-		// The only available path is to keep the JSON assembly out of the plugin
-		// and move it to the server runtime. But _session_store takes a string.
-		// Resolution: emit a call to a plugin-private helper function
-		// build_session_json(userId, claims, expiry) that is itself in the batch,
-		// deferring the string concat into a generated Clean function where it is
-		// a safe operation (the concat happens at WASM runtime, not emit time).
-		// This is the correct approach — add build_session_json as helper #19.
-		// For now emit a placeholder stmtCall to build_session_json:
+		// string sessionData = __auth_build_session_json(userId, claims, expiry)
+		// (the JSON is assembled at run time by the generated helper).
 		integer bsj_e = _batch_ident(ctx, "userId")
 		if bsj_e == 0
 			return 0
@@ -811,54 +702,7 @@ functions:
 			return 0
 
 		// _session_store(sessionId, "", sessionData, 0, 0)
-		integer store_e = call_session_store(ctx, "sessionId", "", "sessionData")
-		if store_e == 0
-			return 0
-		integer s4 = _batch_stmtCall(ctx, "_session_store", 0)
-		// _batch_stmtCall consumed args; we built store_e as a _batch_call expression.
-		// Use _batch_stmtAssign with a discard target is wrong. The correct approach:
-		// call_session_store returns a _batch_call expression handle.
-		// We need to wrap it in a statement. stmtReturn would return it.
-		// stmtAssign would assign it to a dummy. The batch builder has stmtCall
-		// which takes callee + args separately.
-		// Rebuild properly using stmtCall with fresh args:
-		// (call_session_store already consumed the handles above, can't reuse)
-		// We need to rebuild the args. This is the single-consumption constraint.
-		// Rebuild all 5 args fresh:
-		integer e_sid2 = _batch_ident(ctx, "sessionId")
-		if e_sid2 == 0
-			return 0
-		integer e_key2 = _batch_stringLit(ctx, "")
-		if e_key2 == 0
-			return 0
-		integer e_data2 = _batch_ident(ctx, "sessionData")
-		if e_data2 == 0
-			return 0
-		integer e_z1 = _batch_intLit(ctx, 0, 0)
-		if e_z1 == 0
-			return 0
-		integer e_z2 = _batch_intLit(ctx, 0, 0)
-		if e_z2 == 0
-			return 0
-		integer store_args2 = _batch_arrayNew(ctx)
-		if store_args2 == 0
-			return 0
-		integer sp1 = _batch_arrayPush(ctx, store_args2, e_sid2)
-		if sp1 != 0
-			return 0
-		integer sp2 = _batch_arrayPush(ctx, store_args2, e_key2)
-		if sp2 != 0
-			return 0
-		integer sp3 = _batch_arrayPush(ctx, store_args2, e_data2)
-		if sp3 != 0
-			return 0
-		integer sp4 = _batch_arrayPush(ctx, store_args2, e_z1)
-		if sp4 != 0
-			return 0
-		integer sp5 = _batch_arrayPush(ctx, store_args2, e_z2)
-		if sp5 != 0
-			return 0
-		integer store_stmt = _batch_stmtCall(ctx, "_session_store", store_args2)
+		integer store_stmt = session_store_stmt(ctx, "sessionId", "sessionData")
 		if store_stmt == 0
 			return 0
 		integer p4 = _batch_arrayPush(ctx, body_arr, store_stmt)
@@ -925,9 +769,6 @@ functions:
 			return 0
 
 		// _http_set_header("Set-Cookie", cookie)
-		integer hdr_e = call2_ident_str(ctx, "_http_set_header", "cookie", "Set-Cookie")
-		// call2_ident_str puts (ident, str) but _http_set_header wants (name, value):
-		// rebuild with correct order: first arg = "Set-Cookie", second = cookie ident
 		integer hdr_name = _batch_stringLit(ctx, "Set-Cookie")
 		if hdr_name == 0
 			return 0
