@@ -9,7 +9,7 @@ endpoints:
 				50
 		// Never send password_hash to the client.
 		list<any> rows = []
-		for u in users
+		iterate u in users
 			rows.add({ "id": u.id, "email": u.email, "username": u.username, "is_active": u.is_active })
 		return json(rows)
 

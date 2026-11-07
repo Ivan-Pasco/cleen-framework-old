@@ -8,7 +8,7 @@ functions:
 			limit: 50
 		list<any> rows = []
 		integer active = 0
-		for u in users
+		iterate u in users
 			rows.add({ id: u.id, username: u.username, email: u.email, active: u.is_active })
 			if u.is_active
 				active = active + 1
