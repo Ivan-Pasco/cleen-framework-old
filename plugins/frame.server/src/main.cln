@@ -340,8 +340,11 @@ functions:
 
 functions:
 	integer expand_endpoints_typed(integer ctx, string body)
+		// Route headers sit at the indentation of the block's first line;
+		// handler lines are deeper.
+		string indent = route_indent(body)
 		string remaining = body
-		integer method_pos = next_route_pos(remaining)
+		integer method_pos = next_route_pos(remaining, indent)
 		while method_pos >= 0
 			string method = route_method_at(remaining, method_pos)
 			integer path_first_pos = method_pos + method.length() + 1
@@ -367,17 +370,37 @@ functions:
 			// Advance past the route ':' — the handler body follows.
 			remaining = remaining.substring(header_start_pos + colon_pos + 1, remaining.length())
 			string route_id = sanitize_route_id(path)
+			if route_id == "!"
+				_emit_error(ctx, 2, "FRAME-SERVER-E003", "route " + method + " \"" + path + "\": a route path may only use ASCII letters, digits and the URL path characters " + route_path_specials() + " (write other characters percent-encoded)", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
+			if claim_route(method, path) == false
+				_emit_error(ctx, 2, "FRAME-SERVER-E003", "route " + method + " \"" + path + "\" is declared more than once", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
 
+			string region = route_region(remaining, indent)
 			integer route_err = 0
 			if method == "LIVE"
-				route_err = emit_live_route(ctx, path, route_id, route_region(remaining), guard_roles)
+				route_err = emit_live_route(ctx, path, route_id, region, guard_roles)
 			else
-				route_err = emit_http_route(ctx, method, path, route_id, route_region(remaining), guard_roles, cache_arg, mw_list)
+				route_err = emit_http_route(ctx, method, path, route_id, region, guard_roles, cache_arg, mw_list)
 			if route_err != 0
 				return route_err
 
-			method_pos = next_route_pos(remaining)
+			method_pos = next_route_pos(remaining, indent)
 		return 0
+
+	// Record `method path` as declared in this build; false when it already
+	// was (a second handler would be merged into the first by name).
+	boolean claim_route(string method, string path)
+		string key = method + " " + path
+		string seen = _build_state_get("frame.server:routes")
+		if ("\n" + seen + "\n").indexOf("\n" + key + "\n") != -1
+			return false
+		if seen.length() == 0
+			_build_state_set("frame.server:routes", key)
+		else
+			_build_state_set("frame.server:routes", seen + "\n" + key)
+		return true
 
 	// GET/POST/PUT/PATCH/DELETE and FEED (SSE) routes: one string-returning
 	// handler plus its registration.
@@ -941,9 +964,15 @@ functions:
 // (typed-emission.md §3.11).
 
 functions:
-	// sanitize_route_id converts a route path to a valid identifier segment.
+	// sanitize_route_id turns a route path into an identifier segment, one
+	// to one: letters and digits stay, every other path character becomes
+	// `_` plus a letter naming it (`/` -> `_s`, `-` -> `_d`, `_` -> `_u`,
+	// ...), so distinct paths always get distinct handler names. A path
+	// character outside the table yields "!".
 	string sanitize_route_id(string path)
 		string valid_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		string specials = route_path_specials()
+		string codes = "sdputxrnqbkalmiecgfowyzhvj"
 		string result = ""
 		integer i = 0
 		while i < path.length()
@@ -951,36 +980,57 @@ functions:
 			if valid_chars.indexOf(ch) >= 0
 				result = result + ch
 			else
-				result = result + "_"
+				integer k = specials.indexOf(ch)
+				if k == -1
+					return "!"
+				result = result + "_" + codes.substring(k, k + 1)
 			i = i + 1
 		return result
+
+	// The non-alphanumeric characters a route path may contain; each maps to
+	// the code letter at the same position in sanitize_route_id.
+	string route_path_specials()
+		return "/-._~!$&'()*+,;=:@%{}[]?# "
 
 	// Every route method keyword (frame-server.ebnf §2 http_method).
 	list<string> route_methods()
 		return "GET,POST,PUT,DELETE,PATCH,FEED,LIVE".split(",")
 
-	// Position of the next `METHOD "` route header in text, or -1. A match
-	// must start a word, so `INPUT "` or `TARGET "` inside handler code is
-	// not taken for a PUT / GET header.
-	integer find_method_pos(string text, string method)
-		string needle = method + " \""
-		integer pos = text.indexOf(needle)
-		while pos > 0
-			string before = text.substring(pos - 1, pos)
-			if before == "\n" or before == "\t" or before == " "
-				return pos
-			pos = text.indexOf(needle, pos + 1)
-		return pos
+	// Leading whitespace of the first non-blank line of `body`: the
+	// indentation of its route headers.
+	string route_indent(string body)
+		integer pos = 0
+		while pos < body.length()
+			integer e = body.indexOf("\n", pos)
+			if e == -1
+				e = body.length()
+			string ln = body.substring(pos, e)
+			if ln.trim().length() > 0
+				integer k = 0
+				while k < ln.length() and (ln.substring(k, k + 1) == "\t" or ln.substring(k, k + 1) == " ")
+					k = k + 1
+				return ln.substring(0, k)
+			pos = e + 1
+		return ""
 
-	// Position of the next route header of any method, or -1.
-	integer next_route_pos(string text)
-		integer best = -1
-		list<string> methods = route_methods()
-		iterate i in 0 to methods.length() - 1
-			integer p = find_method_pos(text, methods[i])
-			if p >= 0 and (best == -1 or p < best)
-				best = p
-		return best
+	// Position of the next route header (`METHOD "` starting a line indented
+	// exactly `indent`) in text, or -1. The first line of `text` only counts
+	// when `text` starts at a line start (pos 0 of the block). Handler code —
+	// deeper lines, and string literals such as "GET \"/x\"" — never matches.
+	integer next_route_pos(string text, string indent)
+		integer pos = 0
+		while pos < text.length()
+			integer e = text.indexOf("\n", pos)
+			if e == -1
+				e = text.length()
+			string ln = text.substring(pos, e)
+			if ln.startsWith(indent)
+				string rest = ln.substring(indent.length(), ln.length())
+				string first = rest.substring(0, 1)
+				if first != " " and first != "\t" and route_method_at(rest, 0).length() > 0
+					return pos + indent.length()
+			pos = e + 1
+		return -1
 
 	// The method keyword of the route header that starts at pos.
 	string route_method_at(string text, integer pos)
@@ -993,11 +1043,11 @@ functions:
 
 	// The text of the current route's body: everything up to the next route
 	// header.
-	string route_region(string text)
-		integer end_pos = next_route_pos(text)
+	string route_region(string text, string indent)
+		integer end_pos = next_route_pos(text, indent)
 		if end_pos == -1
 			return text
-		return text.substring(0, end_pos)
+		return text.substring(0, end_pos - indent.length())
 
 	string parse_guard_roles(string modifiers)
 		integer open_b = modifiers.indexOf("[")
@@ -1435,10 +1485,15 @@ functions:
 		if body.trim().length() == 0
 			return "endpoints: block is empty"
 
+		// Only lines at the route-header indentation are route headers (see
+		// next_route_pos); handler lines are deeper.
+		string indent = route_indent(body)
 		list<string> lines = body.split("\n")
 		iterate li in 0 to lines.length() - 1
 			string trimmed = lines[li].trim()
 			if trimmed.length() == 0
+				continue
+			if not lines[li].startsWith(indent + trimmed.substring(0, 1))
 				continue
 			if route_method_at(trimmed, 0).length() == 0
 				continue
