@@ -1,0 +1,21 @@
+// Fixture for client-runtime.test.mjs — `on success: clear` resets the
+// fields; a field is required only by the `required` word. The first
+// submit() has an empty `note` (optional) and must be sent.
+
+plugins:
+	frame.ui
+	frame.client
+
+form: post "/api/notes"
+	note default="not required"
+	body
+	on success: clear emit "done"
+
+start:
+	note = ""
+	body = "text"
+	submit()
+
+functions:
+	void done()
+		integer s = ui.updateElement("#out", "note=[" + note + "] body=[" + body + "] err=[" + formError + "]")

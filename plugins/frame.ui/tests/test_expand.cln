@@ -18,6 +18,12 @@ start:
 	test_assemble_paths()
 	test_hydration_screens()
 	test_validate_block()
+	test_attribute_lookup()
+	test_template_errors()
+	test_validate_rules()
+	test_routes_guards()
+	test_page_access()
+	test_head_links()
 
 functions:
 	// html: without var= builds __html and returns it (UI-P004).
@@ -43,10 +49,10 @@ functions:
 
 	// {expr} is escaped (UI-P006), {!expr} is raw (UI-P007), \{ is a brace.
 	void test_text_interpolation_escaped_and_raw()
-		assert(text_expr("Hi \{name\}!", false) == "\"Hi \" + _html_escape((name).toString()) + \"!\"")
-		assert(text_expr("\{!body\}", false) == "\"\" + body + \"\"")
-		assert(text_expr("\{x\}", true) == "\"\" + _html_escape(data.x) + \"\"")
-		assert(text_expr("a \\\{b\\\}", false) == "\"a \\\{b\\\}\"")
+		assert(text_expr("Hi \{name\}!", false, false) == "\"Hi \" + _html_escape((name).toString()) + \"!\"")
+		assert(text_expr("\{!body\}", false, false) == "\"\" + body + \"\"")
+		assert(text_expr("\{x\}", true, false) == "\"\" + _html_escape(data.x) + \"\"")
+		assert(text_expr("a \\\{b\\\}", false, false) == "\"a \\\{b\\\}\"")
 
 	// Attribute values: quotes are escaped, {expr} closes and reopens the literal.
 	void test_attribute_values()
@@ -59,8 +65,8 @@ functions:
 		assert(html_attributes("p \{title\}", false) == "title='\" + _html_escape((title).toString()) + \"'")
 		assert(html_attributes("p data-n=\{a + b\} id=\"x\"", false) == "data-n='\" + _html_escape((a + b).toString()) + \"' id='x'")
 		// Raw HTML in attribute position is marked for FRAME-UI-E003.
-		assert(has_bad_attribute(html_attributes("option \{!sel\}", false)))
-		assert(has_bad_attribute(expand_html_block("\{\}", "<option value=\"1\" \{!sel\}>1</option>")))
+		assert(template_error_code(html_attributes("option \{!sel\}", false)) == "E003")
+		assert(template_error_code(expand_html_block("\{\}", "<option value=\"1\" \{!sel\}>1</option>")) == "E003")
 
 	// cl-if / cl-else / cl-iterate / cl-show nest the whole element (UI-B001..B004).
 	void test_structural_directives()
@@ -132,3 +138,70 @@ functions:
 		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "") == "")
 		assert(validate_block("component", "\{\"tag\":\"x-y\"\}", "html:\n\t<p>x</p>") == "")
 		assert(validate_block("component", "\{\"model_name\":\"X\",\"client\":\"sometimes\"\}", "html:") == "component: client must be one of off, on, visible, idle, only")
+
+	// Attributes match by whole name, outside other attributes' values.
+	void test_attribute_lookup()
+		assert(extract_attr_value("<screen data-name=\"W\" name=\"R\">", "name") == "R")
+		assert(extract_attr_value("<p title=\"cl-if=x\">", "cl-if") == "")
+		assert(has_attr("<p title=\"cl-else\">", "cl-else") == false)
+		assert(has_attr("<p class=\"a\" cl-else>", "cl-else"))
+		assert(extract_attr_value("<p cl-if=\{a > b\} id='x'>", "id") == "x")
+		assert(extract_attr_value("<a href=/x/y>", "href") == "/x/y")
+		assert(extract_attr_value("<page auth=\"required\" />", "auth") == "required")
+
+	// <script> (UI-C001) and an unknown cl-validate rule (UI-B012) are
+	// compile errors, not markup.
+	void test_template_errors()
+		assert(template_error_code(html_to_stmts("<div><script>x()</script></div>", "h", true, "\{\}", false)) == "E004")
+		assert(template_error_code(expand_html_block("\{\}", "<SCRIPT src=\"/a.js\"></SCRIPT>")) == "E004")
+		assert(template_error_code(html_to_stmts("<input cl-validate=\"zip\" cl-bind=\"z\">", "h", true, "\{\}", false)) == "E005")
+		assert(template_error_code(html_to_stmts("<p>ok</p>", "h", true, "\{\}", false)) == "")
+
+	void test_validate_rules()
+		string req = html_to_stmts("<input cl-validate=\"required\" cl-bind=\"name\">", "h", true, "\{\}", false)
+		assert(req.contains("if name.trim().length() == 0\n"))
+		string email = html_to_stmts("<input cl-validate=\"email\" cl-bind=\"mail\">", "h", true, "\{\}", false)
+		assert(email.contains("if mail.indexOf(\"@\") == -1 or mail.indexOf(\".\") == -1\n"))
+
+	// routes: guard: lines are read from decoded source (real tabs).
+	void test_routes_guards()
+		string table = scan_routes_guards("routes:\n\tguard: \"/admin/*\" [admin, ops]\n\tguard: \"/a/**\" [x]\n", "")
+		assert(table == "/admin/*|admin,ops;/a/**|x")
+		assert(lookup_routes_guard("/admin/panel", table) == "admin,ops")
+		assert(lookup_routes_guard("/admin", table) == "")
+		assert(lookup_routes_guard("/a/b/c", table) == "x")
+		string fn = page_render_fn("pages_admin_panel", "/admin/panel", "app/ui/web/pages/admin/panel.html", false, false, table, "")
+		assert(fn.contains("\t\tif _auth_require_role(\"ops\") == 1\n"))
+		assert(fn.contains("\t\t\treturn unauthorized()\n"))
+
+	// <page auth / roles> checks (UI-B015 / UI-B016) and their validation.
+	void test_page_access()
+		string required = emit_page_access_check("required", "")
+		assert(required == "\tif _auth_require_auth() == 0\n\t\treturn redirect(\"/login\")\n")
+		string guest = emit_page_access_check("guest", "")
+		assert(guest == "\tif _auth_require_auth() == 1\n\t\treturn redirect(\"/\")\n")
+		string roles = emit_page_access_check("", "editor, admin")
+		assert(roles.contains("\tif _auth_require_role(\"editor\") == 1\n\t\t__page_role_ok = true\n"))
+		assert(roles.contains("\tif _auth_require_role(\"admin\") == 1\n"))
+		assert(roles.endsWith("\tif __page_role_ok == false\n\t\treturn redirect(\"/forbidden\")\n"))
+		assert(emit_page_access_check("none", "") == "")
+		string page = "<page auth=\"required\" roles=\"admin\" /><html><body>x</body></html>"
+		string fn = page_render_fn("pages_secret", "/secret", "app/ui/web/pages/secret.html", false, false, "", page)
+		assert(fn.indexOf("redirect(\"/login\")") != -1 and fn.indexOf("redirect(\"/login\")") < fn.indexOf("_ui_render_page"))
+		assert(page_access_error(page, true) == "")
+		assert(page_access_error(page, false).contains("needs frame.server"))
+		assert(page_access_error("<page auth=\"maybe\" />", true).contains("auth must be required, guest or none"))
+		assert(page_access_error("<page roles=\"a\\\"b\" />", true).contains("each role must be a name"))
+		assert(page_access_error("<p>no page tag</p>", false) == "")
+
+	// _ui_head_links: the theme link with a styles block (UI-S009); with
+	// frame.client in the build, /frame-client.js right after /loader.js.
+	void test_head_links()
+		assert(head_links_body(false, false) == "string out = page\nreturn out\n")
+		string themed = head_links_body(true, false)
+		assert(themed.contains("/theme.css") and themed.contains("frame-client") == false)
+		string client = head_links_body(false, true)
+		assert(client.contains("integer loader_at = out.indexOf(\"/loader.js\")\n"))
+		assert(client.contains("out.indexOf(\"/frame-client.js\") == -1"))
+		assert(client.contains("<script src=\\\"/frame-client.js\\\" defer></script>"))
+

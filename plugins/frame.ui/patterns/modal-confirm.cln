@@ -1,109 +1,60 @@
 // Pattern: modal-confirm
-// Use when: destructive actions (delete, deactivate, cancel subscription)
-// Anti-pattern: DON'T trigger destructive actions immediately on click.
-//   Users misclick. Destructive actions must always require explicit confirmation
-//   in a modal dialog that describes what will be destroyed and requires
-//   an affirmative button press — not just closing the modal.
+// Use when: any destructive action (delete, deactivate, cancel subscription)
+//   triggered by a button click
+// Anti-pattern: triggering the destructive action immediately on click — the
+//   Delete button only opens a confirm modal that names what will be destroyed;
+//   the request is sent only from the modal's explicit confirm button.
+// Target: browser (compile with --target browser).
+//
+// The server-rendered list carries the record on each button:
+//   <li id="user-42">Ann <button onclick="askDelete" data-id="42" data-name="Ann">Delete</button></li>
+//   <div id="confirm-modal"></div>
 
 plugins:
 	frame.ui
-	frame.server
-	frame.data
+	frame.client
 
-// Reusable confirm modal component
-component: tag="confirm-modal"
-	inputs:
-		string title = "Are you sure?"
-		string message = "This action cannot be undone."
-		string confirm_label = "Delete"
-		string cancel_label = "Cancel"
-		string confirm_class = "btn-danger"
+state:
+	string targetId = ""
+	string targetName = ""
 
-	state:
-		boolean visible = false
-		string target_id = ""
-		string target_name = ""
+// The destructive request itself: deleteUser() is generated, with the
+// deleteUserPending double-click guard and deleteUserError.
+send: deleteUser delete "/api/users/{targetId}"
+	on success: emit "userDeleted"
+	on error: emit "deleteFailed"
 
-	events:
-		// Call this from the page to open the modal
-		void open(string id, string name)
-			state.target_id = id
-			state.target_name = name
-			state.visible = true
+functions:
+	// Step 1: the Delete button only remembers the target and opens the modal.
+	void askDelete()
+		targetId = ui.eventAttr("data-id")
+		targetName = ui.eventAttr("data-name")
+		integer s = ui.updateElement("#confirm-modal", renderModal(targetName))
+		s = ui.focus("#confirm-cancel")
 
-		void cancel()
-			state.visible = false
-			state.target_id = ""
-
-		void confirm()
-			// Dispatch a custom event the parent page handles
-			// Page's onConfirm handler does the actual deletion
-			ui.onEvent(".confirm-modal", "confirm", "onConfirm")
-			state.visible = false
-
-	html:
-		<div class="modal-overlay" cl-show="state.visible" onclick="cancel">
-			<div class="modal-dialog" onclick.stop="">
-				<h2>{inputs.title}</h2>
-				<p>{inputs.message}</p>
-				<p cl-show="state.target_name.length() > 0">
-					You are about to delete <strong>{state.target_name}</strong>.
-				</p>
-				<div class="modal-actions">
-					<button class="btn-secondary" onclick="cancel">{inputs.cancel_label}</button>
-					<button class="{inputs.confirm_class}" onclick="confirm">{inputs.confirm_label}</button>
+	// Cancel is focused first, so Enter never confirms by accident; Escape closes.
+	string renderModal(string name)
+		html:
+			<div class="modal-overlay">
+				<div class="modal-dialog" role="alertdialog" aria-modal="true" onkeydown.escape="closeModal">
+					<h2>Delete user?</h2>
+					<p>This permanently removes <strong>{name}</strong> and all their data.</p>
+					<p id="confirm-error" class="error"></p>
+					<div class="modal-actions">
+						<button id="confirm-cancel" class="btn-secondary" onclick="closeModal">Cancel</button>
+						<button class="btn-danger" onclick="deleteUser">Yes, delete {name}</button>
+					</div>
 				</div>
 			</div>
-		</div>
 
-// ─── PAGE LAYER ──────────────────────────────────────────────────────────────
-// Pages are HTML files + a companion .cln file. DO NOT wrap pages in component: blocks.
-//
-// app/pages/users.cln — companion file: loads server data before render
-// functions:
-// 	any load(Request request)
-// 		list users = User.find:
-// 			order:
-// 				name asc
-// 		return {users: users}
-//
-// app/pages/users.html — the page shell; confirm-modal is an island
-//
-// <!DOCTYPE html>
-// <html>
-// <head><title>Users</title><link rel="stylesheet" href="/css/main.css"></head>
-// <body>
-//
-//   <ul>
-//     <li cl-iterate="users">
-//       {item.name}
-//       <!-- data-id and data-name are read by the component's onDeleteClick -->
-//       <button
-//         onclick="onDeleteClick"
-//         data-id="{item.id}"
-//         data-name="{item.name}"
-//       >Delete</button>
-//     </li>
-//   </ul>
-//
-//   <!-- confirm-modal is a client island — it manages its own open/confirm state -->
-//   <confirm-modal
-//     id="delete-modal"
-//     title="Delete user?"
-//     message="This will permanently remove the user and all their data."
-//     confirm_label="Yes, delete"
-//     client="on">
-//   </confirm-modal>
-//
-// </body>
-// </html>
+	void closeModal()
+		targetId = ""
+		integer s = ui.updateElement("#confirm-modal", "")
 
-// Server endpoint — [auth] inline modifier requires a valid session before
-// the handler runs.
-endpoints:
-	DELETE "/api/users/:id" [auth]:
-		integer id = param("id").toInteger()
-		User.delete:
-			where:
-				id == id
-		return jsonResponse({"deleted" to id})
+	// Step 2 happened (deleteUser ran from the modal): update the list.
+	void userDeleted()
+		integer s = ui.updateElement("#user-" + targetId, "")
+		closeModal()
+
+	void deleteFailed()
+		integer s = ui.updateElement("#confirm-error", deleteUserError)

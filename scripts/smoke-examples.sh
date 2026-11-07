@@ -8,7 +8,9 @@
 #      in-memory SQLite database and a random JWT secret;
 #   3. request its routes and check the answers:
 #      - every page under app/ui/web/pages/ without a [param] segment is
-#        served (200) at its file-based URL (frame-ui-semantics UI-R001..R003);
+#        served (200) at its file-based URL (frame-ui-semantics UI-R001..R003),
+#        except pages a <page auth="required"> / roles= declaration or a
+#        routes: guard protects (their example flow checks them);
 #      - every GET endpoint without a :param answers 200, or 401/403 when
 #        it is role-guarded;
 #      - every /public/... stylesheet the home page links is served (200);
@@ -79,7 +81,8 @@ start_server() {
     local example_dir="$1" wasm="$2"
     PORT="$(free_port)"
     LOG="$WORK/$(basename "$example_dir").log"
-    (cd "$example_dir" && DATABASE_URL="sqlite::memory:" JWT_SECRET="$(openssl rand -hex 32)" \
+    JWT_SECRET_VALUE="$(openssl rand -hex 32)"
+    (cd "$example_dir" && DATABASE_URL="sqlite::memory:" JWT_SECRET="$JWT_SECRET_VALUE" \
         exec "$SERVER" "$wasm" --port "$PORT") > "$LOG" 2>&1 &
     SERVER_PID=$!
     local i
@@ -97,7 +100,60 @@ stop_server() {
     SERVER_PID=""
 }
 
+# expect_redirect <location-path> <path> [curl args...] — a 302 to location.
+expect_redirect() {
+    local want="$1" path="$2"; shift 2
+    local got
+    got="$(curl -s -o /dev/null -m 10 -w '%{http_code} %{redirect_url}' "$@" "http://127.0.0.1:$PORT$path")"
+    if [ "$got" = "302 http://127.0.0.1:$PORT$want" ]; then ok "GET $path -> 302 $want"; else bad "GET $path -> $got (want 302 $want)"; fi
+}
+
+# An HS256 JWT for user 1 with the given role, signed with the server's
+# JWT_SECRET (clean-server reads `Authorization: Bearer` tokens).
+jwt_for_role() {
+    python3 - "$JWT_SECRET_VALUE" "$1" <<'PY'
+import base64, hashlib, hmac, json, sys, time
+secret, role = sys.argv[1].encode(), sys.argv[2]
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+head = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+body = b64(json.dumps({"sub": 1, "role": role, "exp": int(time.time()) + 600}).encode())
+sig = b64(hmac.new(secret, (head + "." + body).encode(), hashlib.sha256).digest())
+print(head + "." + body + "." + sig)
+PY
+}
+
+# True when a page is protected by its <page auth="required"> / roles=
+# declaration or by a routes: guard pattern (the generic page check skips
+# it; the example's flow checks it).
+page_is_protected() {
+    local dir="$1" file="$2" url="$3"
+    grep -qE '<page[^>]*(auth="required"|roles=)' "$dir/$file" && return 0
+    local pattern prefix
+    while IFS= read -r pattern; do
+        prefix="${pattern%%\**}"
+        [ -n "$prefix" ] && [[ "$url" == "$prefix"* ]] && return 0
+    done < <(grep -rhoE 'guard: *"[^"]+"' "$dir/app" --include='*.cln' 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+    return 1
+}
+
 # ---- example-specific flows -------------------------------------------------
+
+# Page access (frame-ui-semantics UI-B015 / UI-B016, frame-server.ebnf §10.2).
+flow_auth_guards() {
+    local admin editor viewer
+    admin="$(jwt_for_role admin)"; editor="$(jwt_for_role editor)"; viewer="$(jwt_for_role user)"
+    expect_redirect /login /account
+    expect 200 GET /account -H "Authorization: Bearer $viewer"
+    expect_redirect /forbidden /editorial
+    expect_redirect /forbidden /editorial -H "Authorization: Bearer $viewer"
+    expect 200 GET /editorial -H "Authorization: Bearer $editor"
+    expect 200 GET /editorial -H "Authorization: Bearer $admin"
+    expect 401 GET /admin/panel
+    expect 401 GET /admin/panel -H "Authorization: Bearer $editor"
+    expect 200 GET /admin/panel -H "Authorization: Bearer $admin"
+    expect 200 GET /login
+    expect_redirect / /login -H "Authorization: Bearer $viewer"
+}
 
 flow_todo_api() {
     expect 200 POST /auth/register -d '{"email":"ann@example.com","password":"correct-horse-1","name":"Ann"}'
@@ -193,10 +249,12 @@ smoke_server_example() {
     local page
     while IFS= read -r page; do
         [ -n "$page" ] || continue
+        page_is_protected "$dir" "$page" "$(page_url "$page")" && continue
         expect 200 GET "$(page_url "$page")"
     done < <(cd "$dir" && find app/ui/web/pages -name '*.html' 2>/dev/null | grep -v '\[' | sort)
 
-    # GET endpoints without path parameters.
+    # GET endpoints without path parameters (page routes, handled by
+    # <module>_render functions, were checked above).
     local route
     while IFS= read -r route; do
         [ -n "$route" ] || continue
@@ -205,7 +263,7 @@ smoke_server_example() {
         else
             expect 200 GET "$route"
         fi
-    done < <(grep -oE '  GET /[^ ]*' "$LOG" | awk '{print $2}' | grep -v ':' | grep -v '^/_debug/' | sort -u)
+    done < <(grep -E '  GET /' "$LOG" | grep -v '_render$' | grep -oE '  GET /[^ ]*' | awk '{print $2}' | grep -v ':' | grep -v '^/_debug/' | sort -u)
 
     # Stylesheets linked from the home page.
     local css
@@ -222,6 +280,7 @@ smoke_server_example() {
         blog-app) flow_blog_app ;;
         complete-demo) flow_complete_demo ;;
         html-first) flow_html_first ;;
+        auth-guards) flow_auth_guards ;;
     esac
 
     if grep -qE 'wasm trap|panicked|RuntimeError' "$LOG"; then

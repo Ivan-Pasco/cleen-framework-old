@@ -1,38 +1,57 @@
 // Pattern: auth-flow
 // Use when: a component authenticates and must persist credentials for subsequent API calls
-// Anti-pattern: storing the token in localStorage or a JS variable, or passing the Authorization
-//               header manually in every request — call api.auth() once and it applies to all
-//               subsequent api.* calls automatically until api.clearAuth() is called
+// Anti-pattern: storing the token in a JS variable or localStorage, or setting the
+//               Authorization header by hand on every request — call
+//               api.auth("bearer", token) once after login; every later api.* call
+//               sends it automatically until api.clearAuth() is called.
+// Target: browser (compile with --target browser).
 
-component LoginForm
-	state:
-		string error = ""
-		boolean loading = false
+plugins:
+	frame.ui
+	frame.client
 
-	events:
-		onLogin:
-			state.loading = true
-			state.error = ""
-			later result = api.submit("#login-form", "/api/auth/login", "POST")
-			state.loading = false
-			if result.ok
-				string token = result.json("token")
-				api.auth("bearer", token)
-				ui.navigate("/dashboard")
-			else if result.status == 401
-				state.error = "Invalid email or password"
-			else
-				state.error = result.json("message") default "Login failed"
+start:
+	integer s = ui.updateElement("#auth-host", renderLogin())
 
-		onLogout:
-			api.clearAuth()
-			ui.navigate("/login")
+functions:
+	string renderLogin()
+		html:
+			<form id="login-form" onsubmit.prevent="login">
+				<input name="email" type="email" placeholder="Email">
+				<input name="password" type="password" placeholder="Password">
+				<button type="submit">Log in</button>
+				<p id="login-error" class="error"></p>
+			</form>
 
-	render:
-		<form id="login-form">
-			<input name="email" type="email" placeholder="Email" />
-			<input name="password" type="password" placeholder="Password" />
-			<div cl-if="state.error != ''" class="error">{state.error}</div>
-			<button onclick="onLogin" cl-if="!state.loading">Login</button>
-			<p cl-if="state.loading">Logging in...</p>
-		</form>
+	string renderAccount(string name)
+		html:
+			<div class="account">
+				<p>Signed in as {name}</p>
+				<button onclick="logout">Log out</button>
+			</div>
+
+	void login()
+		later res = api.submit("#login-form", "/api/auth/login", "POST")
+		if res.ok
+			// Register the token once. No header handling anywhere else.
+			api.auth("bearer", res.json("token"))
+			loadAccount()
+		else if res.status == 401
+			showLoginError("Invalid email or password")
+		else
+			showLoginError("Login failed (" + res.status.toString() + ")")
+
+	// An authenticated call: api.auth already attached the bearer token.
+	void loadAccount()
+		later res = api.get("/api/me")
+		if res.ok
+			integer s = ui.updateElement("#auth-host", renderAccount(res.json("name")))
+		else
+			showLoginError("Could not load your account")
+
+	void logout()
+		api.clearAuth()
+		integer s = ui.updateElement("#auth-host", renderLogin())
+
+	void showLoginError(string text)
+		integer s = ui.updateElement("#login-error", text)

@@ -1,0 +1,13 @@
+// Fixture for test_loader_runtime.mjs — string bridges with length-prefixed
+// arguments: .replace (string_replace) and .toNumber (string_to_float).
+
+plugins:
+	frame.ui
+
+start:
+	string t = ui.getText("#src")
+	string r = t.replace("a", "X")
+	string n = ui.getText("#num")
+	number v = n.toNumber()
+	number w = t.toNumber()
+	integer s = ui.updateElement("#out", r + "|" + v.toString() + "|" + w.toString())

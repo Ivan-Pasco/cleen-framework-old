@@ -44,13 +44,14 @@
 	// --- State ---
 	let memory, instance;
 	// --- Pre-instantiate __cleanRuntime bootstrap ---
-	// Companion scripts like frame.client/runtime/bridge.js need a synchronous
-	// registerEnv() so they can contribute bridge functions BEFORE
-	// WebAssembly.instantiate. We create the skeleton here at IIFE start,
-	// yield to the event loop via `await fetch(...)` below, and merge whatever
-	// _pendingEnv has been populated into the bridge object right before
-	// instantiating. writeString / readString / getInstance are wired up below
-	// once memory + instance exist.
+	// Companion scripts like frame.client's runtime (frame-client.js), placed
+	// after this script, need a synchronous registerEnv() so they can
+	// contribute bridge functions BEFORE WebAssembly.instantiate. We create
+	// the skeleton here at IIFE start, wait for the document to finish
+	// parsing below (so every companion has run), and merge whatever
+	// _pendingEnv holds into the bridge object right before instantiating.
+	// writeString / readString / getInstance are wired up below once memory +
+	// instance exist.
 	if (typeof window !== 'undefined' && !window.__cleanRuntime) {
 		window.__cleanRuntime = {
 			_pendingEnv: {},
@@ -85,7 +86,6 @@
 	const registeredEventTypes = new Set();
 	const eventHandlers = new Map(); // "selector\0eventType" -> [handlerIdx, ...]
 	let loadedPages = null;            // lazy Map<path, html>
-	let componentHtmlRegistry = null;  // lazy Map<tag, html>
 
 
 	// --- Memory observability (MEMORY_POLICY.md §9.3) ---
@@ -142,7 +142,7 @@
 			currentBytes: size,
 			maxPages: memStats.maxPages,
 			growCount: memStats.growCount,
-			heapPtr: heapPtr,
+			heapPtr: currentHeapTop(),
 		};
 	}
 
@@ -158,11 +158,6 @@
 			if (shift > 35) throw new Error('ULEB128 overflow');
 		} while (byte & 0x80);
 		return result >>> 0;
-	}
-
-	function readWasmString(bytes, ref) {
-		const len = readULEB128(bytes, ref);
-		ref.offset += len;
 	}
 
 	function parseMaxPages(wasmBuffer) {
@@ -428,55 +423,122 @@
 		return new Uint8Array(memory.buffer, handle + 4, len).slice();
 	}
 
+	// --- Host allocations (MEMORY_MODEL.md "Host → WASM") ---
+	// The module and the host share one bump heap. Every host allocation goes
+	// through the module's exported malloc when it has one (it advances
+	// __heap_ptr and grows memory itself); otherwise the host bumps the
+	// exported __heap_ptr global: it starts from the larger of its own offset
+	// and __heap_ptr (the module may have allocated since) and writes the new
+	// end back, so the module's next allocation starts past the host's bytes
+	// (same contract as wasmtime_runner's allocate_string_in_memory).
+	function heapGlobal() {
+		return instance && instance.exports.__heap_ptr;
+	}
+
+	function currentHeapTop() {
+		const g = heapGlobal();
+		return g && g.value > heapPtr ? g.value : heapPtr;
+	}
+
+	function setHeapTop(top) {
+		heapPtr = top;
+		const g = heapGlobal();
+		if (g) g.value = top;
+	}
+
+	function hostAlloc(size) {
+		const exportsObj = instance && instance.exports;
+		if (exportsObj && typeof exportsObj.malloc === 'function') {
+			const p = exportsObj.malloc(size);
+			if (!p) throw new Error('Frame UI: WASM malloc(' + size + ') failed (out of memory)');
+			checkMemoryGrowth();
+			heapPtr = currentHeapTop();
+			return p;
+		}
+		const start = (currentHeapTop() + 7) & ~7;
+		const end = start + ((size + 7) & ~7);
+		ensureCapacity(end);
+		setHeapTop(end);
+		return start;
+	}
+
 	function writeString(str) {
 		checkMemoryGrowth();
 		const bytes = new TextEncoder().encode(str);
-		const ptr = heapPtr;
-		const padding = (4 - (bytes.length % 4)) % 4;
-		const totalSize = bytes.length + 4 + padding;
-		// Grow memory BEFORE constructing views, so both the length header
-		// write (line +2) and the payload write land in valid buffer bytes.
-		// Also guarantees the returned pointer is still readable when WASM
-		// later loads the 4-byte length prefix during .length() calls.
-		ensureCapacity(ptr + totalSize);
-		const view = new Uint8Array(memory.buffer, ptr, bytes.length + 4);
+		// Allocate (and grow memory) BEFORE constructing views, so both the
+		// length header and the payload land in valid buffer bytes.
+		const ptr = hostAlloc(bytes.length + 4);
 		new DataView(memory.buffer).setUint32(ptr, bytes.length, true);
-		view.set(bytes, 4);
-		heapPtr += totalSize;
+		new Uint8Array(memory.buffer, ptr + 4, bytes.length).set(bytes);
 		return ptr;
 	}
 
 	// --- Event Delegation ---
 
+	// Call the module export `name` from an asynchronous callback (an event,
+	// a timer, an observer, a clipboard promise, ...). A missing export or a
+	// trap in the handler is reported on the console with the context it
+	// came from; it never escapes into the caller's promise chain, so the
+	// callback's own error path does not run for a handler failure. Returns
+	// true when the handler ran to completion.
+	function invokeExport(name, context, ...args) {
+		const fn = instance && instance.exports[name];
+		if (!fn) {
+			console.error(
+				'[frame.ui] ' + context + ' handler export "' + name +
+				'" not found. Declare it as a top-level function in your Clean source.'
+			);
+			return false;
+		}
+		try {
+			fn(...args);
+			return true;
+		} catch (err) {
+			console.error('[frame.ui] ' + context + ' handler "' + name + '" failed: ' + (err && err.message ? err.message : String(err)));
+			return false;
+		}
+	}
+
+	// The element an event starts from: its target, or the target's parent
+	// element when the target is a text node (the document and window have
+	// no element to match against).
+	function eventElement(e) {
+		const t = e.target;
+		if (!t) return null;
+		if (t.nodeType === 1) return t;
+		return t.parentElement || null;
+	}
+
+	// One document listener per (event type, passive). eventHandlers keys are
+	// "selector\0type\0passive" and each listener runs only the handlers
+	// registered with its own passive flag, so a type registered both ways
+	// still runs every handler once.
 	function ensureDocumentListener(eventType, passive) {
-		const key = eventType + (passive ? ':passive' : '');
+		const flag = passive ? 'passive' : '';
+		const key = eventType + '\0' + flag;
 		if (registeredEventTypes.has(key)) return;
 		registeredEventTypes.add(key);
 
 		const options = passive ? { passive: true } : false;
 		document.addEventListener(eventType, (e) => {
+			const origin = eventElement(e);
+			if (!origin || typeof origin.closest !== 'function') return;
 			for (const [hkey, handlers] of eventHandlers) {
-				const sep = hkey.indexOf('\0');
-				const selector = hkey.substring(0, sep);
-				const type = hkey.substring(sep + 1);
-				if (type !== eventType) continue;
+				const parts = hkey.split('\0');
+				const selector = parts[0];
+				if (parts[1] !== eventType || parts[2] !== flag) continue;
 
-				const target = e.target.closest(selector);
+				const target = origin.closest(selector);
 				if (target) {
 					handlers.forEach(handlerName => {
 						currentEvent = e;
 						currentEventTarget = target;
-						const fn = instance.exports[handlerName];
-						if (fn) {
-							fn();
-						} else {
-							console.error(
-								'[frame.ui] Event handler export "' + handlerName +
-								'" not found. Declare it as a top-level function in your Clean source.'
-							);
+						try {
+							invokeExport(handlerName, 'Event');
+						} finally {
+							currentEvent = null;
+							currentEventTarget = null;
 						}
-						currentEvent = null;
-						currentEventTarget = null;
 					});
 				}
 			}
@@ -807,11 +869,6 @@
   },true);
 })();`;
 
-	// --- §FEXT-1: Passive wheel event support ---
-	// Wheel events registered as passive cannot call preventDefault().
-	// We track passive registrations separately.
-	const passiveEventSelectors = new Set();
-
 	// --- Crypto helpers (pure-JS SHA-256/512 + HMAC) ---
 	// Adapted from plugins/frame.canvas/runtime/loader.js so the browser bridge
 	// can satisfy Layer 2's crypto.* canary synchronously. WASM's bridge
@@ -834,7 +891,7 @@
 		// variant is what _crypto_sha256_bytes needs — the caller reads raw
 		// bytes from a length-prefixed buffer and the hash must operate on
 		// those bytes without UTF-8 round-tripping.
-		const enc = (input instanceof Uint8Array) ? input : new TextEncoder().encode(input);
+		const enc = (typeof input === 'string') ? new TextEncoder().encode(input) : input;
 		const bitLen = enc.length * 8;
 		const padLen = (Math.floor((enc.length + 9 + 63) / 64) * 64) - enc.length;
 		const msg = new Uint8Array(enc.length + padLen);
@@ -902,7 +959,7 @@
 			0x28db77f523047d84n, 0x32caab7b40c72493n, 0x3c9ebe0a15c9bebcn, 0x431d67c49c100d4cn,
 			0x4cc5d4becb3e42b6n, 0x597f299cfc657e2an, 0x5fcb6fab3ad6faecn, 0x6c44198c4a475817n,
 		];
-		const enc = new TextEncoder().encode(input);
+		const enc = (typeof input === 'string') ? new TextEncoder().encode(input) : input;
 		const bitLen = BigInt(enc.length) * 8n;
 		const padLen = (Math.floor((enc.length + 17 + 127) / 128) * 128) - enc.length;
 		const msg = new Uint8Array(enc.length + padLen);
@@ -954,8 +1011,10 @@
 		const blockSize = alg === 'sha512' ? 128 : 64;
 		const hash = alg === 'sha512' ? sha512Bytes : sha256Bytes;
 		const hashHex = alg === 'sha512' ? sha512Hex : sha256Hex;
+		// Every step works on bytes: the inner digest is binary and must not
+		// pass through a text decoder.
 		let keyBytes = new TextEncoder().encode(key);
-		if (keyBytes.length > blockSize) keyBytes = hash(key);
+		if (keyBytes.length > blockSize) keyBytes = hash(keyBytes);
 		if (keyBytes.length < blockSize) {
 			const padded = new Uint8Array(blockSize);
 			padded.set(keyBytes);
@@ -970,10 +1029,10 @@
 		const dataBytes = new TextEncoder().encode(data);
 		const inner = new Uint8Array(iKey.length + dataBytes.length);
 		inner.set(iKey, 0); inner.set(dataBytes, iKey.length);
-		const innerHash = hash(new TextDecoder().decode(inner));
+		const innerHash = hash(inner);
 		const outer = new Uint8Array(oKey.length + innerHash.length);
 		outer.set(oKey, 0); outer.set(innerHash, oKey.length);
-		return hashHex(new TextDecoder().decode(outer));
+		return hashHex(outer);
 	}
 
 	function cryptoRandomHex(byteCount) {
@@ -996,22 +1055,14 @@
 		return btoa(bin);
 	}
 
-	// --- allocBytes: raw bump-allocator for fixed-size blocks ---
+	// --- allocBytes: fixed-size blocks in WASM linear memory ---
 	// Used by the _v2 JSON bridges to allocate boxed-Any blocks (12 bytes),
-	// list headers (16 + N*4 bytes), and pairs headers (8 + N*8 bytes) in WASM
-	// linear memory. Uses the same heapPtr bump pattern as mem_alloc and
-	// writeString. Prefer this over instance.exports.malloc for consistency.
+	// list headers (16 + N*4 bytes), and pairs headers (8 + N*8 bytes).
 	// IMPORTANT: callers MUST refresh any DataView they hold after any call to
 	// allocBytes or writeString, because either can grow WASM memory and
 	// invalidate existing DataView snapshots.
 	function allocBytes(size) {
-		// 8-byte alignment matches the compiler's ALIGNMENT constant in
-		// native_stdlib/mod.rs and every other allocation in this loader.
-		const padded = size + ((8 - (size % 8)) % 8);
-		const p = heapPtr;
-		ensureCapacity(p + padded);
-		heapPtr += padded;
-		return p;
+		return hostAlloc(size);
 	}
 
 	// --- Boxed-Any JSON values (BOXED_ANY_ABI.md §1–§3) ---
@@ -1148,13 +1199,8 @@
 	const bridge = {
 		memory_runtime: {
 			// Memory management — spec: platform-architecture/HOST_BRIDGE.md
-			mem_alloc: (size) => {
-				const padded = size + (8 - (size % 8));
-				const ptr = heapPtr;
-				ensureCapacity(ptr + padded);
-				heapPtr += padded;
-				return ptr;
-			},
+			// runtime-abi v1: mem_alloc(type_id, size) -> ptr (8-byte aligned).
+			mem_alloc: (typeId, size) => hostAlloc(size),
 			mem_retain: (ptr) => {},
 			mem_release: (ptr) => {},
 			mem_scope_push: () => {},
@@ -1205,31 +1251,32 @@
 			// Page template loading and component-HTML registration. These are
 			// primarily server-side concerns but the registry lists hosts =
 			// ["browser", "server"] so the client-side loader must handle them
-			// too. In the browser, _ui_load_page resolves via fetch when called
-			// from a non-render context (it's still sync to WASM — we cache the
-			// last fetch result and only return cached content on subsequent
-			// calls). For the typical SSR flow on the server, this never runs.
+			// too. The bridge is synchronous to WASM, so in the browser the
+			// template is read with a synchronous request (the first call
+			// returns the page, not ""); a missing template is "" as on the
+			// server. Results are cached per path.
 			_ui_load_page: (pathPtr, pathLen) => {
 				const path = readString(pathPtr, pathLen);
 				if (!loadedPages) loadedPages = new Map();
-				if (loadedPages.has(path)) return writeString(loadedPages.get(path));
-				// Kick off an async fetch and return empty for now; once the
-				// fetch lands, subsequent calls will hit the cache. This
-				// matches the "load on demand" pattern other browser-side
-				// runtime APIs use.
-				if (typeof fetch === 'function') {
-					fetch(path).then(r => r.ok ? r.text() : '').then(text => {
-						loadedPages.set(path, text || '');
-					}).catch(() => loadedPages.set(path, ''));
+				if (!loadedPages.has(path)) {
+					let text = '';
+					try {
+						const req = new XMLHttpRequest();
+						req.open('GET', path, false);
+						req.send(null);
+						if (req.status >= 200 && req.status < 300) text = req.responseText || '';
+					} catch (err) {
+						console.error('[frame.ui] _ui_load_page("' + path + '") failed: ' + (err && err.message ? err.message : String(err)));
+					}
+					loadedPages.set(path, text);
 				}
-				return writeString('');
+				return writeString(loadedPages.get(path));
 			},
 
-			_ui_register_component_html: (tagPtr, tagLen, htmlPtr, htmlLen) => {
-				if (!componentHtmlRegistry) componentHtmlRegistry = new Map();
-				componentHtmlRegistry.set(readString(tagPtr, tagLen), readString(htmlPtr, htmlLen));
-				return 0;
-			},
+			// The browser renders no page templates (there is no browser
+			// _ui_render_page), so a registered component template has no
+			// consumer here; the call succeeds as the registry specifies.
+			_ui_register_component_html: (tagPtr, tagLen, htmlPtr, htmlLen) => 1,
 
 			// ========== Slot Management ==========
 
@@ -1251,7 +1298,7 @@
 				const passive = rawEventType.endsWith(':passive');
 				const eventType = passive ? rawEventType.slice(0, -8) : rawEventType;
 				const handlerName = readString(handlerPtr, handlerLen);
-				const key = selector + '\0' + eventType;
+				const key = selector + '\0' + eventType + '\0' + (passive ? 'passive' : '');
 
 				if (!eventHandlers.has(key)) {
 					eventHandlers.set(key, []);
@@ -1289,7 +1336,7 @@
 			//   no-op, defeating the compiler's OOM guard for the rewritten
 			//   loops. This impl matches the reference semantics.
 			_arena_scope_push: () => {
-				scopeMarks.push(heapPtr);
+				scopeMarks.push(currentHeapTop());
 				return scopeMarks.length;
 			},
 			_arena_scope_pop: (handle) => {
@@ -1299,7 +1346,7 @@
 					const mark = scopeMarks.pop();
 					if (resetTo === null) resetTo = mark;
 				}
-				if (resetTo !== null) heapPtr = resetTo;
+				if (resetTo !== null) setHeapTop(resetTo);
 			},
 
 			// ========== DOM Manipulation ==========
@@ -1533,17 +1580,9 @@
 			_ui_set_timeout: (handlerPtr, handlerLen, delayMs) => {
 				const handlerName = readString(handlerPtr, handlerLen);
 				setTimeout(() => {
-					const fn = instance.exports[handlerName];
-					if (fn) {
-						currentEvent = null;
-						currentEventTarget = null;
-						fn();
-					} else {
-						console.error(
-							'[frame.ui] setTimeout handler export "' + handlerName +
-							'" not found. Declare it as a top-level function in your Clean source.'
-						);
-					}
+					currentEvent = null;
+					currentEventTarget = null;
+					invokeExport(handlerName, 'setTimeout');
 				}, delayMs);
 				return 0;
 			},
@@ -1726,11 +1765,14 @@
 				return a < b ? -1 : a > b ? 1 : 0;
 			},
 
-			string_replace: (strPtr, strLen, fromPtr, fromLen, toPtr, toLen) => {
-				const str = readString(strPtr, strLen);
-				const from = readString(fromPtr, fromLen);
-				const to = readString(toPtr, toLen);
-				return writeString(from === '' ? str : str.split(from).join(to));
+			// string_replace(str, find, replacement): three length-prefixed
+			// pointers (function-registry.toml). Every occurrence is replaced,
+			// as `.replace(old, new)` is specified (specification §16) and
+			// clean-server implements it; an empty `find` returns str.
+			string_replace: (strPtr, findPtr, replacementPtr) => {
+				const str = readLPString(strPtr);
+				const find = readLPString(findPtr);
+				return writeString(find === '' ? str : str.split(find).join(readLPString(replacementPtr)));
 			},
 
 			'string.split': (strPtr, strLen, sepPtr, sepLen) => {
@@ -1739,10 +1781,7 @@
 				const parts = sep === '' ? [str] : str.split(sep);
 				const count = parts.length;
 				// Allocate list header (16 bytes) + pointer slots (count * 4 bytes each)
-				const listPtr = heapPtr;
-				const listSize = 16 + count * 4;
-				ensureCapacity(listPtr + listSize);
-				heapPtr += listSize;
+				const listPtr = hostAlloc(16 + count * 4);
 				// Write each part string, collect pointers (after all allocs, buffer may grow)
 				const ptrs = parts.map(p => writeString(p));
 				// Write list header using fresh DataView (memory may have grown)
@@ -1770,8 +1809,11 @@
 				return writeString((typeof value === 'bigint' ? value : BigInt(value)).toString());
 			},
 
-			string_to_float: (ptr, len) => {
-				const n = parseFloat(readString(ptr, len));
+			// string_to_float(str): one length-prefixed pointer
+			// (function-registry.toml, alias string.toNumber); 0.0 when the
+			// text is not a number.
+			string_to_float: (strPtr) => {
+				const n = parseFloat(readLPString(strPtr));
 				return Number.isNaN(n) ? 0.0 : n;
 			},
 
@@ -1974,9 +2016,17 @@
 			},
 
 			// List operations — layout: [length:i32][capacity:i32][type_id:i32][pad:i32][elements...]
+			// A full list (length == capacity) is left as it is, like
+			// clean-server: writing past the capacity would overwrite whatever
+			// the heap holds after the list.
 			'list.push_f64': (listPtr, value) => {
 				const dv = new DataView(memory.buffer);
 				const len = dv.getInt32(listPtr, true);
+				const capacity = dv.getInt32(listPtr + 4, true);
+				if (len >= capacity) {
+					console.error('[frame.ui] list.push_f64: list is full (length=' + len + ', capacity=' + capacity + ')');
+					return listPtr;
+				}
 				dv.setFloat64(listPtr + 16 + len * 8, value, true);
 				dv.setInt32(listPtr, len + 1, true);
 				return listPtr;
@@ -2129,17 +2179,15 @@
 				window.__cleanIframeHandler = handlerName;
 				if (!window.__cleanIframeListenerAdded) {
 					window.__cleanIframeListenerAdded = true;
+					// Only messages from this page's own origin (its cl-preview
+					// iframes and same-origin frames) reach the handler; any
+					// other window could post to this page.
 					window.addEventListener('message', (e) => {
 						const name = window.__cleanIframeHandler;
 						if (!name) return;
-						const fn = instance.exports[name];
-						if (fn) {
-							const originPtr = writeString(e.origin || '');
-							const dataPtr = writeString(
-								typeof e.data === 'string' ? e.data : JSON.stringify(e.data)
-							);
-							fn(originPtr, dataPtr);
-						}
+						if (e.origin !== window.location.origin) return;
+						invokeExport(name, 'iframe message', writeString(e.origin),
+							writeString(typeof e.data === 'string' ? e.data : JSON.stringify(e.data)));
 					});
 				}
 				return 0;
@@ -2238,11 +2286,11 @@
 							}
 
 							e.preventDefault();
-							const fn = instance.exports[reg.handlerName];
-							if (fn) {
-								currentEvent = e;
-								currentEventTarget = e.target;
-								fn();
+							currentEvent = e;
+							currentEventTarget = e.target;
+							try {
+								invokeExport(reg.handlerName, 'shortcut');
+							} finally {
 								currentEvent = null;
 								currentEventTarget = null;
 							}
@@ -2429,18 +2477,9 @@
 				const successName = readString(successPtr, successLen);
 				const errorName = readString(errorPtr, errorLen);
 				navigator.clipboard.writeText(text).then(() => {
-					if (successName) {
-						const fn = instance.exports[successName];
-						if (fn) fn();
-					}
-				}).catch((e) => {
-					if (errorName) {
-						const fn = instance.exports[errorName];
-						if (fn) {
-							const msgPtr = writeString(e.message || 'clipboard write failed');
-							fn(msgPtr);
-						}
-					}
+					if (successName) invokeExport(successName, 'clipboard write');
+				}, (e) => {
+					if (errorName) invokeExport(errorName, 'clipboard write', writeString((e && e.message) || 'clipboard write failed'));
 				});
 			},
 
@@ -2448,21 +2487,9 @@
 				const successName = readString(successPtr, successLen);
 				const errorName = readString(errorPtr, errorLen);
 				navigator.clipboard.readText().then((text) => {
-					if (successName) {
-						const fn = instance.exports[successName];
-						if (fn) {
-							const textPtr = writeString(text);
-							fn(textPtr);
-						}
-					}
-				}).catch((e) => {
-					if (errorName) {
-						const fn = instance.exports[errorName];
-						if (fn) {
-							const msgPtr = writeString(e.message || 'clipboard read failed');
-							fn(msgPtr);
-						}
-					}
+					if (successName) invokeExport(successName, 'clipboard read', writeString(text));
+				}, (e) => {
+					if (errorName) invokeExport(errorName, 'clipboard read', writeString((e && e.message) || 'clipboard read failed'));
 				});
 			},
 
@@ -2494,20 +2521,16 @@
 				}
 				const invoke = (status, responseBody) => {
 					if (!handlerName) return;
-					const fn = instance.exports[handlerName];
-					if (!fn) {
-						console.warn('[frame.ui] _ui_fetch_cb: handler "' + handlerName + '" not exported');
-						return;
-					}
-					const bodyOut = writeString(responseBody == null ? '' : String(responseBody));
-					fn(status | 0, bodyOut);
+					invokeExport(handlerName, '_ui_fetch_cb', status | 0, writeString(responseBody == null ? '' : String(responseBody)));
 				};
+				// The handler runs exactly once: a failure inside it is reported
+				// by invokeExport, never routed to the fetch-failure branch.
 				fetch(url, init).then((res) => {
 					const status = res.status;
-					res.text().then((text) => invoke(status, text)).catch((e) => {
+					res.text().then((text) => invoke(status, text), (e) => {
 						invoke(status, e && e.message ? e.message : '');
 					});
-				}).catch((e) => {
+				}, (e) => {
 					invoke(0, e && e.message ? e.message : 'fetch failed');
 				});
 				return 1;
@@ -2527,15 +2550,11 @@
 				const id = (window.__cleanResizeObserverIdCounter = (window.__cleanResizeObserverIdCounter || 0) + 1);
 				const observer = new ResizeObserver((entries) => {
 					for (const entry of entries) {
-						const fn = instance.exports[handlerName];
-						if (fn) {
-							const jsonPtr = writeString(JSON.stringify({
-								width: entry.contentRect.width,
-								height: entry.contentRect.height,
-								selector
-							}));
-							fn(jsonPtr);
-						}
+						invokeExport(handlerName, 'resize observer', writeString(JSON.stringify({
+							width: entry.contentRect.width,
+							height: entry.contentRect.height,
+							selector
+						})));
 					}
 				});
 				observer.observe(el);
@@ -2564,15 +2583,11 @@
 				const id = (window.__cleanIntersectObserverIdCounter = (window.__cleanIntersectObserverIdCounter || 0) + 1);
 				const observer = new IntersectionObserver((entries) => {
 					for (const entry of entries) {
-						const fn = instance.exports[handlerName];
-						if (fn) {
-							const jsonPtr = writeString(JSON.stringify({
-								selector,
-								ratio: entry.intersectionRatio,
-								isVisible: entry.isIntersecting
-							}));
-							fn(jsonPtr);
-						}
+						invokeExport(handlerName, 'intersection observer', writeString(JSON.stringify({
+							selector,
+							ratio: entry.intersectionRatio,
+							isVisible: entry.isIntersecting
+						})));
 					}
 				}, { threshold: [threshold] });
 				observer.observe(el);
@@ -3070,12 +3085,22 @@
 			main.classList.add('cl-leaving');
 		}
 
+		// The page is fetched once. An HTML answer is swapped in whatever its
+		// status (a 404 or error page renders in place, a redirect lands on
+		// its target URL); anything else cannot be shown in place, so the
+		// browser navigates to it.
 		let html;
+		let finalPath = path;
 		try {
 			const res = await fetch(path, { headers: { 'X-Clean-Navigate': '1' } });
-			if (!res.ok) {
+			const type = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+			if (type && type.indexOf('text/html') === -1) {
 				window.location.href = path;
 				return;
+			}
+			if (res.redirected && res.url) {
+				const landed = new URL(res.url, window.location.href);
+				if (landed.origin === window.location.origin) finalPath = landed.pathname + landed.search + landed.hash;
 			}
 			html = await res.text();
 		} catch (_) {
@@ -3093,9 +3118,9 @@
 		}
 
 		if (replaceState) {
-			window.history.replaceState({}, '', path);
+			window.history.replaceState({}, '', finalPath);
 		} else {
-			window.history.pushState({}, '', path);
+			window.history.pushState({}, '', finalPath);
 		}
 
 		const tmp = document.createElement('div');
@@ -3119,6 +3144,12 @@
 		window.__cleanNavInitialized = true;
 
 		document.addEventListener('click', (e) => {
+			// Leave the click to the browser when a handler already took it,
+			// for any button but the primary one, and with a modifier key
+			// (open in a new tab / window, download).
+			if (e.defaultPrevented) return;
+			if (e.button !== undefined && e.button !== 0) return;
+			if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 			let el = e.target;
 			while (el && el.tagName !== 'A') {
 				el = el.parentElement;
@@ -3142,6 +3173,10 @@
 			}
 
 			if (url.origin !== window.location.origin) return;
+			// A link to a file (report.pdf, data.json, ...) is not a page.
+			const last = url.pathname.split('/').pop();
+			const dot = last.lastIndexOf('.');
+			if (dot > 0 && !/^html?$/i.test(last.slice(dot + 1))) return;
 
 			e.preventDefault();
 			navigate(url.pathname + url.search + url.hash, false);
@@ -3171,6 +3206,7 @@
 		el.classList.add('cl-error');
 	}
 
+	// The nearest error boundary enclosing el (el itself included).
 	function findBoundary(el) {
 		let cursor = el;
 		while (cursor) {
@@ -3178,6 +3214,14 @@
 			cursor = cursor.parentElement;
 		}
 		return null;
+	}
+
+	// An error thrown by _start() belongs to no single element: every error
+	// boundary on the page shows its fallback. Returns how many there were.
+	function renderStartupFailure(errorMessage) {
+		const boundaries = document.querySelectorAll('[data-fallback]');
+		boundaries.forEach(el => renderBoundaryFallback(el, errorMessage));
+		return boundaries.length;
 	}
 
 	// --- §FEXT-4: cl-stream initialization (extracted for reuse by navigation) ---
@@ -3190,19 +3234,8 @@
 			if (!url) return;
 			const es = new EventSource(url);
 			es.onmessage = (ev) => { el.innerHTML = ev.data; };
-			es.addEventListener('message', (ev) => { el.innerHTML = ev.data; });
 			es.onerror = () => {};
 			el.__cleanEventSource = es;
-			const origAddListener = es.addEventListener.bind(es);
-			es.addEventListener = (type, handler, opts) => {
-				if (type !== 'message' && type !== 'error' && type !== 'open') {
-					origAddListener(type, (ev) => {
-						el.dispatchEvent(new CustomEvent(type, { detail: ev.data, bubbles: true }));
-					}, opts);
-				} else {
-					origAddListener(type, handler, opts);
-				}
-			};
 		});
 	}
 
@@ -3251,9 +3284,17 @@
 
 		memStats.maxPages = parseMaxPages(bytes);
 
-		// Merge companion-registered env imports (from bridge.js et al) into
-		// the bridge before instantiation. Companion scripts run synchronously
-		// between the initial script tag and this await-fetch resumption.
+		// Companion runtimes (frame.client's frame-client.js, ...) are
+		// <script>s after this one. Wait until the document is parsed — every
+		// classic and deferred script before DOMContentLoaded has run — so
+		// their registerEnv() calls are in before the imports are fixed,
+		// however fast the WASM fetch was.
+		if (typeof document !== 'undefined' && document.readyState === 'loading') {
+			await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+		}
+
+		// Merge companion-registered env imports into the bridge before
+		// instantiation.
 		if (typeof window !== 'undefined' && window.__cleanRuntime && window.__cleanRuntime._pendingEnv) {
 			Object.assign(bridge.env, window.__cleanRuntime._pendingEnv);
 		}
@@ -3275,20 +3316,8 @@
 		}
 		heapPtr = heapPtrExport.value;
 
-		if (typeof window !== 'undefined') {
-			if (!window.__cleanRuntime) {
-				window.__cleanRuntime = {
-					_providers: [],
-					_pendingEnv: {},
-					registerEnv(obj) {
-						if (obj && typeof obj === 'object') Object.assign(this._pendingEnv, obj);
-					},
-					memoryStats() {
-						const p = this._providers[this._providers.length - 1];
-						return p ? p() : null;
-					},
-				};
-			}
+		if (typeof window !== 'undefined' && window.__cleanRuntime) {
+			// The skeleton was created at the top of this script.
 			window.__cleanRuntime._providers.push(memoryStats);
 			// Wire up the runtime accessors companion bridges need. Safe to
 			// overwrite — the pre-instantiate bootstrap only had placeholders.
@@ -3314,11 +3343,9 @@
 				instance.exports.start();
 			}
 		} catch (startErr) {
-			const boundary = findBoundary(document.body);
-			if (boundary) {
-				renderBoundaryFallback(boundary, startErr.message || String(startErr));
-			} else {
-				console.error('[Clean Error Boundary] start: ' + (startErr.message || String(startErr)));
+			const message = startErr.message || String(startErr);
+			if (renderStartupFailure(message) === 0) {
+				console.error('[Clean Error Boundary] start: ' + message);
 			}
 		}
 

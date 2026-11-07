@@ -14,16 +14,17 @@ The loader uses a **shared runtime pattern** that allows multiple plugins to con
 ### Load Order
 
 ```html
-<script src="bridge.js"></script>         <!-- frame.client (optional) -->
-<script src="loader.js" data-wasm="app.wasm"></script>  <!-- frame.ui (always last) -->
+<script src="loader.js" data-wasm="app.wasm"></script>  <!-- frame.ui (always first) -->
+<script src="frame-client.js"></script>                 <!-- frame.client (optional) -->
 ```
+
+frame.ui writes both tags into an HTML entry page that loads the runtime when the build includes frame.client (`frame-client.js` is frame.client's `runtime/bridge.js`, emitted as a build artifact and served at `/frame-client.js`).
 
 ### How It Works
 
-1. `loader.js` Phase 1 creates `window.__cleanRuntime` with shared memory helpers
-2. `loader.js` Phase 2 registers frame.ui bridge functions via `registerEnv()`
-3. Plugin bridges (e.g., `bridge.js` from frame.client) register their functions via `registerEnv()`
-4. `loader.js` Phase 3 collects all registered functions and instantiates WASM
+1. `loader.js` creates `window.__cleanRuntime` (with `registerEnv()`) as soon as it runs
+2. Companion runtimes after it (e.g. `frame-client.js`) register their bridge functions via `registerEnv()`
+3. `loader.js` waits until the document is parsed (so every companion has run), merges the registered functions into its own and instantiates the WASM
 5. Calls `_start()` -- the WASM module registers event handlers
 6. Events dispatch to named handler functions via internal indices
 
@@ -33,7 +34,7 @@ The loader uses a **shared runtime pattern** that allows multiple plugins to con
 |--------|-------------|
 | `readString(ptr, len)` | Read string from WASM memory |
 | `writeString(str)` | Write string to WASM memory, returns pointer |
-| `memAlloc(size)` | Allocate bytes on WASM heap |
+| `getMemory()` | Get the WASM memory (available after loading) |
 | `getInstance()` | Get WASM instance (available after loading) |
 | `registerEnv(fns)` | Register bridge functions (call before WASM loads) |
 
@@ -129,8 +130,8 @@ cln compile app/client/main.cln -o dist/app.wasm --plugins
 Copy runtime files to your dist folder:
 
 ```html
-<script src="bridge.js"></script>
 <script src="loader.js" data-wasm="app.wasm"></script>
+<script src="frame-client.js"></script>
 ```
 
 ### Example
@@ -171,7 +172,7 @@ Fullstack apps produce two WASM files:
 ```
 dist/
     index.html      (shell + loader)
-    bridge.js       (frame.client runtime)
+    frame-client.js (frame.client runtime)
     loader.js       (frame.ui runtime + WASM loader)
     frontend.wasm   (browser - UI + client)
     backend.wasm    (server - API endpoints)

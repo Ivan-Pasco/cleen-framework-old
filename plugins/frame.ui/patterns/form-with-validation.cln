@@ -1,63 +1,66 @@
 // Pattern: form-with-validation
-// Use when: any user input form that must show per-field errors
-// Anti-pattern: DON'T validate only on submit with one generic error.
-//   Users don't know which field failed. Use cl-validate on each input
-//   to show inline errors per field, and only enable submit when all valid.
+// Use when: any user input form that must show per-field errors before submission
+// Anti-pattern: validating only on submit and showing one generic error — put
+//   cl-validate on each field so every invalid field gets its own inline error
+//   next to it, and users know exactly what to fix.
+//
+// cl-validate="required" | "email" (the only rules) reads the field's value
+// through cl-bind and, when the rule fails, renders
+// <span class="cl-validation-error">{error-message}</span> right after the field.
+// The check runs when the page renders on the server, so the POST handler
+// re-renders the form with the submitted values. The handler checks the same
+// rules again before saving: the server is always the authority.
+// A POST form in a page gets a CSRF input (csrf_generate() from frame.auth), so
+// frame.auth is listed and configured: its helpers come with the auth: block.
 
 plugins:
 	frame.ui
 	frame.server
+	frame.auth
 
-// Component: reusable validated text input
-component: tag="validated-input"
-	inputs:
-		string name
-		string label
-		string type = "text"
-		string validation = ""
+auth:
+	session:
+		cookie = "app.sid"
+		timeoutMinutes = 60
 
-	state:
-		string error = ""
-		boolean touched = false
+// Server state is per request: these hold the values of the request being handled.
+state:
+	string name = ""
+	string email = ""
+	boolean submitted = false
 
-	events:
-		void onBlur()
-			state.touched = true
-			string val = ui.inputValue("#input-" + inputs.name)
-			if inputs.validation == "required" and val.length() == 0
-				state.error = inputs.label + " is required"
-			else if inputs.validation == "email" and val.indexOf("@") == -1
-				state.error = "Enter a valid email address"
-			else
-				state.error = ""
+// The validated fields render only after a submit, so a fresh form shows no errors.
+page RegisterPage:
+	<main>
+		<form method="post" action="/register" class="register-form">
+			<div cl-if="submitted">
+				<input name="name" value="{name}" placeholder="Name" cl-bind="name" cl-validate="required" error-message="Enter your name">
+				<input name="email" type="email" value="{email}" placeholder="Email" cl-bind="email" cl-validate="email" error-message="Enter a valid email address">
+			</div>
+			<div cl-else>
+				<input name="name" placeholder="Name">
+				<input name="email" type="email" placeholder="Email">
+			</div>
+			<button type="submit">Create account</button>
+		</form>
+	</main>
 
-	html:
-		<div class="field">
-			<label>{inputs.label}</label>
-			<input
-				id="input-{inputs.name}"
-				name="{inputs.name}"
-				type="{inputs.type}"
-				onblur="onBlur"
-				cl-validate="inputs.validation"
-			>
-			<span class="error" cl-show="state.error.length() > 0">{state.error}</span>
-		</div>
-
-// Server endpoint
 endpoints:
+	GET "/register":
+		RegisterPage page = RegisterPage()
+		return html(page.render())
+
 	POST "/register":
-		string email = req.body_field("email")
-		string password = req.body_field("password")
-		string name = req.body_field("name")
-
-		if email.length() == 0 or email.indexOf("@") == -1
-			return badRequest(jsonResponse({"code" to "VALIDATION_ERROR", "field" to "email", "message" to "Valid email required"}))
-
-		if password.length() < 8
-			return badRequest(jsonResponse({"code" to "VALIDATION_ERROR", "field" to "password", "message" to "Password must be at least 8 characters"}))
-
-		if name.length() == 0
-			return badRequest(jsonResponse({"code" to "VALIDATION_ERROR", "field" to "name", "message" to "Name is required"}))
-
-		return jsonResponse({"message" to "Account created"})
+		any form = json.tryTextToData(req.form())
+		if form != null
+			if form.name != null
+				name = form.name.toString().trim()
+			if form.email != null
+				email = form.email.toString().trim()
+		boolean emailOk = email.indexOf("@") > 0 and email.indexOf(".") != -1
+		if name.length() == 0 or emailOk == false
+			submitted = true
+			RegisterPage page = RegisterPage()
+			return http.respond(422, "text/html", page.render())
+		// Valid: create the account here, then leave the form.
+		return redirect("/welcome")

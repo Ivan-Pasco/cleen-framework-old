@@ -1,0 +1,17 @@
+// Fixture for client-runtime.test.mjs — a load: block with two sources:
+// one read at a JSON path, one that fails and calls its on error handler.
+
+plugins:
+	frame.ui
+	frame.client
+
+load:
+	user from "/api/user" at "name"
+	stats from "/api/stats" on error: "statsFailed"
+
+functions:
+	void show()
+		integer s = ui.updateElement("#out", "loading=" + loading.toString() + " err=" + loadError + " user=" + user.toString())
+
+	void statsFailed()
+		integer s = ui.updateElement("#out2", "stats failed")

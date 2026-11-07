@@ -1,0 +1,41 @@
+// Test: frame.ui — attributes are matched by their whole name.
+//
+// Regression: an attribute was found by searching the tag text for
+// `name=`, which also matched inside another attribute's name or value:
+//   - <screen data-name="Wrong" name="Right"> placed the screen Wrong;
+//   - <form data-method="post"> was taken for a POST form and got a CSRF
+//     input (UI-B011), which needs frame.auth's csrf_generate;
+//   - <p title="cl-if=hidden()"> was rendered only when hidden() held.
+
+plugins:
+	frame.ui
+
+page AttrPage:
+	<div>
+		<screen data-name="Wrong" name="Right"></screen>
+		<form data-method="post" action="/x"><input name="q"></form>
+		<p title="cl-if=hidden()">t</p>
+	</div>
+
+start:
+	AttrPage page = AttrPage()
+	string out = page.render()
+	string expected = "<div><div id='screen-Right' data-screen='Right' data-client='off'>R</div><form data-method='post' action='/x'><input name='q'></form><p title='cl-if=hidden()'>t</p></div>"
+	if out == expected
+		printl("PASS: ui-attribute-name-match")
+	else
+		printl("FAIL: ui-attribute-name-match " + out)
+
+functions:
+	boolean hidden()
+		return false
+
+screen Right:
+	functions:
+		string render()
+			return "R"
+
+screen Wrong:
+	functions:
+		string render()
+			return "W"

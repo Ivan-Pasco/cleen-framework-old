@@ -1,0 +1,29 @@
+// Test: frame.ui — whitespace in <pre> / <textarea> and raw <style> text.
+//
+// Regressions:
+//   - Line breaks and tabs inside <pre> and <textarea> became spaces and
+//     their leading / trailing whitespace was trimmed.
+//   - Braces inside <style> were read as {expression} interpolation, so a
+//     CSS rule did not compile. <style> is a raw-text element: its content
+//     is copied as written.
+
+plugins:
+	frame.ui
+
+page TextPage:
+	<div>
+		<pre>a
+			b  c </pre>
+		<textarea> x
+		y</textarea>
+		<style>p > a { color: red }</style>
+	</div>
+
+start:
+	TextPage page = TextPage()
+	string out = page.render()
+	string expected = "<div><pre>a\n\t\tb  c </pre><textarea> x\n\ty</textarea><style>p > a \{ color: red \}</style></div>"
+	if out == expected
+		printl("PASS: ui-raw-text-whitespace")
+	else
+		printl("FAIL: ui-raw-text-whitespace " + out)

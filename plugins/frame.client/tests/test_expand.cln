@@ -1,20 +1,10 @@
-// Tests for frame.client plugin — v3 typed emission (Plugin Contracts v3)
-// Tests cover: pure DSL parser helpers, URL segment compiler helpers, and
-// field-record helper functions that feed the typed emitter.
-//
-// Tests are split into two categories:
-//   1. Pure helper functions (no ctx required) — runnable in type-check mode
-//   2. Typed emitter entry points (require live compiler ctx) — validated by
-//      compiling a real browser-target app in the CI integration test.
-//
-// To type-check:
-//   cat tests/test_expand.cln src/main.cln > /tmp/combined.cln && cln check /tmp/combined.cln
-//
-// (test file must come first so start: appears before functions:)
-// Note: v1 expand_block and compile_url/compile_send_url no longer exist.
-//       Tests that called those functions are now covered by the new
-//       compile_url_segments / compile_send_url_segments helpers and by
-//       the CI smoke compile (tests/test_app/).
+// Tests for the frame.client plugin's DSL parser and URL helpers
+// (plugin-internal). scripts/test-plugins.sh combines this file with
+// src/main.cln and runs it, so the functions below call the plugin's own
+// string-level helpers directly; a failed assert() stops the run. The typed
+// emitters (expand_*_typed) need the compiler's emission context and are
+// covered by tests/framework/unit/plugins/client/ and the browser runtime
+// test (runtime/tests/client-runtime.test.mjs).
 
 start:
 	// ---- parse_load_decl ----
@@ -24,6 +14,7 @@ start:
 	test_parse_decl_missing_from()
 	// ---- get_field ----
 	test_get_field()
+	test_record_separators_in_values()
 	// ---- compile_url_segments ----
 	test_compile_url_segments_static()
 	test_compile_url_segments_interpolated()
@@ -41,6 +32,8 @@ start:
 	test_parse_form_field_optional()
 	test_parse_form_field_default()
 	test_parse_form_field_on_line_skipped()
+	test_parse_form_field_required_word_only()
+	test_success_actions()
 	// ---- parse_send_name ----
 	test_parse_send_name()
 	// ---- parse_send_method ----
@@ -49,11 +42,6 @@ start:
 	test_parse_send_url()
 
 functions:
-	// Minimal assert helper — prints a failure message if condition is false.
-	void assert(boolean condition)
-		if condition == false
-			print("FAIL")
-
 	// ======== parse_load_decl tests ========
 
 	void test_parse_decl_basic()
@@ -90,6 +78,17 @@ functions:
 		assert(get_field(record, 3) == "handler")
 		// Out of bounds returns ""
 		assert(get_field(record, 4) == "")
+
+	// A "~" or "|" in a value (a default, a URL) does not split the record.
+	void test_record_separators_in_values()
+		string rec = parse_form_field("note default=\"a~b|c%7E\"")
+		assert(get_field(rec, 0) == "note")
+		assert(get_field(rec, 1) == "false")
+		assert(get_field(rec, 2) == "a~b|c%7E")
+		string decl = parse_load_decl("x from \"/api/a~b|c\" at \"d~e\"")
+		assert(get_field(decl, 1) == "/api/a~b|c")
+		assert(get_field(decl, 2) == "d~e")
+		assert(decl.indexOf("|") == -1)
 
 	// ======== compile_url_segments tests ========
 	// compile_url_segments returns "static:TEXT" or "static:A|query:FIELD|static:B" etc.
@@ -173,6 +172,19 @@ functions:
 		// Lines starting with "on " are not fields
 		string rec = parse_form_field("on success: clear")
 		assert(rec == "")
+
+	// `required` inside the default's text does not make the field required.
+	void test_parse_form_field_required_word_only()
+		assert(get_field(parse_form_field("note default=\"not required\""), 1) == "false")
+		assert(get_field(parse_form_field("note default=\"x\" required"), 1) == "true")
+		assert(get_field(parse_form_field("requiredness"), 1) == "false")
+
+	// on success: `clear` is a word of its own; an emit callback named
+	// clearCache is not the clear action.
+	void test_success_actions()
+		assert(has_word(without_quoted("clear emit \"created\""), "clear"))
+		assert(has_word(without_quoted("emit \"clearCache\""), "clear") == false)
+		assert(has_word(without_quoted("emit \"clear\""), "clear") == false)
 
 	// ======== parse_send_name tests ========
 

@@ -1,86 +1,66 @@
 // Pattern: live-search
-// Use when: a search/filter input that should narrow results as the user types
-// Anti-pattern: DON'T fire a server request on every keystroke.
-//   Debounce: wait 300ms after the user stops typing before sending the request.
-//   Use cl-iterate to re-render the result list without a full page reload.
-// Requires: frame.client plugin for client-side API calls
+// Use when: a search or filter input that should narrow results as the user types
+// Anti-pattern: re-fetching on every keystroke — debounce the input (search only
+//   300ms after the user stops typing) and render the results with cl-iterate
+//   into the result list, without a full page reload.
+// Target: browser (compile with --target browser). The server side is an
+//   ordinary endpoint, e.g. GET "/api/search/users?q=..." returning
+//   {"results":[{"id":1,"name":"Ann","email":"ann@example.com"}]} with at most 10 rows.
 
 plugins:
 	frame.ui
-	frame.server
-	frame.data
+	frame.client
 
-endpoints:
-	GET "/api/search/users":
-		string q = req.query.q
-		if q.length() < 2
-			return jsonResponse("{\"results\": []}")
+start:
+	integer s = ui.updateElement("#search-host", renderSearch())
 
-		any results = User.find:
-			where:
-				name like q
-			order:
-				name asc
-			limit:
-				10
+state:
+	string query = ""
+	integer pendingTimers = 0
 
-		return jsonResponse("{\"results\": " + results + "}")
+functions:
+	string renderSearch()
+		html:
+			<div class="live-search">
+				<input class="search-input" type="search" placeholder="Search users" oninput="queryChanged">
+				<p id="search-status"></p>
+				<ul id="search-results"></ul>
+			</div>
 
-component: tag="live-search"
-	inputs:
-		string placeholder = "Search..."
-		string api_url = "/api/search/users"
+	// Debounce: every keystroke starts a 300ms timer and counts it. Only the
+	// timer of the last keystroke finds the count back at zero and searches.
+	void queryChanged()
+		query = ui.eventValue()
+		pendingTimers = pendingTimers + 1
+		integer t = ui.setTimeout("runSearch", 300)
 
-	state:
-		list results = []
-		boolean loading = false
-		string query = ""
-		integer debounce_timer = 0
+	void runSearch()
+		pendingTimers = pendingTimers - 1
+		if pendingTimers > 0
+			return
+		if query.trim().length() < 2
+			showResults("", "")
+			return
+		showStatus("Searching...")
+		later res = api.get("/api/search/users?q=" + http.encodeUrl(query))
+		if res.ok
+			showResults(renderResults(res.body), "")
+		else
+			showResults("", "Search failed (" + res.status.toString() + ")")
 
-	events:
-		// Debounce: cancel previous timer, start a new 300ms countdown
-		void onInput()
-			state.query = ui.inputValue(".search-input")
-			state.loading = true
-			state.results = []
+	// cl-iterate renders one <li> per result; only the list is replaced.
+	string renderResults(string body)
+		list<any> results = json.textToData(body).results
+		html:
+			<li cl-iterate="user in results">
+				<a href="/users/{user.id}">{user.name}</a>
+				<span class="email">{user.email}</span>
+			</li>
+			<li cl-if="results.length() == 0" class="no-results">No matches</li>
 
-			// Cancel previous pending search
-			if state.debounce_timer != 0
-				_ui_set_timeout("cancelTimer", 0)
+	void showResults(string items, string status)
+		integer s = ui.updateElement("#search-results", items)
+		showStatus(status)
 
-			// Schedule search after 300ms of inactivity
-			ui.setTimeout("doSearch", 300)
-
-		void doSearch()
-			if state.query.length() < 2
-				state.results = []
-				state.loading = false
-				return
-
-			string url = inputs.api_url + "?q=" + state.query
-			any data = api.get(url)
-			state.results = data.results
-			state.loading = false
-
-	html:
-		<div class="live-search">
-			<input
-				class="search-input"
-				type="search"
-				placeholder="{inputs.placeholder}"
-				oninput="onInput"
-			>
-
-			<div class="search-spinner" cl-show="state.loading">Searching...</div>
-
-			<ul class="search-results" cl-show="state.results.length() > 0">
-				<li cl-iterate="state.results">
-					<a href="/users/{item.id}">{item.name}</a>
-					<span class="email">{item.email}</span>
-				</li>
-			</ul>
-
-			<p class="no-results" cl-show="state.query.length() >= 2 and state.results.length() == 0 and state.loading == false">
-				No results for "{state.query}"
-			</p>
-		</div>
+	void showStatus(string text)
+		integer s = ui.updateElement("#search-status", text)

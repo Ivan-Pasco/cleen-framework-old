@@ -44,6 +44,23 @@ send = { expand = "expand_block_typed", version = 3 }
 # v1 `expand` entry is NOT listed here — v3-only plugin.wasm has no v1 exports.
 # The compiler dispatches to expand_block_typed via [blocks] entries.
 get_keywords = "get_keywords"
+# assemble.md — records build_state["frame.client.loaded"] so frame.ui adds
+# the client runtime script (/frame-client.js, below) to the pages it gives
+# the browser runtime.
+assemble = "assemble_typed"
+
+# Plugin Contracts v2 — foundation/spec/framework/contracts/artifacts.md §4.2.
+# The browser side of the api.* / live.* / feed.* bridges (runtime/bridge.js),
+# copied next to the build output and served at /frame-client.js. Pages load
+# it right after frame.ui's /loader.js.
+[[artifacts]]
+name            = "frame-client.js"
+purpose         = "static_asset"
+static_path     = "runtime/bridge.js"
+output_relative = "{output_dir}/frame-client.js"
+required_when   = "always"
+public          = true
+content_type    = "application/javascript"
 
 # Bridge function declarations
 #
@@ -60,6 +77,14 @@ get_keywords = "get_keywords"
 # the host bridge layer.
 [bridge]
 functions = [
+  # Build-state keystore (lifecycle.md §2.5), provided by the compiler's
+  # plugin sandbox; same declaration as frame.ui's.
+  { name = "_build_state_set", params = ["string", "string"], returns = "void", description = "Persist a key-value pair into the compiler-owned build_state keystore.", expand_strings = true, hosts = ["all"] },
+
+  # Percent-encoding for {placeholder} values in load:/send: URLs (registry
+  # entry http_encode_url; same declaration as frame.server's).
+  { name = "http_encode_url", params = ["string"], returns = "string", description = "Percent-encode a string for safe use in a URL", expand_strings = true, hosts = ["all"] },
+
   # ========== API: HTTP Requests ==========
   { name = "_api_get", params = ["string", "string"], returns = "integer", description = "GET request: url, response handler name (exported function)", expand_strings = true, hosts = ["browser"] },
   { name = "_api_post", params = ["string", "string", "string"], returns = "integer", description = "POST request: url, body, response handler name", expand_strings = true, hosts = ["browser"] },

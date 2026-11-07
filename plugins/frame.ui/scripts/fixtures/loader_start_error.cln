@@ -1,0 +1,9 @@
+// Fixture for test_loader_runtime.mjs — start: fails; the page's error
+// boundaries show their fallback.
+
+plugins:
+	frame.ui
+
+start:
+	integer s = ui.updateElement("#out", "before")
+	error("boom-message")
