@@ -1,0 +1,18 @@
+// Fixture for test_loader_runtime.mjs — host strings and module strings
+// share one heap. ui.getText returns host-written strings; the concatenations
+// and the list are module allocations made after them. If the host did not
+// advance __heap_ptr past its own strings, the module would allocate over
+// them and the result written to #out would be corrupted.
+
+plugins:
+	frame.ui
+
+start:
+	string a = ui.getText("#src")
+	string b = a + "-tail-from-wasm-concat"
+	list<string> items = []
+	items.add(a)
+	items.add("x")
+	string c = ui.getText("#src2")
+	string d = a.substring(0, 10) + a.toUpperCase()
+	integer s = ui.updateElement("#out", items.get(0) + "|" + b + "|" + c + "|" + d)

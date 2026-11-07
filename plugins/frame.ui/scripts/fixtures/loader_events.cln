@@ -1,0 +1,38 @@
+// Fixture for test_loader_runtime.mjs — ui.onEvent registrations: one
+// handler on a passive wheel listener and one on a regular one, a click
+// handler, timers and an iframe message handler. Each handler appends to
+// #log.
+
+plugins:
+	frame.ui
+
+start:
+	integer s = ui.onEvent(".area", "wheel:passive", "onPassiveWheel")
+	s = ui.onEvent(".area", "wheel", "onWheel")
+	s = ui.onEvent(".area", "click", "onAreaClick")
+	s = ui.iframeOnMessage("onFrameMessage")
+	s = ui.setTimeout("failingTimer", 0)
+	s = ui.setTimeout("laterTimer", 5)
+
+functions:
+	void note(string what)
+		string before = ui.getText("#log")
+		integer s = ui.updateElement("#log", before + what + ";")
+
+	void onPassiveWheel()
+		note("passive")
+
+	void onWheel()
+		note("wheel")
+
+	void onAreaClick()
+		note("click")
+
+	void onFrameMessage(string origin, string data)
+		note("msg:" + data)
+
+	void failingTimer()
+		error("timer-failed")
+
+	void laterTimer()
+		note("later")
