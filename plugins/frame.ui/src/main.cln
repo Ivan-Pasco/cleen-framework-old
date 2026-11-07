@@ -407,7 +407,9 @@ functions:
 		integer __gsi = 0
 		while __gsi < source_files.length()
 			string __gsf = source_files[__gsi]
-			string __gsc = extract_json_field(__gsf, "content")
+			// The content is JSON-escaped and may hold `\"`; read it whole and
+			// decode it so routes: lines are real, tab-indented lines.
+			string __gsc = decode_json_string(extract_json_field_escaped(__gsf, "content"))
 			__routes_guard_table = scan_routes_guards(__gsc, __routes_guard_table)
 			__gsi = __gsi + 1
 
@@ -434,6 +436,23 @@ functions:
 			if __rmp.endsWith(".cln") and __rmp.indexOf("pages/") != -1 and (__rmf.indexOf("any load(") != -1 or __rmf.indexOf("any guard(") != -1)
 				routed_modules = routed_modules + derive_module_name(__rmp) + ","
 			__rmi = __rmi + 1
+
+		// -------- Phase 1c: <page auth / roles> (UI-B014..B016) --------
+		// The checks are emitted into the page's route render function and
+		// read the session through frame.server's auth bridges, so a page that
+		// declares them needs frame.server — without it nothing would enforce
+		// the declaration.
+		integer __pai = 0
+		while __pai < source_files.length()
+			string __paf = source_files[__pai]
+			string __pap = extract_json_field(__paf, "path")
+			if __pap.endsWith(".html") and __pap.indexOf("pages/") != -1
+				string __pa_err = page_access_error(decode_json_string(extract_json_field_escaped(__paf, "content")), has_server)
+				if __pa_err != ""
+					plugin_error(ctx, "FRAME-UI-E006", __pap + ": " + __pa_err)
+					_ctx_clear_error(ctx)
+					return 0
+			__pai = __pai + 1
 
 		// -------- Phase 2: walk pages, accumulate per-kind pieces --------
 		// route_registrations: source string of `_http_route(...)` statements,
@@ -517,7 +536,9 @@ functions:
 							// registering the page too would replace the
 							// endpoint's handler in the server router.
 							if explicit_gets.indexOf("|" + normalize_route(url) + "|") == -1
-								route_fn_defs = route_fn_defs + page_render_fn(module_name, url, derive_html_path(file_path), has_load, has_guard, __routes_guard_table)
+								string page_html_path = derive_html_path(file_path)
+								string page_html = page_source(source_files, page_html_path)
+								route_fn_defs = route_fn_defs + page_render_fn(module_name, url, page_html_path, has_load, has_guard, __routes_guard_table, page_html)
 								route_registrations = route_registrations + "\t_http_route(\"GET\", \"" + url + "\", \"" + module_name + "_render\")\n"
 								pages_emitted = pages_emitted + 1
 			fi = fi + 1
@@ -538,7 +559,7 @@ functions:
 				if routed_modules.indexOf("," + h_module + ",") == -1 and route_registrations.indexOf("\"" + h_module + "_render\"") == -1
 					string h_url = derive_url_path(h_path)
 					if explicit_gets.indexOf("|" + normalize_route(h_url) + "|") == -1
-						route_fn_defs = route_fn_defs + page_render_fn(h_module, h_url, derive_html_path(h_path), false, false, __routes_guard_table)
+						route_fn_defs = route_fn_defs + page_render_fn(h_module, h_url, derive_html_path(h_path), false, false, __routes_guard_table, decode_json_string(extract_json_field_escaped(h_obj, "content")))
 						route_registrations = route_registrations + "\t_http_route(\"GET\", \"" + h_url + "\", \"" + h_module + "_render\")\n"
 						pages_emitted = pages_emitted + 1
 			hi = hi + 1
@@ -3164,14 +3185,16 @@ functions:
 		return out
 
 	// One page render function (functions:-block indent): routes-guard role
-	// check, companion guard(request) / load(request), then the page rendered
+	// check, the page's own <page auth / roles> checks (UI-B015 / UI-B016),
+	// companion guard(request) / load(request), then the page rendered
 	// with the load result as its data. The companion receives the current
 	// request (frame-ui.ebnf companion_load_fn; frame-ui-semantics UI-C007).
-	string page_render_fn(string module_name, string url, string html_path, boolean has_load, boolean has_guard, string guard_table)
+	string page_render_fn(string module_name, string url, string html_path, boolean has_load, boolean has_guard, string guard_table, string page_html)
 		string body = ""
 		string roles = lookup_routes_guard(url, guard_table)
 		if roles.length() > 0
 			body = body + emit_routes_guard_check(roles)
+		body = body + emit_page_access_check(extract_page_attr(page_html, "auth"), extract_page_attr(page_html, "roles"))
 		if has_load or has_guard
 			body = body + emit_page_request(url)
 		if has_guard
@@ -3214,6 +3237,65 @@ functions:
 		b = b + "\t\tany __rsd = json.decode(__rs)\n"
 		b = b + "\t\t__ra = { loggedIn: true, userId: __rsd.user_id, role: __rsd.role }\n"
 		b = b + "\tany __req = { params: __rp, path: _req_path(), method: _req_method(), headers: __rh, ip: _req_ip(), body: _req_body(), auth: __ra }\n"
+		return b
+
+	// Decoded content of the project file at rel_path (a path relative to
+	// the project, e.g. app/ui/web/pages/a.html); "" when there is none.
+	string page_source(list<string> source_files, string rel_path)
+		integer i = 0
+		while i < source_files.length()
+			string f = source_files[i]
+			if extract_json_field(f, "path").endsWith(rel_path)
+				return decode_json_string(extract_json_field_escaped(f, "content"))
+			i = i + 1
+		return ""
+
+	// Why a page's <page auth / roles> declaration cannot be compiled, ""
+	// when it can (or the page declares neither).
+	string page_access_error(string html, boolean has_server)
+		string auth = extract_page_attr(html, "auth")
+		string roles = extract_page_attr(html, "roles")
+		if auth != "" and auth != "required" and auth != "guest" and auth != "none"
+			return "<page auth=\"" + auth + "\"> — auth must be required, guest or none (frame-ui-semantics UI-B014)"
+		list<string> role_list = roles.split(",")
+		integer i = 0
+		while i < role_list.length()
+			string role = role_list[i].trim()
+			if role.length() > 0 and is_plain_identifier(role.replace("-", "_")) == false
+				return "<page roles=\"" + roles + "\"> — each role must be a name (letters, digits, _ or -)"
+			i = i + 1
+		boolean enforced = auth == "required" or auth == "guest" or roles.trim().length() > 0
+		if enforced and has_server == false
+			return "<page auth / roles> needs frame.server, whose session bridges enforce it before the page is served (frame-ui-semantics UI-B015 / UI-B016); add frame.server to the plugins"
+		return ""
+
+	// <page auth / roles> checks at the top of a page's route render function
+	// (function-body indent), before the companion guard() / load():
+	//   auth="required" — no session: redirect to /login (UI-B015)
+	//   auth="guest"    — a session: redirect to / (UI-B015)
+	//   roles="a,b"     — the user holds none of the roles: redirect to
+	//                     /forbidden (UI-B016)
+	string emit_page_access_check(string auth, string roles)
+		string b = ""
+		if auth == "required"
+			b = b + "\tif _auth_require_auth() == 0\n"
+			b = b + "\t\treturn redirect(\"/login\")\n"
+		if auth == "guest"
+			b = b + "\tif _auth_require_auth() == 1\n"
+			b = b + "\t\treturn redirect(\"/\")\n"
+		string role_checks = ""
+		list<string> role_list = roles.split(",")
+		integer i = 0
+		while i < role_list.length()
+			string role = role_list[i].trim()
+			if role.length() > 0
+				role_checks = role_checks + "\tif _auth_require_role(\"" + role + "\") == 1\n"
+				role_checks = role_checks + "\t\t__page_role_ok = true\n"
+			i = i + 1
+		if role_checks.length() > 0
+			b = b + "\tboolean __page_role_ok = false\n" + role_checks
+			b = b + "\tif __page_role_ok == false\n"
+			b = b + "\t\treturn redirect(\"/forbidden\")\n"
 		return b
 
 	string lookup_routes_guard(string url, string table)

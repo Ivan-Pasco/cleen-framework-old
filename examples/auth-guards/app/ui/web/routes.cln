@@ -1,0 +1,5 @@
+// Cross-cutting page guards (frame-server.ebnf §10.2): every page under
+// /admin/ needs the admin role; anyone else gets 401.
+
+routes:
+	guard: "/admin/*" [admin]

@@ -1,0 +1,14 @@
+// Authentication configuration — signed bearer tokens and role permissions.
+// Requests carry `Authorization: Bearer <jwt>`; the token's `role` claim is
+// what the endpoint guards, the routes: guard and <page roles> check.
+
+auth:
+	jwt:
+		secret = env.get("JWT_SECRET")
+		alg = "HS256"
+		ttlMinutes = 60
+
+	roles:
+		admin: ["*"]
+		editor: ["post.publish"]
+		user: ["post.read"]

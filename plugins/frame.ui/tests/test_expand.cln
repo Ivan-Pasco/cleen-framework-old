@@ -21,6 +21,8 @@ start:
 	test_attribute_lookup()
 	test_template_errors()
 	test_validate_rules()
+	test_routes_guards()
+	test_page_access()
 
 functions:
 	// html: without var= builds __html and returns it (UI-P004).
@@ -159,3 +161,35 @@ functions:
 		assert(req.contains("if name.trim().length() == 0\n"))
 		string email = html_to_stmts("<input cl-validate=\"email\" cl-bind=\"mail\">", "h", true, "\{\}", false)
 		assert(email.contains("if mail.indexOf(\"@\") == -1 or mail.indexOf(\".\") == -1\n"))
+
+	// routes: guard: lines are read from decoded source (real tabs).
+	void test_routes_guards()
+		string table = scan_routes_guards("routes:\n\tguard: \"/admin/*\" [admin, ops]\n\tguard: \"/a/**\" [x]\n", "")
+		assert(table == "/admin/*|admin,ops;/a/**|x")
+		assert(lookup_routes_guard("/admin/panel", table) == "admin,ops")
+		assert(lookup_routes_guard("/admin", table) == "")
+		assert(lookup_routes_guard("/a/b/c", table) == "x")
+		string fn = page_render_fn("pages_admin_panel", "/admin/panel", "app/ui/web/pages/admin/panel.html", false, false, table, "")
+		assert(fn.contains("\t\tif _auth_require_role(\"ops\") == 1\n"))
+		assert(fn.contains("\t\t\treturn unauthorized()\n"))
+
+	// <page auth / roles> checks (UI-B015 / UI-B016) and their validation.
+	void test_page_access()
+		string required = emit_page_access_check("required", "")
+		assert(required == "\tif _auth_require_auth() == 0\n\t\treturn redirect(\"/login\")\n")
+		string guest = emit_page_access_check("guest", "")
+		assert(guest == "\tif _auth_require_auth() == 1\n\t\treturn redirect(\"/\")\n")
+		string roles = emit_page_access_check("", "editor, admin")
+		assert(roles.contains("\tif _auth_require_role(\"editor\") == 1\n\t\t__page_role_ok = true\n"))
+		assert(roles.contains("\tif _auth_require_role(\"admin\") == 1\n"))
+		assert(roles.endsWith("\tif __page_role_ok == false\n\t\treturn redirect(\"/forbidden\")\n"))
+		assert(emit_page_access_check("none", "") == "")
+		string page = "<page auth=\"required\" roles=\"admin\" /><html><body>x</body></html>"
+		string fn = page_render_fn("pages_secret", "/secret", "app/ui/web/pages/secret.html", false, false, "", page)
+		assert(fn.indexOf("redirect(\"/login\")") != -1 and fn.indexOf("redirect(\"/login\")") < fn.indexOf("_ui_render_page"))
+		assert(page_access_error(page, true) == "")
+		assert(page_access_error(page, false).contains("needs frame.server"))
+		assert(page_access_error("<page auth=\"maybe\" />", true).contains("auth must be required, guest or none"))
+		assert(page_access_error("<page roles=\"a\\\"b\" />", true).contains("each role must be a name"))
+		assert(page_access_error("<p>no page tag</p>", false) == "")
+
