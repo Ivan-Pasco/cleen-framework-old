@@ -14,6 +14,9 @@ start:
 	test_string_escaping()
 	test_jwt_validation()
 	test_session_validation()
+	test_config_spacing_and_comments()
+	test_sections_end_at_any_sibling()
+	test_settings_are_checked()
 
 functions:
 	void test_keywords()
@@ -65,3 +68,43 @@ functions:
 		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"None\"\n").contains("requires secure=true"))
 		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"None\"\n\t\tsecure = true\n") == "")
 		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"Lax\"\n") == "")
+
+	void test_config_spacing_and_comments()
+		// Any spacing around `=`; a trailing comment is not part of the value.
+		string sess = "secure=false\nhttpOnly =  true   // inaccessible to JS\ncookie= \"a//b\"\ntimeoutMinutes = 480  // 8 hours"
+		assert(get_config_value(sess, "secure", "true") == "false")
+		assert(get_config_value(strip_comment("httpOnly =  true   // inaccessible to JS").trim(), "httpOnly", "") == "true")
+		// extract_subblock strips comments; a `//` inside a string stays.
+		string cfg = "\tsession:\n\t\tsecure=false\n\t\tcookie= \"a//b\"\n\t\ttimeoutMinutes = 480  // 8 hours\n"
+		string block = extract_subblock(cfg, "session:")
+		assert(get_config_value(block, "secure", "true") == "false")
+		assert(get_config_value(block, "cookie", "") == "a//b")
+		assert(get_config_value(block, "timeoutMinutes", "60") == "480")
+		// A key does not match a longer key that starts with it.
+		assert(get_config_value("secureCookie = false", "secure", "true") == "true")
+
+	void test_sections_end_at_any_sibling()
+		string cfg = "\tsession:\n\t\tcookie = \"app.sid\"\n\tcsrf:\n\t\tenabled = false\n\tjwt:\n\t\tsecret = env.get(\"S\")\n\t\tenabled = false\n"
+		string sess = extract_subblock(cfg, "session:")
+		assert(sess == "cookie = \"app.sid\"")
+		assert(extract_subblock(cfg, "csrf:") == "enabled = false")
+		string jwt = extract_subblock(cfg, "jwt:")
+		assert(get_config_value(jwt, "enabled", "true") == "false")
+		// The session section does not pick up csrf:'s `enabled`.
+		assert(get_config_value(sess, "enabled", "none") == "none")
+
+	void test_settings_are_checked()
+		// `key: value` is not the setting syntax.
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tcookie: \"x\"\n").contains("write `key = value`"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tcokie = \"x\"\n").contains("unknown setting `cokie`"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tsecure = yes\n").contains("must be true or false"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\ttimeoutMinutes = 1h\n").contains("whole number"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tsameSite = \"Loose\"\n").contains("sameSite must be"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\tstore = \"redis\"\n").contains("store is not supported"))
+		assert(validate_block("auth", "{}", "\tcsrf:\n\t\tenabled = maybe\n").contains("must be true or false"))
+		assert(validate_block("auth", "{}", "\ttenant:\n\t\theader = \"X-Tenant\"\n").contains("header is not supported"))
+		assert(validate_block("auth", "{}", "\ttenant:\n\t\tfield = \"orgId\"\n") == "")
+		assert(validate_block("auth", "{}", "\tcookie = \"x\"\n").contains("unexpected line"))
+		// A fully commented setting line is fine.
+		assert(validate_block("auth", "{}", "\tsession:\n\t\t// cookie = \"x\"\n\t\tcookie = \"y\"   // name\n") == "")
+		assert(validate_block("auth", "{}", "\tjwt:\n\t\tenabled = false\n\t\tsecret = \"plain\"\n").contains("must reference an environment variable"))

@@ -1,0 +1,50 @@
+// Test: frame.auth — every auth: setting is honoured, whatever its spacing.
+// Grammar: frame-auth.ebnf session_field, jwt_section, csrf_section
+// Regression: a setting was found only as `key = value` with single spaces
+// (`timeoutMinutes=5` kept the default), a section ran on into a following
+// csrf: section (jwt: picked up csrf:'s `enabled = false`), and the tenant:
+// field setting was stored but never read (auth.tenant.getId() always read
+// the tenantId claim).
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie="cfg.sid"
+		timeoutMinutes=5   // minutes of inactivity
+	jwt:
+		secret = env.get("JWT_SECRET")
+	csrf:
+		enabled = false
+	tenant:
+		field = "orgId"
+
+endpoints:
+	GET "/test":
+		string sid = auth.session.create(7, "{\"role\":\"user\",\"orgId\":\"acme\"}")
+		boolean ok_session = sid.length() > 0
+
+		// tenant: field = "orgId" names the claim holding the tenant id.
+		boolean ok_tenant = auth.tenant.getId() == "acme"
+		boolean ok_matches = auth.tenant.matches("acme")
+
+		// jwt: is still enabled although the next section says enabled = false.
+		string token = auth.jwt.sign("{\"sub\":7}")
+		boolean ok_jwt = token.length() > 0
+
+		// csrf: enabled = false turns validation off.
+		boolean ok_csrf_off = auth.csrf.validate("not-a-token")
+
+		if ok_session and ok_tenant and ok_matches and ok_jwt and ok_csrf_off
+			printl("PASS: auth-config-settings")
+		else
+			printl("FAIL: auth-config-settings session=" + ok_session.toString() + " tenant=" + ok_tenant.toString() + " matches=" + ok_matches.toString() + " jwt=" + ok_jwt.toString() + " csrf_off=" + ok_csrf_off.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] auth-config-settings server ready")

@@ -9,10 +9,12 @@ plugins:
 server:
 	port: 3400
 
+// Fixed: was `cookie: "test.sid"` / `timeoutMinutes: 5`; frame-auth.ebnf
+// session_field requires `key = value` (the colon form was silently ignored).
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 
 endpoints:
 	GET "/test":

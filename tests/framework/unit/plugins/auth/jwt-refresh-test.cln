@@ -9,15 +9,18 @@ plugins:
 server:
 	port: 3400
 
+// Fixed: was `key: value` lines with a hardcoded secret; frame-auth.ebnf
+// requires `key = value` and jwt_secret_field = env.get(...) (AUTH-C004).
+// The colon form was silently ignored.
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 	jwt:
-		secret: "test-secret-for-refresh-test-32bytes"
-		alg: "HS256"
-		ttlMinutes: 5
-		refreshTtlMinutes: 60
+		secret = env.get("JWT_SECRET")
+		alg = "HS256"
+		ttlMinutes = 5
+		refreshTtlMinutes = 60
 
 endpoints:
 	GET "/test":
