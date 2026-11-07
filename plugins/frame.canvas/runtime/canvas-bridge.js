@@ -630,7 +630,11 @@ class CanvasBridge {
           const intCycle = Math.floor(cycle);
           const frac = cycle - intCycle;
           if (v.repeat !== -1 && intCycle > v.repeat) {
+            // repeat=N plays N+1 times (CVS-A010); the last play is number
+            // N, which with yoyo runs backwards when N is odd and so ends
+            // at `from`.
             cycle = 1; v.done = true;
+            if (v.yoyo && (v.repeat % 2 === 1)) direction = -1;
           } else {
             cycle = frac;
             if (v.yoyo && (intCycle % 2 === 1)) direction = -1;

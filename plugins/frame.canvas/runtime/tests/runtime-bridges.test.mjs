@@ -368,6 +368,24 @@ test('tweens: a NaN from= starts at the variable value when the tween plays (CVS
   eq(bridge.canvasVars.get('x'), 20, 'finished');
 });
 
+test('tweens: repeat=N plays N+1 times; with yoyo every odd play runs back (CVS-A010)', () => {
+  const { loader, env, bridge } = freshLoader();
+  const define = (name, repeat, yoyo) => env._tween_define_var(...raw(loader, name), ...raw(loader, 'v' + name), 0, 10, 1, ...raw(loader, 'linear'), repeat, yoyo, 0, ...raw(loader, ''));
+  const run = (name, steps) => {
+    env._tween_play(...raw(loader, name));
+    const seen = [];
+    for (const dt of steps) { bridge._updateAnimations(dt); seen.push(bridge.canvasVars.get('v' + name)); }
+    return seen;
+  };
+  define('a', 1, 1);
+  eq(run('a', [0.5, 0.5, 0.5, 0.6]), [5, 10, 5, 0], 'repeat=1 yoyo: out and back, ends at from');
+  eq(bridge.namedTweens.get('a').state, 'stopped', 'repeat=1 yoyo stops after two plays');
+  define('b', 2, 1);
+  eq(run('b', [0.5, 1, 1, 0.75]), [5, 5, 5, 10], 'repeat=2 yoyo: out, back, out — ends at to');
+  define('c', 1, 0);
+  eq(run('c', [0.5, 1, 0.75]), [5, 5, 10], 'repeat=1 without yoyo restarts each play and ends at to');
+});
+
 test('particles: config from _particles_define_json drives spawn ranges', () => {
   const { loader, env, bridge } = freshLoader();
   const cfg = { lifeMin: 1, lifeMax: 1, speedMin: 10, speedMax: 10, angleMin: -90, angleMax: -90, sizeMin: 4, sizeMax: 4, color: '#fff', burst: 3 };
