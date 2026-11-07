@@ -1677,53 +1677,116 @@ functions:
 
 	// particles "name": (§10) -> _particles_define_json. The JSON is built at
 	// run time so attribute values may be expressions. Keys are the runtime's
-	// particle config (canvas-bridge.js _spawnParticle).
+	// particle config (canvas-bridge.js _spawnParticle). Each sub-block has
+	// its own keys (frame-canvas.ebnf §10): top-level attributes (and the
+	// `initial:` block, CVS-P008) describe one particle, `emitter:` the
+	// spawn rate and area, `overLifetime:` start / end ramps, `forces:` the
+	// forces on live particles.
 	integer declare_particles(integer ctx, integer arr, string name, string sub)
 		string json = clean_str("{\"name\":" + "\"" + json_escape(name) + "\"")
+		integer base = scene_base_indent(sub)
 		integer p = 0
 		while p < sub.length()
 			integer le = scene_line_end(sub, p)
-			string t = sub.substring(p, le).trim()
-			string key = line_key(t)
-			string v = line_value(t)
-			if key == "turbulence"
-				string ta = t.substring(key.length(), t.length()).trim()
-				json = json_num(json, "turbulenceStrength", get_iexpr(ta, "strength"))
-				json = json_num(json, "turbulenceScale", get_iexpr(ta, "scale"))
-			else if key == "wind" or key == "attractor"
-				string fa = t.substring(key.length(), t.length()).trim()
-				json = json_num(json, key + "X", get_iexpr(fa, "x"))
-				json = json_num(json, key + "Y", get_iexpr(fa, "y"))
-				if key == "attractor"
-					json = json_num(json, "attractorStrength", get_iexpr(fa, "strength"))
-			else if t.indexOf("=") != -1 and v != "" and t.startsWith("//") == false
-				integer arrow = v.indexOf("->")
-				integer dots = v.indexOf("..")
-				if arrow != -1
-					// overLifetime ramp: start -> end
-					if key == "size" or key == "alpha"
-						json = json_num(json, key + "Start", v.substring(0, arrow))
-						json = json_num(json, key + "End", v.substring(arrow + 2, v.length()))
-				else if key == "lifetime" or key == "speed" or key == "angle" or key == "size" or key == "radius"
-					string jk = key
-					if key == "lifetime"
-						jk = "life"
-					if key == "radius"
-						jk = "size"
-					if dots != -1
-						json = json_num(json, jk + "Min", v.substring(0, dots))
-						json = json_num(json, jk + "Max", v.substring(dots + 2, v.length()))
+			string line = sub.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if t.length() > 0 and t.startsWith("//") == false and scene_indent(line) == base
+				integer ce = scene_child_end(sub, p, base)
+				if ce > nxt
+					nxt = ce
+				string child = ""
+				if ce > le + 1
+					child = sub.substring(le + 1, ce)
+				if t.endsWith(":")
+					string section = t.substring(0, t.length() - 1).trim()
+					if section == "emitter" or section == "overLifetime" or section == "forces" or section == "initial"
+						json = particle_section(ctx, json, section, child, name)
 					else
-						json = json_num(json, jk + "Min", v)
-						json = json_num(json, jk + "Max", v)
-				else if key == "rate" or key == "burst" or key == "gravity" or key == "drag"
-					json = json_num(json, key, v)
-				else if (key == "color" or key == "shape" or key == "image") and v.startsWith("\"")
-					json = json + " + " + clean_str(",\"" + key + "\":") + " + " + clean_str("\"" + json_escape(v.substring(1, v.length() - 1)) + "\"")
-			p = le + 1
+						plugin_error(ctx, "FRAME-CANVAS-E720", "particles \"" + name + "\": unknown sub-block '" + t + "' (frame-canvas.ebnf §10: emitter:, overLifetime:, forces:)")
+				else
+					json = particle_attr(ctx, json, "particle", t, name)
+			p = nxt
 		json = json + " + " + clean_str("}")
 		_batch_arrayPush(ctx, arr, bcc2(ctx, "_particles_define_json", sl(ctx, name), ue(ctx, json)))
 		return 0
+
+	string particle_section(integer ctx, string json, string section, string body, string name)
+		string mode = section
+		if section == "initial"
+			mode = "particle"
+		string out = json
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string t = body.substring(p, le).trim()
+			if t.length() > 0 and t.startsWith("//") == false
+				out = particle_attr(ctx, out, mode, t, name)
+			p = le + 1
+		return out
+
+	// Append the config keys of one particles line `t` read in sub-block
+	// `mode` (particle, emitter, overLifetime, forces).
+	string particle_attr(integer ctx, string json, string mode, string t, string name)
+		string key = line_key(t)
+		string v = line_value(t)
+		if mode == "forces"
+			if key == "turbulence"
+				string ta = t.substring(key.length(), t.length()).trim()
+				string j = json_num(json, "turbulenceStrength", get_iexpr(ta, "strength"))
+				return json_num(j, "turbulenceScale", get_iexpr(ta, "scale"))
+			if key == "wind" or key == "attractor"
+				string fa = t.substring(key.length(), t.length()).trim()
+				string j2 = json_num(json, key + "X", get_iexpr(fa, "x"))
+				j2 = json_num(j2, key + "Y", get_iexpr(fa, "y"))
+				if key == "attractor"
+					j2 = json_num(j2, "attractorStrength", get_iexpr(fa, "strength"))
+				return j2
+			if key == "gravity" or key == "drag"
+				return json_num(json, key, v)
+		else if mode == "emitter"
+			if key == "rate" or key == "burst"
+				return json_num(json, key, v)
+			if key == "radius" or key == "width" or key == "height"
+				return json_num(json, "emitter" + key.substring(0, 1).toUpperCase() + key.substring(1, key.length()), v)
+			if key == "shape" and v.startsWith("\"")
+				return json_str(json, "emitterShape", v)
+		else if mode == "overLifetime"
+			// start -> end (CVS-P007) or start..end (frame-canvas.ebnf §10 value_range)
+			integer sep = v.indexOf("->")
+			integer sep_len = 2
+			if sep == -1
+				sep = v.indexOf("..")
+			if sep != -1
+				string first = v.substring(0, sep).trim()
+				string last = v.substring(sep + sep_len, v.length()).trim()
+				if key == "size" or key == "alpha" or key == "speed"
+					return json_num(json_num(json, key + "Start", first), key + "End", last)
+				if key == "color" and first.startsWith("\"") and last.startsWith("\"")
+					return json_str(json_str(json, "colorStart", first), "colorEnd", last)
+		else
+			if key == "lifetime" or key == "speed" or key == "angle" or key == "size"
+				string jk = key
+				if key == "lifetime"
+					jk = "life"
+				integer dots = v.indexOf("..")
+				if dots != -1
+					return json_num(json_num(json, jk + "Min", v.substring(0, dots)), jk + "Max", v.substring(dots + 2, v.length()))
+				return json_num(json_num(json, jk + "Min", v), jk + "Max", v)
+			if key == "radius"
+				// The particle radius: size is the particle's diameter.
+				string d = "(" + v + ") * 2.0"
+				return json_num(json_num(json, "sizeMin", d), "sizeMax", d)
+			if (key == "color" or key == "shape" or key == "image") and v.startsWith("\"")
+				return json_str(json, key, v)
+		plugin_error(ctx, "FRAME-CANVAS-E721", "particles \"" + name + "\": '" + t + "' is not a valid " + mode + " attribute (frame-canvas.ebnf §10)")
+		return json
+
+	// Append `,"key":"<text of the string literal lit>"` to a JSON-building expression.
+	string json_str(string json, string key, string lit)
+		string inner = lit.trim()
+		inner = inner.substring(1, inner.length() - 1)
+		return json + " + " + clean_str(",\"" + key + "\":") + " + " + clean_str("\"" + json_escape(inner) + "\"")
 
 	// Append `,"key":<number>` to a JSON-building expression.
 	string json_num(string json, string key, string value_src)

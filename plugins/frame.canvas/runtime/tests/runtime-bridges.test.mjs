@@ -470,6 +470,30 @@ test('particles: config from _particles_define_json drives spawn ranges', () => 
   eq([p.life, p.maxLife, p.size], [1, 1, 4], 'life and size from the config');
 });
 
+test('particles: emitter area, overLifetime speed and colour ramps', () => {
+  const { loader, env, bridge } = freshLoader();
+  const define = (name, cfg) => env._particles_define_json(...raw(loader, name), ...raw(loader, JSON.stringify({ lifeMin: 1, lifeMax: 1, speedMin: 0, speedMax: 0, burst: 40, ...cfg })));
+  define('ring', { emitterShape: 'circle', emitterRadius: 5 });
+  env._particles_emit(...raw(loader, 'ring'), 100, 100);
+  const ring = bridge.namedParticles.get('ring').emitters[0].particles;
+  ok(ring.every((p) => Math.hypot(p.x - 100, p.y - 100) <= 5 + 1e-9) && ring.some((p) => Math.hypot(p.x - 100, p.y - 100) > 0.5),
+    'circle emitter spawns inside its radius');
+  define('strip', { emitterShape: 'rect w=20 h=2' });
+  env._particles_emit(...raw(loader, 'strip'), 0, 0);
+  const strip = bridge.namedParticles.get('strip').emitters[0].particles;
+  ok(strip.every((p) => Math.abs(p.x) <= 10 && Math.abs(p.y) <= 1) && strip.some((p) => Math.abs(p.x) > 2), 'rect emitter with inline w= / h=');
+  define('point', {});
+  env._particles_emit(...raw(loader, 'point'), 7, 8);
+  ok(bridge.namedParticles.get('point').emitters[0].particles.every((p) => p.x === 7 && p.y === 8), 'point emitter (default)');
+  define('slow', { speedMin: 10, speedMax: 10, angleMin: 0, angleMax: 0, burst: 1, speedStart: 1, speedEnd: 0 });
+  env._particles_emit(...raw(loader, 'slow'), 0, 0);
+  bridge._updateAnimations(0.5);
+  const p = bridge.namedParticles.get('slow').emitters[0].particles[0];
+  ok(Math.abs(p.x - 2.5) < 1e-9, `speed multiplier halfway through life is 0.5 (moved ${p.x})`);
+  eq(bridge._lerpColor('#ffffff', '#000', 0.5), 'rgb(128, 128, 128)', 'colour ramp midpoint');
+  eq(bridge._lerpColor('red', '#000', 0.5), 'red', 'non-hex colour stays as given');
+});
+
 test('animState: onComplete moves to the next state when the clip finishes (CVS-A004)', () => {
   const { loader, env, bridge } = freshLoader();
   env._animsprite_define(...raw(loader, 'swing'), ...raw(loader, 'hero'), 0, 1, 10, 0);

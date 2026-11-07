@@ -752,8 +752,13 @@ class CanvasBridge {
           }
           // drag is a per-frame velocity multiplier (CVS-P009).
           if (sys.config.drag != null) { p.vx *= sys.config.drag; p.vy *= sys.config.drag; }
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
+          // overLifetime speed: a multiplier ramped from speedStart to speedEnd.
+          const k = p.maxLife > 0 ? 1 - p.life / p.maxLife : 1;
+          const s0 = cfg.speedStart != null ? cfg.speedStart : 1;
+          const s1 = cfg.speedEnd != null ? cfg.speedEnd : 1;
+          const m = s0 + (s1 - s0) * k;
+          p.x += p.vx * m * dt;
+          p.y += p.vy * m * dt;
         }
         // continuous emission
         if (em.continuous) {
@@ -795,11 +800,15 @@ class CanvasBridge {
 
   // Particle config keys (built by the plugin from a `particles` block):
   // lifeMin/lifeMax, speedMin/speedMax, angleMin/angleMax (degrees,
-  // 0 = right, -90 = up), sizeMin/sizeMax, color, shape, rate, burst,
-  // gravity, drag, windX/windY, attractorX/attractorY/attractorStrength,
+  // 0 = right, -90 = up), sizeMin/sizeMax (diameter), color, shape, rate,
+  // burst, gravity, drag, windX/windY, attractorX/attractorY/attractorStrength,
   // turbulenceStrength/turbulenceScale,
-  // alphaStart/alphaEnd, sizeStart/sizeEnd (multipliers).
+  // emitterShape ("point", "circle", "rect"; the shape string may carry
+  // `radius=` / `w=` / `h=`) with emitterRadius / emitterWidth / emitterHeight,
+  // alphaStart/alphaEnd, sizeStart/sizeEnd, speedStart/speedEnd
+  // (multipliers), colorStart/colorEnd (hex colours) — overLifetime ramps.
   _spawnParticle(x, y, cfg) {
+    [x, y] = this._spawnPoint(x, y, cfg);
     const pick = (min, max, dflt) => {
       const lo = cfg[min] != null ? cfg[min] : dflt[0];
       const hi = cfg[max] != null ? cfg[max] : (cfg[min] != null ? lo : dflt[1]);
@@ -817,6 +826,43 @@ class CanvasBridge {
       size: pick('sizeMin', 'sizeMax', [2, 5]),
       color: cfg.color || '#fff',
     };
+  }
+
+  // Spawn position inside the emitter area around (x, y).
+  _spawnPoint(x, y, cfg) {
+    const words = String(cfg.emitterShape || 'point').trim().split(/\s+/);
+    const opts = {};
+    for (const w of words.slice(1)) {
+      const eq = w.indexOf('=');
+      if (eq > 0) opts[w.slice(0, eq)] = Number(w.slice(eq + 1));
+    }
+    if (words[0] === 'circle') {
+      const r = opts.radius != null ? opts.radius : (cfg.emitterRadius || 0);
+      const a = Math.random() * Math.PI * 2;
+      const d = r * Math.sqrt(Math.random());
+      return [x + Math.cos(a) * d, y + Math.sin(a) * d];
+    }
+    if (words[0] === 'rect') {
+      const w = opts.w != null ? opts.w : (cfg.emitterWidth || 0);
+      const h = opts.h != null ? opts.h : (cfg.emitterHeight || 0);
+      return [x + (Math.random() - 0.5) * w, y + (Math.random() - 0.5) * h];
+    }
+    return [x, y];
+  }
+
+  // Colour between two hex colours (#rgb or #rrggbb) at k in 0..1; `a`
+  // unchanged when either is not a hex colour.
+  _lerpColor(a, b, k) {
+    const parse = (c) => {
+      const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(c).trim());
+      if (!m) return null;
+      const h = m[1].length === 3 ? m[1].split('').map((d) => d + d).join('') : m[1];
+      return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+    };
+    const ca = parse(a), cb = parse(b);
+    if (!ca || !cb) return a;
+    const mix = ca.map((v, i) => Math.round(v + (cb[i] - v) * k));
+    return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
   }
 
   // `canvas.image src=` names an `image` asset (CVS-D009); a src that is
@@ -855,7 +901,8 @@ class CanvasBridge {
           const size = p.size * (s0 + (s1 - s0) * k);
           ctx.save();
           ctx.globalAlpha *= Math.max(0, Math.min(1, a0 + (a1 - a0) * k));
-          ctx.fillStyle = p.color;
+          ctx.fillStyle = cfg.colorStart != null && cfg.colorEnd != null
+            ? this._lerpColor(cfg.colorStart, cfg.colorEnd, k) : p.color;
           if (cfg.shape === 'rect') {
             ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
           } else {

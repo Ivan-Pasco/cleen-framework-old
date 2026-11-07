@@ -109,6 +109,12 @@ rejects('canvas.save without restore', drawOnly(['canvas.save']), /1 canvas.save
 rejects('canvas.restore before any save', drawOnly(['canvas.restore']), /canvas.restore has no canvas.save before it.*CVS-X007/);
 rejects('save inside a branch, restore after it', drawOnly(['if 1 > 0', '\tcanvas.save', 'canvas.restore']), /CVS-X007/);
 
+// --- particles sub-blocks (frame-canvas.ebnf §10) -------------------------
+
+accepts('particles with every sub-block', `\tparticles "p":\n\t\tsize = 3\n\t\tshape = "rect"\n\t\temitter:\n\t\t\trate = 10\n\t\t\tshape = "circle"\n\t\t\tradius = 50\n\t\toverLifetime:\n\t\t\tspeed = 1.0 -> 0.0\n\t\t\tcolor = "#ff0000" -> "#0000ff"\n\t\t\talpha = 1.0..0.0\n\t\tforces:\n\t\t\tgravity = 10\n\n${DRAW}`);
+rejects('particle attribute in the wrong sub-block', `\tparticles "p":\n\t\temitter:\n\t\t\tgravity = 10\n\n${DRAW}`, /FRAME-CANVAS-E721|'gravity = 10' is not a valid emitter attribute/);
+rejects('unknown particles sub-block', `\tparticles "p":\n\t\tspawn:\n\t\t\trate = 10\n\n${DRAW}`, /unknown sub-block 'spawn:'/);
+
 rmSync(work, { recursive: true, force: true });
 if (failures > 0) {
   console.log('FAIL: frame.canvas scene diagnostics');

@@ -51,13 +51,18 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		speed = 20..60
 		angle = -160..-20
 		color = "#c8b89a"
+		shape = "rect"
 		size = 3
 		emitter:
 			rate = 25
 			burst = 6
+			shape = "circle"
+			radius = 12
 		overLifetime:
 			size = 1.0 -> 0.2
-			alpha = 1.0 -> 0.0
+			alpha = 1.0..0.0
+			speed = 1.0 -> 0.5
+			color = "#ffffff" -> "#000000"
 		forces:
 			gravity = 120
 			drag = 0.95

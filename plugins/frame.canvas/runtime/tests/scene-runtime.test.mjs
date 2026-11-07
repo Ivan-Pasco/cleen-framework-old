@@ -156,6 +156,12 @@ check(idle && idle.frameStart === 0 && idle.frameEnd === 3 && idle.fps === 8 && 
 const dust = bridge.namedParticles.get('dust');
 check(dust && dust.config.lifeMin === 0.3 && dust.config.angleMax === -20 && dust.config.burst === 6
   && dust.config.alphaEnd === 0 && dust.config.windX === 8, 'particles config is JSON the runtime reads');
+check(dust && dust.config.shape === 'rect' && dust.config.sizeMin === 3 && dust.config.sizeMax === 3,
+  `particle shape / size are not overwritten by the emitter: block (got ${dust && JSON.stringify(dust.config)})`);
+check(dust && dust.config.emitterShape === 'circle' && dust.config.emitterRadius === 12, 'emitter: shape / radius describe the spawn area');
+check(dust && dust.config.alphaStart === 1 && dust.config.alphaEnd === 0, 'overLifetime alpha = a..b (frame-canvas.ebnf §10 value_range)');
+check(dust && dust.config.speedStart === 1 && dust.config.speedEnd === 0.5 && dust.config.colorStart === '#ffffff'
+  && dust.config.colorEnd === '#000000', 'overLifetime speed / color ramps');
 check(bridge.gradients.get('skyFade').stops.length === 2 && bridge.gradients.get('sun').type === 'radial', 'gradients and stops');
 check(bridge.namedPaths.get('loop').length >= 5, 'path segments registered');
 check(bridge.cameraFollowX === 40 && bridge.cameraFollowY === 160 && bridge.cameraZoom === 1.5, 'camera follows state expressions');
