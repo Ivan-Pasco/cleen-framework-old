@@ -373,8 +373,8 @@ functions:
 			if companion_json.indexOf("\"has_load\":true") != -1
 				has_data = true
 		string render_code = html_to_stmts(body_html, "html", true, registry_json, has_data)
-		if has_bad_attribute(render_code)
-			return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
+		if template_error_code(render_code) != ""
+			return template_error(ctx, template_error_code(render_code))
 		if needs_client_runtime(html)
 			render_code = render_code + append_stmt("html", "\"<script src='/loader.js' data-wasm='/frontend.wasm'></script>\"")
 		string page_name = path_to_class_name(path)
@@ -765,42 +765,109 @@ functions:
 			cut = slash_pos
 		return name.substring(0, cut)
 
-	// Extract attribute value from an opening tag's inner text.
+	// Value of the attribute named attr_name in an opening tag ("<div a='1'>"
+	// or the tag text without the angle brackets); "" when the tag has no
+	// such attribute or it has no value. Attribute names match whole:
+	// `name` never matches inside `data-name`, and text inside another
+	// attribute's quoted value is never read as an attribute.
 	string extract_attr_value(string tag_text, string attr_name)
-		string search = attr_name + "="
-		integer attr_pos = tag_text.indexOf(search)
-		if attr_pos == -1
+		string found = attr_lookup(tag_text, attr_name)
+		if found == ""
 			return ""
-		integer value_start = attr_pos + search.length()
-		if value_start >= tag_text.length()
-			return ""
-		string first = tag_text.substring(value_start, value_start + 1)
-		if first == "\""
-			integer content_start = value_start + 1
-			integer quote_end = tag_text.indexOf("\"", content_start)
-			if quote_end == -1
+		return found.substring(1, found.length())
+
+	// True when the opening tag carries the attribute attr_name, with or
+	// without a value (`<p cl-else>`).
+	boolean has_attr(string tag_text, string attr_name)
+		return attr_lookup(tag_text, attr_name) != ""
+
+	boolean is_tag_space(string ch)
+		return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+
+	// Scan the attribute list of an opening tag for attr_name. Returns ""
+	// when absent, else "+" followed by the attribute's value ("+" alone for
+	// an attribute without a value). Values may be "double-quoted",
+	// 'single-quoted', {braced} (the expression, trimmed) or unquoted.
+	string attr_lookup(string tag_text, string attr_name)
+		integer n = tag_text.length()
+		integer i = 0
+		if tag_text.startsWith("<")
+			i = 1
+		// Skip the tag name.
+		while i < n and is_tag_space(tag_text.substring(i, i + 1)) == false and tag_text.substring(i, i + 1) != ">" and tag_text.substring(i, i + 1) != "/"
+			i = i + 1
+		while i < n
+			string ch = tag_text.substring(i, i + 1)
+			if is_tag_space(ch) or ch == "/"
+				i = i + 1
+			else if ch == ">"
 				return ""
-			return tag_text.substring(content_start, quote_end)
-		if first == "'"
-			integer content_start_s = value_start + 1
-			integer quote_end_s = tag_text.indexOf("'", content_start_s)
-			if quote_end_s == -1
-				return ""
-			return tag_text.substring(content_start_s, quote_end_s)
-		if first == "{"
-			// `cl-if={expression}` (frame-ui.ebnf): the expression itself.
-			integer brace_end = matching_brace(tag_text, value_start)
-			if brace_end == -1
-				return ""
-			return tag_text.substring(value_start + 1, brace_end).trim()
-		// Unquoted: read until whitespace or > or /
-		integer scan = value_start
-		while scan < tag_text.length()
-			string ch = tag_text.substring(scan, scan + 1)
-			if ch == " " or ch == ">" or ch == "/" or ch == "\t" or ch == "\n"
-				return tag_text.substring(value_start, scan)
-			scan = scan + 1
-		return tag_text.substring(value_start, tag_text.length())
+			else if ch == "{"
+				// interpolation_attribute `{name}`: the attribute `name`.
+				integer close = matching_brace(tag_text, i)
+				if close == -1
+					return ""
+				string bare = tag_text.substring(i + 1, close).trim()
+				if bare == attr_name
+					return "+" + bare
+				i = close + 1
+			else
+				integer name_start = i
+				boolean in_name = true
+				while in_name and i < n
+					string nc = tag_text.substring(i, i + 1)
+					if is_tag_space(nc) or nc == "=" or nc == ">" or nc == "/"
+						in_name = false
+					else
+						i = i + 1
+				string name = tag_text.substring(name_start, i)
+				integer j = i
+				while j < n and is_tag_space(tag_text.substring(j, j + 1))
+					j = j + 1
+				if j < n and tag_text.substring(j, j + 1) == "="
+					j = j + 1
+					while j < n and is_tag_space(tag_text.substring(j, j + 1))
+						j = j + 1
+					string value = ""
+					if j < n
+						string q = tag_text.substring(j, j + 1)
+						if q == "\"" or q == "'"
+							integer qe = tag_text.indexOf(q, j + 1)
+							if qe == -1
+								value = tag_text.substring(j + 1, n)
+								j = n
+							else
+								value = tag_text.substring(j + 1, qe)
+								j = qe + 1
+						else if q == "{"
+							// `cl-if={expression}` (frame-ui.ebnf): the expression.
+							integer be = matching_brace(tag_text, j)
+							if be == -1
+								value = tag_text.substring(j + 1, n).trim()
+								j = n
+							else
+								value = tag_text.substring(j + 1, be).trim()
+								j = be + 1
+						else
+							integer vs = j
+							boolean in_value = true
+							while in_value and j < n
+								string vc = tag_text.substring(j, j + 1)
+								if is_tag_space(vc) or vc == ">"
+									in_value = false
+								else if vc == "/" and j + 1 < n and tag_text.substring(j + 1, j + 2) == ">"
+									in_value = false
+								else
+									j = j + 1
+							value = tag_text.substring(vs, j)
+					if name == attr_name
+						return "+" + value
+					i = j
+				else
+					if name == attr_name
+						return "+"
+					i = j
+		return ""
 
 	// Extract an attribute value from a <page> tag inside an HTML document.
 	string extract_page_attr(string html, string attr_name)
@@ -1231,8 +1298,8 @@ functions:
 		string renderssr_body_source = "return this.render()\n"
 
 		// -------- Parse method bodies into stmt handles --------
-		if has_bad_attribute(render_body_source)
-			return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
+		if template_error_code(render_body_source) != ""
+			return template_error(ctx, template_error_code(render_body_source))
 		integer render_bh = _emit_stmt_from_source(ctx, render_body_source, 0)
 		integer setslot_bh = _emit_stmt_from_source(ctx, setslot_body_source, 0)
 		integer renderssr_bh = _emit_stmt_from_source(ctx, renderssr_body_source, 0)
@@ -1413,8 +1480,8 @@ functions:
 		string render_body_source = page_render_body(layout, render_code, companion_json)
 
 		// -------- Parse render body into stmt handle --------
-		if has_bad_attribute(render_body_source)
-			return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
+		if template_error_code(render_body_source) != ""
+			return template_error(ctx, template_error_code(render_body_source))
 		integer render_bh = _emit_stmt_from_source(ctx, render_body_source, 0)
 
 		// -------- Assemble the methods array --------
@@ -1490,8 +1557,8 @@ functions:
 		string auth = get_attr(attrs_json, "auth", "")
 		string roles = get_attr(attrs_json, "roles", "")
 		string render_code = html_to_stmts(body, "html", true, "{}", false)
-		if has_bad_attribute(render_code)
-			return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
+		if template_error_code(render_code) != ""
+			return template_error(ctx, template_error_code(render_code))
 		// frame-ui.ebnf page_block: `page <ClassName>:` names the page class;
 		// the path-derived name is the fallback for header-less forms.
 		string page_name = extract_json_field(attrs_json, "model_name")
@@ -1506,8 +1573,8 @@ functions:
 	integer expand_html_block_stub(integer ctx, string attrs_json, string body)
 		_ctx_set_error_context(ctx, "PLUGIN_UI_HTML", "expand_html_block")
 		string source = expand_html_block(attrs_json, body)
-		if has_bad_attribute(source)
-			return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
+		if template_error_code(source) != ""
+			return template_error(ctx, template_error_code(source))
 		integer stmt_h = _emit_stmt_from_source(ctx, source, 0)
 		if stmt_h == 0
 			return plugin_error(ctx, "FRAME-UI-E001", "expand_html_block_stub: parse failed")
@@ -1837,10 +1904,21 @@ functions:
 	// `"` becomes &quot;, line breaks become spaces, braces are escaped so the
 	// literal does not interpolate. Backslashes are handled by the caller.
 	string escape_string(string input)
+		return escape_text(input, false)
+
+	// escape_string for text inside <pre> / <textarea> when preserve is
+	// true: line breaks and tabs are kept (as \n / \t escapes) instead of
+	// being folded into spaces.
+	string escape_text(string input, boolean preserve)
 		string result = input
 		result = result.replace("\"", "&quot;")
-		result = result.replace("\n", " ")
-		result = result.replace("\t", " ")
+		if preserve
+			result = result.replace("\r", "")
+			result = result.replace("\n", "\\n")
+			result = result.replace("\t", "\\t")
+		else
+			result = result.replace("\n", " ")
+			result = result.replace("\t", " ")
 		result = result.replace("{", "\\{")
 		result = result.replace("}", "\\}")
 		return result
@@ -1877,41 +1955,41 @@ functions:
 	// Text node → a quoted Clean string expression. `\{` and `\}` are literal
 	// braces, any other backslash is a literal backslash, and `{{ ... }}` is
 	// kept as literal text.
-	string text_expr(string text, boolean has_data)
+	string text_expr(string text, boolean has_data, boolean preserve)
 		string result = "\""
 		string remaining = text
 		while remaining.length() > 0
 			integer esc_pos = remaining.indexOf("\\")
 			integer brace_start = remaining.indexOf("{")
 			if esc_pos != -1 and (brace_start == -1 or esc_pos < brace_start)
-				result = result + escape_string(remaining.substring(0, esc_pos))
+				result = result + escape_text(remaining.substring(0, esc_pos), preserve)
 				string escaped_char = ""
 				if esc_pos + 1 < remaining.length()
 					escaped_char = remaining.substring(esc_pos + 1, esc_pos + 2)
 				if escaped_char == "{" or escaped_char == "}"
-					result = result + escape_string(escaped_char)
+					result = result + escape_text(escaped_char, preserve)
 					remaining = remaining.substring(esc_pos + 2, remaining.length())
 				else
 					result = result + "\\\\"
 					remaining = remaining.substring(esc_pos + 1, remaining.length())
 			else if brace_start == -1
-				result = result + escape_string(remaining)
+				result = result + escape_text(remaining, preserve)
 				remaining = ""
 			else
-				result = result + escape_string(remaining.substring(0, brace_start))
+				result = result + escape_text(remaining.substring(0, brace_start), preserve)
 				remaining = remaining.substring(brace_start, remaining.length())
 				if remaining.startsWith("{{")
 					integer dbrace_end = remaining.indexOf("}}", 2)
 					if dbrace_end == -1
-						result = result + escape_string(remaining)
+						result = result + escape_text(remaining, preserve)
 						remaining = ""
 					else
-						result = result + escape_string(remaining.substring(0, dbrace_end + 2))
+						result = result + escape_text(remaining.substring(0, dbrace_end + 2), preserve)
 						remaining = remaining.substring(dbrace_end + 2, remaining.length())
 				else
 					integer brace_end = remaining.indexOf("}", 1)
 					if brace_end == -1
-						result = result + escape_string(remaining)
+						result = result + escape_text(remaining, preserve)
 						remaining = ""
 					else
 						result = result + "\" + " + interp_expr(remaining.substring(1, brace_end), has_data) + " + \""
@@ -1959,19 +2037,27 @@ functions:
 		return result
 
 	string html_to_stmts(string html, string target, boolean page_mode, string registry_json, boolean has_data)
+		return html_nodes(html, target, page_mode, registry_json, has_data, false)
+
+	// html_to_stmts with whitespace preservation: inside <pre> / <textarea>
+	// (preserve = true) text nodes keep their line breaks, tabs and
+	// surrounding whitespace.
+	string html_nodes(string html, string target, boolean page_mode, string registry_json, boolean has_data, boolean preserve)
 		string result = ""
 		string remaining = html
 		while remaining.length() > 0
 			integer tag_start = remaining.indexOf("<")
 			if tag_start == -1
-				string text = remaining.trim()
+				string text = remaining
+				if preserve == false
+					text = text.trim()
 				if text.length() > 0
-					result = result + append_stmt(target, text_expr(text, has_data))
+					result = result + append_stmt(target, text_expr(text, has_data, preserve))
 				remaining = ""
 			else if tag_start > 0
 				string text = remaining.substring(0, tag_start)
-				if text.trim().length() > 0
-					result = result + append_stmt(target, text_expr(text, has_data))
+				if preserve or text.trim().length() > 0
+					result = result + append_stmt(target, text_expr(text, has_data, preserve))
 				remaining = remaining.substring(tag_start, remaining.length())
 			else if remaining.startsWith("<!--")
 				// HTML comment: source annotation, not rendered output.
@@ -1994,6 +2080,10 @@ functions:
 						// <!DOCTYPE ...> and other declarations are copied as written.
 						result = result + append_stmt(target, "\"<" + clean_literal(tag_content) + ">\"")
 						remaining = remaining.substring(tag_end + 1, remaining.length())
+					else if tag_name.toLowerCase() == "script"
+						// UI-C001: templates hold no JavaScript.
+						result = result + template_error_marker("E004") + "\n"
+						remaining = ""
 					else
 						string inner = ""
 						integer consumed = tag_end + 1
@@ -2003,7 +2093,7 @@ functions:
 							if close_pos != -1
 								inner = remaining.substring(tag_end + 1, close_pos)
 								consumed = close_pos + tag_name.length() + 3
-						result = result + element_stmts(tag_content, inner, target, page_mode, registry_json, has_data)
+						result = result + element_stmts(tag_content, inner, target, page_mode, registry_json, has_data, preserve)
 						remaining = remaining.substring(consumed, remaining.length())
 		return result
 
@@ -2014,32 +2104,66 @@ functions:
 			return "data." + expr
 		return expr
 
-	// Statements for one element, applying its structural directive.
-	string element_stmts(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data)
+	// A cl-if / cl-show condition. Companion data is `any`, so a comparison
+	// with a number literal reads the value as an integer; elsewhere the
+	// expression is typed and used as written.
+	string directive_condition(string expr, boolean has_data)
+		if has_data
+			return directive_expr(rewrite_any_int_compare(expr), true)
+		return expr
+
+	// Statements for one element, applying its structural directives.
+	// cl-else takes the branch after the preceding cl-if; cl-iterate repeats
+	// the element and, as in the host's request-time renderer, each copy
+	// then applies the element's cl-if / cl-show (the condition can read the
+	// item).
+	string element_stmts(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data, boolean preserve)
+		string open_tag = "<" + tag_content + ">"
+		if has_attr(open_tag, "cl-else") and has_attr(open_tag, "cl-if") == false
+			return "else\n" + indent_lines(iterate_stmts(tag_content, inner, target, page_mode, registry_json, has_data, preserve))
+		return iterate_stmts(tag_content, inner, target, page_mode, registry_json, has_data, preserve)
+
+	// cl-iterate="item in coll" / "item, index in coll" (UI-B004). Clean's
+	// iterate has no index form (grammar.ebnf iterate_statement), so the
+	// zero-based index is a counter kept in its own `if true` scope.
+	string iterate_stmts(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data, boolean preserve)
+		string iterate_attr = extract_attr_value("<" + tag_content + ">", "cl-iterate")
+		integer in_pos = iterate_attr.indexOf(" in ")
+		if in_pos == -1
+			return conditional_stmts(tag_content, inner, target, page_mode, registry_json, has_data, preserve)
+		string vars = iterate_attr.substring(0, in_pos).trim()
+		string collection = directive_expr(iterate_attr.substring(in_pos + 4, iterate_attr.length()).trim(), has_data)
+		string body = conditional_stmts(tag_content, inner, target, page_mode, registry_json, has_data, preserve)
+		integer comma = vars.indexOf(",")
+		if comma == -1
+			return "iterate " + vars + " in " + collection + "\n" + indent_lines(body)
+		string item_var = vars.substring(0, comma).trim()
+		string index_var = vars.substring(comma + 1, vars.length()).trim()
+		string counter = "__cl_index_" + index_var
+		string loop = "integer " + counter + " = 0\n"
+		loop = loop + "iterate " + item_var + " in " + collection + "\n"
+		loop = loop + "\tinteger " + index_var + " = " + counter + "\n"
+		loop = loop + "\t" + counter + " = " + counter + " + 1\n"
+		loop = loop + indent_lines(body)
+		return "if true\n" + indent_lines(loop)
+
+	// cl-if / cl-show / cl-slot / cl-validate of one element.
+	string conditional_stmts(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data, boolean preserve)
 		string open_tag = "<" + tag_content + ">"
 		string if_attr = extract_attr_value(open_tag, "cl-if")
 		if if_attr != ""
-			string body = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "")
-			return "if " + directive_expr(rewrite_any_int_compare(if_attr), has_data) + "\n" + indent_lines(body)
-		if tag_content.indexOf(" cl-else") != -1
-			return "else\n" + indent_lines(render_element(tag_content, inner, target, page_mode, registry_json, has_data, ""))
-		string iterate_attr = extract_attr_value(open_tag, "cl-iterate")
-		integer in_pos = iterate_attr.indexOf(" in ")
-		if in_pos != -1
-			string vars = iterate_attr.substring(0, in_pos).trim()
-			string collection = iterate_attr.substring(in_pos + 4, iterate_attr.length()).trim()
-			string body = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "")
-			return "iterate " + vars + " in " + directive_expr(collection, has_data) + "\n" + indent_lines(body)
+			string body = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "", preserve)
+			return "if " + directive_condition(if_attr, has_data) + "\n" + indent_lines(body)
 		string show_attr = extract_attr_value(open_tag, "cl-show")
 		if show_attr != ""
-			string shown = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "")
-			string hidden = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "hidden")
-			return "if " + directive_expr(rewrite_any_int_compare(show_attr), has_data) + "\n" + indent_lines(shown) + "else\n" + indent_lines(hidden)
+			string shown = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "", preserve)
+			string hidden = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "hidden", preserve)
+			return "if " + directive_condition(show_attr, has_data) + "\n" + indent_lines(shown) + "else\n" + indent_lines(hidden)
 		if page_mode
 			string slot_attr = extract_attr_value(open_tag, "cl-slot")
 			if slot_attr != ""
 				string slot = append_stmt(target, "\"<div data-slot='" + escape_attr_text(slot_attr) + "'>\"")
-				slot = slot + html_to_stmts(inner, target, page_mode, registry_json, has_data)
+				slot = slot + html_nodes(inner, target, page_mode, registry_json, has_data, preserve)
 				return slot + append_stmt(target, "\"</div>\"")
 			string validate_attr = extract_attr_value(open_tag, "cl-validate")
 			if validate_attr != ""
@@ -2047,13 +2171,13 @@ functions:
 				if error_msg == ""
 					error_msg = "Invalid value"
 				string bind_attr = extract_attr_value(open_tag, "cl-bind")
-				string field = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "")
+				string field = render_element(tag_content, inner, target, page_mode, registry_json, has_data, "", preserve)
 				return field + validation_error_stmts(bind_attr, validate_attr, error_msg, target, has_data)
-		return render_element(tag_content, inner, target, page_mode, registry_json, has_data, "")
+		return render_element(tag_content, inner, target, page_mode, registry_json, has_data, "", preserve)
 
 	// Statements for one element without its structural directive. variant
 	// is "" or "hidden" (the cl-show false branch: display:none).
-	string render_element(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data, string variant)
+	string render_element(string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data, string variant, boolean preserve)
 		string tag_name = extract_tag_name(tag_content)
 		if page_mode and tag_name == "screen"
 			return render_screen_island(tag_content, target)
@@ -2061,7 +2185,7 @@ functions:
 			return render_component(tag_name, tag_content, inner, target, page_mode, registry_json, has_data)
 		string attrs = html_attributes(tag_content, page_mode)
 		if page_mode
-			if tag_name == "iframe" and tag_content.indexOf(" cl-preview") != -1
+			if tag_name == "iframe" and has_attr("<" + tag_content + ">", "cl-preview")
 				attrs = join_attrs(attrs, "data-cl-preview='true'")
 			string stream_url = extract_attr_value("<" + tag_content + ">", "cl-stream")
 			if stream_url != ""
@@ -2069,8 +2193,16 @@ functions:
 		if variant == "hidden"
 			attrs = hide_attrs(attrs)
 		string result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + ">\"")
-		if inner.trim().length() > 0
-			result = result + html_to_stmts(inner, target, page_mode, registry_json, has_data)
+		string lower_name = tag_name.toLowerCase()
+		if lower_name == "style"
+			// Raw text element: CSS braces are not interpolation, the content
+			// is copied as written.
+			if inner.length() > 0
+				result = result + append_stmt(target, "\"" + clean_literal(inner) + "\"")
+		else
+			boolean inner_preserve = preserve or lower_name == "pre" or lower_name == "textarea"
+			if inner_preserve or inner.trim().length() > 0
+				result = result + html_nodes(inner, target, page_mode, registry_json, has_data, inner_preserve)
 		if page_mode and tag_name == "form"
 			// UI-B011: a non-GET form gets the CSRF input. A form without a
 			// method attribute is a GET form.
@@ -2120,18 +2252,38 @@ functions:
 			i = i + 1
 		return true
 
-	// Marks an attribute frame-ui.ebnf does not allow; the html:, page and
-	// component expansions turn it into FRAME-UI-E003 instead of sending the
-	// text to the browser as an attribute.
+	// Template errors found while turning HTML into statements are left in
+	// the generated source as a marker; the html:, page and component
+	// expansions turn the marker into a compile error instead of sending the
+	// text to the browser.
+	//   E003  an attribute frame-ui.ebnf does not allow
+	//   E004  a <script> element (UI-C001)
+	//   E005  an unknown cl-validate rule (UI-B012)
+	string template_error_marker(string code)
+		return "__FRAME_UI_" + code + "__"
+
 	string bad_attribute_marker()
-		return "__FRAME_UI_E003__"
+		return template_error_marker("E003")
 
 	string bad_attribute_message()
 		return "an attribute written in braces must be a variable name: \{name\} sets name to its value (frame-ui.ebnf interpolation_attribute). Raw HTML \{!...\} cannot stand for an attribute. To add a boolean attribute such as selected or checked only when a condition holds, put it on an element with cl-if=\{condition\} and follow it with a cl-else twin without it."
 
-	// FRAME-UI-E003 when the generated statements carry the marker.
-	boolean has_bad_attribute(string source)
-		return source.indexOf(bad_attribute_marker()) != -1
+	// The code of the first template error marker in source, "" when none.
+	string template_error_code(string source)
+		list<string> codes = ["E003", "E004", "E005"]
+		integer i = 0
+		while i < codes.length()
+			if source.indexOf(template_error_marker(codes[i])) != -1
+				return codes[i]
+			i = i + 1
+		return ""
+
+	integer template_error(integer ctx, string code)
+		if code == "E004"
+			return plugin_error(ctx, "FRAME-UI-E004", "<script> is not allowed in frame.ui templates (frame-ui-semantics UI-C001). Page logic goes in Clean: a companion load() for data, functions: handlers wired with onclick=\"name\" and the ui.* bridges for DOM updates.")
+		if code == "E005"
+			return plugin_error(ctx, "FRAME-UI-E005", "unknown cl-validate rule (frame-ui-semantics UI-B012). Supported rules: required, email.")
+		return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
 
 	// Add display:none to an attribute fragment, inside an existing style
 	// attribute when there is one.
@@ -2148,12 +2300,19 @@ functions:
 		integer value_start = style_pos + 7
 		return attrs.substring(0, value_start) + "display:none;" + attrs.substring(value_start, attrs.length())
 
+	// cl-validate (UI-B012): the error span shown when the bound field
+	// fails its rule. `required`: the field is empty; `email`: it has no
+	// `@` or no `.`. Any other rule is FRAME-UI-E005 — an unknown rule must
+	// not silently validate as something else.
 	string validation_error_stmts(string field_name, string validate_type, string error_msg, string target, boolean has_data)
+		string rule = validate_type.trim()
+		if rule != "required" and rule != "email"
+			return template_error_marker("E005") + "\n"
 		if field_name == ""
 			return ""
 		string field_ref = directive_expr(field_name, has_data)
-		string condition = field_ref + ".length() == 0"
-		if validate_type == "email"
+		string condition = field_ref + ".trim().length() == 0"
+		if rule == "email"
 			condition = field_ref + ".indexOf(\"@\") == -1 or " + field_ref + ".indexOf(\".\") == -1"
 		return "if " + condition + "\n\t" + append_stmt(target, "\"<span class='cl-validation-error'>" + escape_string(error_msg) + "</span>\"")
 
@@ -2194,7 +2353,7 @@ functions:
 		// `class="..."` on the component tag is added to the component's outer
 		// HTML element (UI-C009), merged with any class the component's own
 		// markup already sets. `{expr}` values are evaluated at render time.
-		string class_attr = extract_attr_value("<" + tag_content + ">", " class")
+		string class_attr = extract_attr_value("<" + tag_content + ">", "class")
 		if class_attr != ""
 			string class_expr = "\"" + clean_literal(class_attr) + "\""
 			if class_attr.startsWith("{") and class_attr.endsWith("}")

@@ -18,6 +18,9 @@ start:
 	test_assemble_paths()
 	test_hydration_screens()
 	test_validate_block()
+	test_attribute_lookup()
+	test_template_errors()
+	test_validate_rules()
 
 functions:
 	// html: without var= builds __html and returns it (UI-P004).
@@ -43,10 +46,10 @@ functions:
 
 	// {expr} is escaped (UI-P006), {!expr} is raw (UI-P007), \{ is a brace.
 	void test_text_interpolation_escaped_and_raw()
-		assert(text_expr("Hi \{name\}!", false) == "\"Hi \" + _html_escape((name).toString()) + \"!\"")
-		assert(text_expr("\{!body\}", false) == "\"\" + body + \"\"")
-		assert(text_expr("\{x\}", true) == "\"\" + _html_escape(data.x) + \"\"")
-		assert(text_expr("a \\\{b\\\}", false) == "\"a \\\{b\\\}\"")
+		assert(text_expr("Hi \{name\}!", false, false) == "\"Hi \" + _html_escape((name).toString()) + \"!\"")
+		assert(text_expr("\{!body\}", false, false) == "\"\" + body + \"\"")
+		assert(text_expr("\{x\}", true, false) == "\"\" + _html_escape(data.x) + \"\"")
+		assert(text_expr("a \\\{b\\\}", false, false) == "\"a \\\{b\\\}\"")
 
 	// Attribute values: quotes are escaped, {expr} closes and reopens the literal.
 	void test_attribute_values()
@@ -59,8 +62,8 @@ functions:
 		assert(html_attributes("p \{title\}", false) == "title='\" + _html_escape((title).toString()) + \"'")
 		assert(html_attributes("p data-n=\{a + b\} id=\"x\"", false) == "data-n='\" + _html_escape((a + b).toString()) + \"' id='x'")
 		// Raw HTML in attribute position is marked for FRAME-UI-E003.
-		assert(has_bad_attribute(html_attributes("option \{!sel\}", false)))
-		assert(has_bad_attribute(expand_html_block("\{\}", "<option value=\"1\" \{!sel\}>1</option>")))
+		assert(template_error_code(html_attributes("option \{!sel\}", false)) == "E003")
+		assert(template_error_code(expand_html_block("\{\}", "<option value=\"1\" \{!sel\}>1</option>")) == "E003")
 
 	// cl-if / cl-else / cl-iterate / cl-show nest the whole element (UI-B001..B004).
 	void test_structural_directives()
@@ -132,3 +135,27 @@ functions:
 		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "") == "")
 		assert(validate_block("component", "\{\"tag\":\"x-y\"\}", "html:\n\t<p>x</p>") == "")
 		assert(validate_block("component", "\{\"model_name\":\"X\",\"client\":\"sometimes\"\}", "html:") == "component: client must be one of off, on, visible, idle, only")
+
+	// Attributes match by whole name, outside other attributes' values.
+	void test_attribute_lookup()
+		assert(extract_attr_value("<screen data-name=\"W\" name=\"R\">", "name") == "R")
+		assert(extract_attr_value("<p title=\"cl-if=x\">", "cl-if") == "")
+		assert(has_attr("<p title=\"cl-else\">", "cl-else") == false)
+		assert(has_attr("<p class=\"a\" cl-else>", "cl-else"))
+		assert(extract_attr_value("<p cl-if=\{a > b\} id='x'>", "id") == "x")
+		assert(extract_attr_value("<a href=/x/y>", "href") == "/x/y")
+		assert(extract_attr_value("<page auth=\"required\" />", "auth") == "required")
+
+	// <script> (UI-C001) and an unknown cl-validate rule (UI-B012) are
+	// compile errors, not markup.
+	void test_template_errors()
+		assert(template_error_code(html_to_stmts("<div><script>x()</script></div>", "h", true, "\{\}", false)) == "E004")
+		assert(template_error_code(expand_html_block("\{\}", "<SCRIPT src=\"/a.js\"></SCRIPT>")) == "E004")
+		assert(template_error_code(html_to_stmts("<input cl-validate=\"zip\" cl-bind=\"z\">", "h", true, "\{\}", false)) == "E005")
+		assert(template_error_code(html_to_stmts("<p>ok</p>", "h", true, "\{\}", false)) == "")
+
+	void test_validate_rules()
+		string req = html_to_stmts("<input cl-validate=\"required\" cl-bind=\"name\">", "h", true, "\{\}", false)
+		assert(req.contains("if name.trim().length() == 0\n"))
+		string email = html_to_stmts("<input cl-validate=\"email\" cl-bind=\"mail\">", "h", true, "\{\}", false)
+		assert(email.contains("if mail.indexOf(\"@\") == -1 or mail.indexOf(\".\") == -1\n"))

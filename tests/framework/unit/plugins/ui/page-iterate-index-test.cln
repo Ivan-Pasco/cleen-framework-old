@@ -1,0 +1,41 @@
+// Test: frame.ui — cl-iterate with an index, and cl-iterate with cl-if on
+// the same element (frame-ui-semantics UI-B001, UI-B004).
+//
+// Regressions:
+//   - cl-iterate="item, index in coll" expanded to `iterate item, index in`,
+//     which is not Clean (SYN001): Clean's iterate has no index form.
+//   - An element with both cl-if and cl-iterate kept only the cl-if; the
+//     element was not repeated. Each repeated copy now applies its cl-if,
+//     as the host's request-time renderer does.
+
+plugins:
+	frame.ui
+
+page IteratePage:
+	<ul>
+		<li cl-iterate="name, i in names()">{i}:{name}</li>
+		<li cl-iterate="n in nums()" cl-if="n > 1">{n}</li>
+	</ul>
+
+start:
+	IteratePage page = IteratePage()
+	string out = page.render()
+	string expected = "<ul><li>0:a</li><li>1:b</li><li>2</li><li>3</li></ul>"
+	if out == expected
+		printl("PASS: ui-page-iterate-index")
+	else
+		printl("FAIL: ui-page-iterate-index " + out)
+
+functions:
+	list<string> names()
+		list<string> r = []
+		r.add("a")
+		r.add("b")
+		return r
+
+	list<integer> nums()
+		list<integer> r = []
+		r.add(1)
+		r.add(2)
+		r.add(3)
+		return r
