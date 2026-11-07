@@ -459,7 +459,7 @@ functions:
 				boolean at_start = at == 0
 				if at > 0
 					string prev_char = ia.substring(at - 1, at)
-					at_start = prev_char == " " or prev_char == "\t"
+					at_start = (prev_char == " " or prev_char == "\t") and inside_string_literal(ia, at) == false
 				integer after_pos = at + pat.length()
 				boolean is_compare = false
 				if after_pos < ia.length()
@@ -490,6 +490,20 @@ functions:
 				i = ia.length()
 			i = i + 1
 		return ia.substring(vs, ve2).trim()
+
+	// True when offset `pos` of `s` lies inside a double-quoted string
+	// literal (so `" y="` in a text value is not the y= attribute).
+	boolean inside_string_literal(string s, integer pos)
+		boolean inside = false
+		integer i = 0
+		while i < pos
+			string c = s.substring(i, i + 1)
+			if c == "\\" and inside
+				i = i + 1
+			else if c == "\""
+				inside = inside == false
+			i = i + 1
+		return inside
 
 	// True when an attribute `name=` (not `name==`) starts at `pos` in `ia`.
 	boolean iexpr_attr_starts(string ia, integer pos)
@@ -841,6 +855,15 @@ functions:
 	// `state_body` is the scene's state: block ("" when the body must not
 	// store state, e.g. draw:).
 	integer scene_expand_lines(integer ctx, integer body_arr, string body, string state_body)
+		return scene_expand_block(ctx, body_arr, body, state_body, "")
+
+	// scene_expand_lines with `closers`: the end calls of the scopes open
+	// around this body, innermost first (`_canvas_clip_end;_layer_end;`). A
+	// `return` runs them before it leaves, so a scope opened in this frame is
+	// always closed (canvas state stack, CVS-X007). An unmatched canvas.save
+	// earlier in the same body adds `_canvas_restore` for the lines after it.
+	integer scene_expand_block(integer ctx, integer body_arr, string body, string state_body, string closers)
+		string open = closers
 		integer pos = 0
 		integer len = body.length()
 		while pos < len
@@ -853,40 +876,47 @@ functions:
 			if child_end > le + 1
 				child = body.substring(le + 1, child_end)
 			integer next_pos = le + 1
-			if child_end > next_pos
-				next_pos = child_end
 			if t.startsWith("//")
 				t = ""
+			// A blank or comment line owns no child block: a blank line has
+			// no indentation, so every following line would look deeper.
+			if child_end > next_pos and t.length() > 0
+				next_pos = child_end
 			if t.length() > 0
 				if t.startsWith("on layer ")
 					_batch_arrayPush(ctx, body_arr, bcc1(ctx, "_layer_begin", sl(ctx, first_quoted(t, 0))))
-					scene_expand_lines(ctx, body_arr, child, state_body)
+					scene_expand_block(ctx, body_arr, child, state_body, "_layer_end;" + open)
 					_batch_arrayPush(ctx, body_arr, bcc0(ctx, "_layer_end"))
 				else if t.startsWith("canvas.")
-					scene_expand_canvas(ctx, body_arr, t, child, state_body)
+					scene_expand_canvas(ctx, body_arr, t, child, state_body, open)
+					if line_key(t) == "canvas.save"
+						open = "_canvas_restore;" + open
+					else if line_key(t) == "canvas.restore" and open.startsWith("_canvas_restore;")
+						open = open.substring(16, open.length())
 				else if is_dsl_statement(t)
 					_batch_arrayPush(ctx, body_arr, dsl_statement(ctx, t, state_body))
 				else if t == "return"
 					if state_body != ""
 						state_stmts(ctx, body_arr, state_body, 1)
+					close_scopes(ctx, body_arr, open)
 					_batch_arrayPush(ctx, body_arr, us(ctx, "return"))
 				else if child.trim().length() == 0
 					_batch_arrayPush(ctx, body_arr, us(ctx, t))
 				else if t.startsWith("while ")
 					integer w_arr = _batch_arrayNew(ctx)
-					scene_expand_lines(ctx, w_arr, child, state_body)
+					scene_expand_block(ctx, w_arr, child, state_body, open)
 					_batch_arrayPush(ctx, body_arr, _batch_stmtWhile(ctx, ue(ctx, t.substring(6, t.length()).trim()), w_arr))
 				else if t.startsWith("if ")
-					next_pos = scene_expand_if(ctx, body_arr, body, pos, ind, t.substring(3, t.length()).trim(), state_body)
+					next_pos = scene_expand_if(ctx, body_arr, body, pos, ind, t.substring(3, t.length()).trim(), state_body, open)
 				else if t.startsWith("iterate ") and t.indexOf(" in ") != -1
 					integer in_at = t.indexOf(" in ")
 					string iter_var = t.substring(8, in_at).trim()
 					string iterable = t.substring(in_at + 4, t.length()).trim()
 					if iterable.indexOf(" to ") != -1
-						_batch_arrayPush(ctx, body_arr, range_loop(ctx, iter_var, iterable, child, state_body))
+						_batch_arrayPush(ctx, body_arr, range_loop(ctx, iter_var, iterable, child, state_body, open))
 					else
 						integer f_arr = _batch_arrayNew(ctx)
-						scene_expand_lines(ctx, f_arr, child, state_body)
+						scene_expand_block(ctx, f_arr, child, state_body, open)
 						_batch_arrayPush(ctx, body_arr, _batch_stmtFor(ctx, iter_var, ue(ctx, iterable), f_arr))
 				else
 					// Any other block statement is user-authored as a whole.
@@ -902,7 +932,7 @@ functions:
 	//         __it_v = __it_v + (S)
 	//         integer v = __it_v
 	//         <body> }
-	integer range_loop(integer ctx, string var_name, string iterable, string child, string state_body)
+	integer range_loop(integer ctx, string var_name, string iterable, string child, string state_body, string closers)
 		integer to_at = iterable.indexOf(" to ")
 		string from_src = iterable.substring(0, to_at).trim()
 		string rest = iterable.substring(to_at + 4, iterable.length()).trim()
@@ -925,7 +955,7 @@ functions:
 		integer w_arr = _batch_arrayNew(ctx)
 		_batch_arrayPush(ctx, w_arr, us(ctx, it + " = " + next_src))
 		_batch_arrayPush(ctx, w_arr, us(ctx, "integer " + var_name + " = " + it))
-		scene_expand_lines(ctx, w_arr, child, state_body)
+		scene_expand_block(ctx, w_arr, child, state_body, closers)
 		_batch_arrayPush(ctx, seq, _batch_stmtWhile(ctx, ue(ctx, cond), w_arr))
 		return _batch_stmtBlock(ctx, seq)
 
@@ -943,12 +973,12 @@ functions:
 	// The `if` (or `else if`) header line at `pos` (indentation `ind`) with
 	// condition `cond`, plus its `else if` / `else` siblings at the same
 	// indentation. Pushes one if statement and returns the offset after the chain.
-	integer scene_expand_if(integer ctx, integer body_arr, string body, integer pos, integer ind, string cond, string state_body)
+	integer scene_expand_if(integer ctx, integer body_arr, string body, integer pos, integer ind, string cond, string state_body, string closers)
 		integer le = scene_line_end(body, pos)
 		integer child_end = scene_child_end(body, pos, ind)
 		integer then_arr = _batch_arrayNew(ctx)
 		if child_end > le + 1
-			scene_expand_lines(ctx, then_arr, body.substring(le + 1, child_end), state_body)
+			scene_expand_block(ctx, then_arr, body.substring(le + 1, child_end), state_body, closers)
 		integer next_pos = le + 1
 		if child_end > next_pos
 			next_pos = child_end
@@ -961,17 +991,32 @@ functions:
 			if scene_indent(sline) == ind
 				if st.startsWith("else if ")
 					else_arr = _batch_arrayNew(ctx)
-					next_pos = scene_expand_if(ctx, else_arr, body, sib, ind, st.substring(8, st.length()).trim(), state_body)
+					next_pos = scene_expand_if(ctx, else_arr, body, sib, ind, st.substring(8, st.length()).trim(), state_body, closers)
 				else if st == "else"
 					integer else_end = scene_child_end(body, sib, ind)
 					else_arr = _batch_arrayNew(ctx)
 					if else_end > sle + 1
-						scene_expand_lines(ctx, else_arr, body.substring(sle + 1, else_end), state_body)
+						scene_expand_block(ctx, else_arr, body.substring(sle + 1, else_end), state_body, closers)
 					next_pos = sle + 1
 					if else_end > next_pos
 						next_pos = else_end
 		_batch_arrayPush(ctx, body_arr, _batch_stmtIf(ctx, ue(ctx, cond), then_arr, else_arr))
 		return next_pos
+
+	// Calls closing the scopes listed in `closers` (see scene_expand_block).
+	integer close_scopes(integer ctx, integer arr, string closers)
+		integer p = 0
+		while p < closers.length()
+			integer semi = closers.indexOf(";", p)
+			if semi == -1
+				semi = closers.length()
+			string fn = closers.substring(p, semi)
+			if fn == "_layer_end"
+				_batch_arrayPush(ctx, arr, bcc0(ctx, fn))
+			else if fn != ""
+				_batch_arrayPush(ctx, arr, bcc1(ctx, fn, ident(ctx, "__cv")))
+			p = semi + 1
+		return 0
 
 	// Run a handler body between a state load and a state store.
 	integer handler_body(integer ctx, integer arr, string body, string state_body)
@@ -987,7 +1032,7 @@ functions:
 functions:
 	// One `canvas.<cmd> attrs` line, with its child block for the scoped
 	// forms (group, clip, alpha, shadow, blur, glow, blendMode).
-	integer scene_expand_canvas(integer ctx, integer body_arr, string t, string child, string state_body)
+	integer scene_expand_canvas(integer ctx, integer body_arr, string t, string child, string state_body, string closers)
 		string line = t
 		if line.endsWith(":")
 			line = line.substring(0, line.length() - 1).trim()
@@ -1029,7 +1074,7 @@ functions:
 				end_fn = "_canvas_blend_end"
 			if end_fn == ""
 				return plugin_error(ctx, "FRAME-CANVAS-E701", "canvas." + cmd + " does not take a child block (frame-canvas.ebnf §18)")
-			scene_expand_lines(ctx, body_arr, child, state_body)
+			scene_expand_block(ctx, body_arr, child, state_body, end_fn + ";" + closers)
 			_batch_arrayPush(ctx, body_arr, bcc1(ctx, end_fn, ident(ctx, "__cv")))
 			return 0
 		integer h = scene_expand_cmd(ctx, cmd, ia)
@@ -1505,6 +1550,9 @@ functions:
 		return 0
 
 	// tween "name": one `var [from=] to=` line per variable plus config lines (§6).
+	// With along = "path" the two variable lines are the X and Y variables
+	// (CVS-A011); orient = true adds the companion angle variable as a third
+	// path line (CVS-A012). The runtime assigns path lines in that order.
 	integer declare_tween(integer ctx, integer arr, string name, string sub)
 		string duration = body_attr(sub, "duration", "0.5")
 		string ease = body_attr(sub, "ease", "\"linear\"")
@@ -1519,28 +1567,81 @@ functions:
 			integer le = scene_line_end(sub, p)
 			string t = sub.substring(p, le).trim()
 			string ia = t.substring(line_key(t).length(), t.length()).trim()
-			if t.length() > 0 and t.startsWith("//") == false and get_iexpr(ia, "to") != ""
+			if is_tween_var_line(t)
 				// from= omitted: NaN tells the runtime to start from the
 				// variable's value when the tween plays (CVS-A009).
 				string from_src = get_iexpr(ia, "from")
 				if from_src == ""
 					from_src = "math.sqrt(-1.0)"
-				integer a = _batch_arrayNew(ctx)
-				_batch_arrayPush(ctx, a, sl(ctx, name))
-				_batch_arrayPush(ctx, a, sl(ctx, line_key(t)))
-				_batch_arrayPush(ctx, a, ue(ctx, from_src))
-				_batch_arrayPush(ctx, a, av(ctx, ia, "to", "0.0"))
-				_batch_arrayPush(ctx, a, ue(ctx, duration))
-				_batch_arrayPush(ctx, a, ue(ctx, ease))
-				_batch_arrayPush(ctx, a, ue(ctx, repeat_src))
-				_batch_arrayPush(ctx, a, ue(ctx, yoyo_src))
-				_batch_arrayPush(ctx, a, ue(ctx, delay))
-				_batch_arrayPush(ctx, a, ue(ctx, along))
-				_batch_arrayPush(ctx, arr, _batch_stmtCall(ctx, "_tween_define_var", a))
+				_batch_arrayPush(ctx, arr, tween_var_call(ctx, name, line_key(t), from_src, get_iexpr(ia, "to"), duration, ease, repeat_src, yoyo_src, delay, along))
 			p = le + 1
+		if along != "\"\"" and body_attr(sub, "orient", "false") == "true"
+			string angle_var = orient_angle_var(tween_var_name(sub, 0), tween_var_name(sub, 1))
+			_batch_arrayPush(ctx, arr, tween_var_call(ctx, name, angle_var, "0.0", "0.0", duration, ease, repeat_src, yoyo_src, delay, along))
 		return 0
 
-	// path "name": moveTo / lineTo / curveTo / arcTo / closePath (§11).
+	integer tween_var_call(integer ctx, string name, string var_name, string from_src, string to_src, string duration, string ease, string repeat_src, string yoyo_src, string delay, string along)
+		integer a = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, a, sl(ctx, name))
+		_batch_arrayPush(ctx, a, sl(ctx, var_name))
+		_batch_arrayPush(ctx, a, ue(ctx, from_src))
+		_batch_arrayPush(ctx, a, ue(ctx, to_src))
+		_batch_arrayPush(ctx, a, ue(ctx, duration))
+		_batch_arrayPush(ctx, a, ue(ctx, ease))
+		_batch_arrayPush(ctx, a, ue(ctx, repeat_src))
+		_batch_arrayPush(ctx, a, ue(ctx, yoyo_src))
+		_batch_arrayPush(ctx, a, ue(ctx, delay))
+		_batch_arrayPush(ctx, a, ue(ctx, along))
+		return _batch_stmtCall(ctx, "_tween_define_var", a)
+
+	// True when the trimmed tween line `t` is a variable line `name [from=] to=`.
+	boolean is_tween_var_line(string t)
+		if t.length() == 0 or t.startsWith("//")
+			return false
+		return get_iexpr(t.substring(line_key(t).length(), t.length()).trim(), "to") != ""
+
+	// Number of variable lines of a tween body.
+	integer tween_var_count(string sub)
+		integer n = 0
+		integer p = 0
+		while p < sub.length()
+			integer le = scene_line_end(sub, p)
+			if is_tween_var_line(sub.substring(p, le).trim())
+				n = n + 1
+			p = le + 1
+		return n
+
+	// Variable of the `idx`-th variable line of a tween body; "" when absent.
+	string tween_var_name(string sub, integer idx)
+		integer n = 0
+		integer p = 0
+		while p < sub.length()
+			integer le = scene_line_end(sub, p)
+			string t = sub.substring(p, le).trim()
+			if is_tween_var_line(t)
+				if n == idx
+					return line_key(t)
+				n = n + 1
+			p = le + 1
+		return ""
+
+	// Companion angle variable of a path tween with orient = true
+	// (CVS-A012): `<base>Angle` for the variables `<base>X` / `<base>Y`
+	// (`angle` for `x` / `y`); "" when the names do not follow that pattern.
+	string orient_angle_var(string x_name, string y_name)
+		if x_name == "x" and y_name == "y"
+			return "angle"
+		if x_name.length() < 2 or x_name.endsWith("X") == false
+			return ""
+		string base = x_name.substring(0, x_name.length() - 1)
+		if y_name != base + "Y"
+			return ""
+		return base + "Angle"
+
+	// path "name": moveTo / lineTo / curveTo / quadTo / arcTo / closePath (§11).
+	// curveTo takes cx= cy= (one control point, drawn quadratic) or
+	// cp1x= cp1y= cp2x= cp2y= (cubic); quadTo cpX= cpY= is the quadratic
+	// segment of the prose spec (§15 "Path Command Attributes").
 	integer declare_path(integer ctx, integer arr, string name, string sub)
 		_batch_arrayPush(ctx, arr, bcc1(ctx, "_path_begin", sl(ctx, name)))
 		integer p = 0
@@ -1558,10 +1659,14 @@ functions:
 				_batch_arrayPush(ctx, arr, bcc7(ctx, "_path_cubic_to", n, av(ctx, ia, "cp1x", "0.0"), av(ctx, ia, "cp1y", "0.0"), av(ctx, ia, "cp2x", "0.0"), av(ctx, ia, "cp2y", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
 			else if op == "curveTo"
 				_batch_arrayPush(ctx, arr, bcc5(ctx, "_path_curve_to", n, av(ctx, ia, "cx", "0.0"), av(ctx, ia, "cy", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
+			else if op == "quadTo"
+				_batch_arrayPush(ctx, arr, bcc5(ctx, "_path_curve_to", n, av(ctx, ia, "cpX", "0.0"), av(ctx, ia, "cpY", "0.0"), av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0")))
 			else if op == "arcTo"
 				_batch_arrayPush(ctx, arr, bcc6(ctx, "_path_arc_to", n, av(ctx, ia, "x", "0.0"), av(ctx, ia, "y", "0.0"), av(ctx, ia, "radius", "0.0"), av(ctx, ia, "startAngle", "0.0"), av(ctx, ia, "endAngle", "6.283185307179586")))
 			else if op == "closePath" or (op == "closed" and line_value(t) == "true")
 				_batch_arrayPush(ctx, arr, bcc1(ctx, "_path_close", n))
+			else if t.length() > 0 and t.startsWith("//") == false and (op == "closed" and line_value(t) == "false") == false
+				plugin_error(ctx, "FRAME-CANVAS-E730", "path \"" + name + "\": unknown command '" + t + "' (frame-canvas.ebnf §11: moveTo, lineTo, curveTo, quadTo, arcTo, closePath, closed =)")
 			p = le + 1
 		return 0
 
@@ -1595,53 +1700,116 @@ functions:
 
 	// particles "name": (§10) -> _particles_define_json. The JSON is built at
 	// run time so attribute values may be expressions. Keys are the runtime's
-	// particle config (canvas-bridge.js _spawnParticle).
+	// particle config (canvas-bridge.js _spawnParticle). Each sub-block has
+	// its own keys (frame-canvas.ebnf §10): top-level attributes (and the
+	// `initial:` block, CVS-P008) describe one particle, `emitter:` the
+	// spawn rate and area, `overLifetime:` start / end ramps, `forces:` the
+	// forces on live particles.
 	integer declare_particles(integer ctx, integer arr, string name, string sub)
 		string json = clean_str("{\"name\":" + "\"" + json_escape(name) + "\"")
+		integer base = scene_base_indent(sub)
 		integer p = 0
 		while p < sub.length()
 			integer le = scene_line_end(sub, p)
-			string t = sub.substring(p, le).trim()
-			string key = line_key(t)
-			string v = line_value(t)
-			if key == "turbulence"
-				string ta = t.substring(key.length(), t.length()).trim()
-				json = json_num(json, "turbulenceStrength", get_iexpr(ta, "strength"))
-				json = json_num(json, "turbulenceScale", get_iexpr(ta, "scale"))
-			else if key == "wind" or key == "attractor"
-				string fa = t.substring(key.length(), t.length()).trim()
-				json = json_num(json, key + "X", get_iexpr(fa, "x"))
-				json = json_num(json, key + "Y", get_iexpr(fa, "y"))
-				if key == "attractor"
-					json = json_num(json, "attractorStrength", get_iexpr(fa, "strength"))
-			else if t.indexOf("=") != -1 and v != "" and t.startsWith("//") == false
-				integer arrow = v.indexOf("->")
-				integer dots = v.indexOf("..")
-				if arrow != -1
-					// overLifetime ramp: start -> end
-					if key == "size" or key == "alpha"
-						json = json_num(json, key + "Start", v.substring(0, arrow))
-						json = json_num(json, key + "End", v.substring(arrow + 2, v.length()))
-				else if key == "lifetime" or key == "speed" or key == "angle" or key == "size" or key == "radius"
-					string jk = key
-					if key == "lifetime"
-						jk = "life"
-					if key == "radius"
-						jk = "size"
-					if dots != -1
-						json = json_num(json, jk + "Min", v.substring(0, dots))
-						json = json_num(json, jk + "Max", v.substring(dots + 2, v.length()))
+			string line = sub.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if t.length() > 0 and t.startsWith("//") == false and scene_indent(line) == base
+				integer ce = scene_child_end(sub, p, base)
+				if ce > nxt
+					nxt = ce
+				string child = ""
+				if ce > le + 1
+					child = sub.substring(le + 1, ce)
+				if t.endsWith(":")
+					string section = t.substring(0, t.length() - 1).trim()
+					if section == "emitter" or section == "overLifetime" or section == "forces" or section == "initial"
+						json = particle_section(ctx, json, section, child, name)
 					else
-						json = json_num(json, jk + "Min", v)
-						json = json_num(json, jk + "Max", v)
-				else if key == "rate" or key == "burst" or key == "gravity" or key == "drag"
-					json = json_num(json, key, v)
-				else if (key == "color" or key == "shape" or key == "image") and v.startsWith("\"")
-					json = json + " + " + clean_str(",\"" + key + "\":") + " + " + clean_str("\"" + json_escape(v.substring(1, v.length() - 1)) + "\"")
-			p = le + 1
+						plugin_error(ctx, "FRAME-CANVAS-E720", "particles \"" + name + "\": unknown sub-block '" + t + "' (frame-canvas.ebnf §10: emitter:, overLifetime:, forces:)")
+				else
+					json = particle_attr(ctx, json, "particle", t, name)
+			p = nxt
 		json = json + " + " + clean_str("}")
 		_batch_arrayPush(ctx, arr, bcc2(ctx, "_particles_define_json", sl(ctx, name), ue(ctx, json)))
 		return 0
+
+	string particle_section(integer ctx, string json, string section, string body, string name)
+		string mode = section
+		if section == "initial"
+			mode = "particle"
+		string out = json
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string t = body.substring(p, le).trim()
+			if t.length() > 0 and t.startsWith("//") == false
+				out = particle_attr(ctx, out, mode, t, name)
+			p = le + 1
+		return out
+
+	// Append the config keys of one particles line `t` read in sub-block
+	// `mode` (particle, emitter, overLifetime, forces).
+	string particle_attr(integer ctx, string json, string mode, string t, string name)
+		string key = line_key(t)
+		string v = line_value(t)
+		if mode == "forces"
+			if key == "turbulence"
+				string ta = t.substring(key.length(), t.length()).trim()
+				string j = json_num(json, "turbulenceStrength", get_iexpr(ta, "strength"))
+				return json_num(j, "turbulenceScale", get_iexpr(ta, "scale"))
+			if key == "wind" or key == "attractor"
+				string fa = t.substring(key.length(), t.length()).trim()
+				string j2 = json_num(json, key + "X", get_iexpr(fa, "x"))
+				j2 = json_num(j2, key + "Y", get_iexpr(fa, "y"))
+				if key == "attractor"
+					j2 = json_num(j2, "attractorStrength", get_iexpr(fa, "strength"))
+				return j2
+			if key == "gravity" or key == "drag"
+				return json_num(json, key, v)
+		else if mode == "emitter"
+			if key == "rate" or key == "burst"
+				return json_num(json, key, v)
+			if key == "radius" or key == "width" or key == "height"
+				return json_num(json, "emitter" + key.substring(0, 1).toUpperCase() + key.substring(1, key.length()), v)
+			if key == "shape" and v.startsWith("\"")
+				return json_str(json, "emitterShape", v)
+		else if mode == "overLifetime"
+			// start -> end (CVS-P007) or start..end (frame-canvas.ebnf §10 value_range)
+			integer sep = v.indexOf("->")
+			integer sep_len = 2
+			if sep == -1
+				sep = v.indexOf("..")
+			if sep != -1
+				string first = v.substring(0, sep).trim()
+				string last = v.substring(sep + sep_len, v.length()).trim()
+				if key == "size" or key == "alpha" or key == "speed"
+					return json_num(json_num(json, key + "Start", first), key + "End", last)
+				if key == "color" and first.startsWith("\"") and last.startsWith("\"")
+					return json_str(json_str(json, "colorStart", first), "colorEnd", last)
+		else
+			if key == "lifetime" or key == "speed" or key == "angle" or key == "size"
+				string jk = key
+				if key == "lifetime"
+					jk = "life"
+				integer dots = v.indexOf("..")
+				if dots != -1
+					return json_num(json_num(json, jk + "Min", v.substring(0, dots)), jk + "Max", v.substring(dots + 2, v.length()))
+				return json_num(json_num(json, jk + "Min", v), jk + "Max", v)
+			if key == "radius"
+				// The particle radius: size is the particle's diameter.
+				string d = "(" + v + ") * 2.0"
+				return json_num(json_num(json, "sizeMin", d), "sizeMax", d)
+			if (key == "color" or key == "shape" or key == "image") and v.startsWith("\"")
+				return json_str(json, key, v)
+		plugin_error(ctx, "FRAME-CANVAS-E721", "particles \"" + name + "\": '" + t + "' is not a valid " + mode + " attribute (frame-canvas.ebnf §10)")
+		return json
+
+	// Append `,"key":"<text of the string literal lit>"` to a JSON-building expression.
+	string json_str(string json, string key, string lit)
+		string inner = lit.trim()
+		inner = inner.substring(1, inner.length() - 1)
+		return json + " + " + clean_str(",\"" + key + "\":") + " + " + clean_str("\"" + json_escape(inner) + "\"")
 
 	// Append `,"key":<number>` to a JSON-building expression.
 	string json_num(string json, string key, string value_src)
@@ -2229,6 +2397,17 @@ functions:
 				return "canvasScene: draw: must not start animations ('" + t + "', CVS-X003) — use init: or an event handler"
 			p = le + 1
 
+		string save_problem = save_balance_problem(draw_body)
+		if save_problem != ""
+			return "canvasScene: draw: " + save_problem
+
+		string tween_problem = validate_tweens(body, state_body)
+		if tween_problem != ""
+			return tween_problem
+		string ref_problem = validate_references(body)
+		if ref_problem != ""
+			return ref_problem
+
 		// CVS-C006 — anchors are fractions of a spritesheet frame.
 		string assets_body = extract_scene_subblock(body, "assets")
 		p = 0
@@ -2242,6 +2421,180 @@ functions:
 					frame_name = first_quoted(get_iexpr(attrs, "sheet"), 0)
 				if is_spritesheet_asset(assets_body, frame_name) == false
 					return "canvasScene: canvas.sprite anchorX= / anchorY= need a spritesheet asset: '" + frame_name + "' is not declared as `spritesheet` in assets: (anchors are fractions of the frame size, CVS-C006)"
+			p = le + 1
+		return ""
+
+	// CVS-X007: within each statement list of draw:, every canvas.save is
+	// matched by a canvas.restore later in the same list (a save inside an
+	// `if` with the restore after it would unbalance the stack on frames
+	// that skip the branch). "" when balanced.
+	string save_balance_problem(string block)
+		integer open = 0
+		integer p = 0
+		while p < block.length()
+			integer le = scene_line_end(block, p)
+			string line = block.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if t.length() > 0 and t.startsWith("//") == false
+				if line_key(t) == "canvas.save"
+					open = open + 1
+				else if line_key(t) == "canvas.restore"
+					if open == 0
+						return "canvas.restore has no canvas.save before it in the same block (CVS-X007)"
+					open = open - 1
+				integer ce = scene_child_end(block, p, scene_indent(line))
+				if ce > le + 1
+					string inner = save_balance_problem(block.substring(le + 1, ce))
+					if inner != ""
+						return inner
+				if ce > nxt
+					nxt = ce
+			p = nxt
+		if open > 0
+			return open.toString() + " canvas.save without a matching canvas.restore in the same block (CVS-X007: save / restore pairs must balance within one draw:)"
+		return ""
+
+	// True when the scene body declares `keyword "name"` at sub-block level
+	// (tween, timeline, animState, particles, path, gradient, customEase, ...).
+	boolean scene_declares(string body, string keyword, string name)
+		integer base = scene_base_indent(body)
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string line = body.substring(p, le)
+			string t = line.trim()
+			if scene_indent(line) == base and t.startsWith(keyword + " ") and first_quoted(t, 0) == name
+				return true
+			p = le + 1
+		return false
+
+	// Tween declarations (§6): variables are state variables (CVS-A008);
+	// a path tween names a declared path (CVS-X006) and animates exactly its
+	// X and Y variables (CVS-A011); orient = true needs the companion angle
+	// variable in state: (CVS-A012).
+	string validate_tweens(string body, string state_body)
+		integer base = scene_base_indent(body)
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string line = body.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if scene_indent(line) == base and t.startsWith("tween ")
+				string name = first_quoted(t, 0)
+				integer ce = scene_child_end(body, p, base)
+				string sub = ""
+				if ce > le + 1
+					sub = body.substring(le + 1, ce)
+				if ce > nxt
+					nxt = ce
+				integer i = 0
+				integer count = tween_var_count(sub)
+				while i < count
+					string v = tween_var_name(sub, i)
+					if state_var_type(state_body, v) == ""
+						return "canvasScene: tween \"" + name + "\" animates '" + v + "', which is not declared in state: (CVS-A008)"
+					i = i + 1
+				string along = first_quoted(body_attr(sub, "along", ""), 0)
+				boolean orient = body_attr(sub, "orient", "false") == "true"
+				if along != ""
+					if scene_declares(body, "path", along) == false
+						return "canvasScene: tween \"" + name + "\" has along = \"" + along + "\", but no path \"" + along + "\" is declared in this scene (CVS-X006)"
+					if count != 2
+						return "canvasScene: tween \"" + name + "\" follows path \"" + along + "\", so it takes exactly two variable lines, the X then the Y variable (CVS-A011); found " + count.toString()
+					if orient
+						string angle_var = orient_angle_var(tween_var_name(sub, 0), tween_var_name(sub, 1))
+						if angle_var == ""
+							return "canvasScene: tween \"" + name + "\" has orient = true: its variables must be named <name>X / <name>Y (or x / y) so the angle variable <name>Angle (or angle) can be found (CVS-A012)"
+						if state_var_type(state_body, angle_var) == ""
+							return "canvasScene: tween \"" + name + "\" has orient = true, which sets the angle variable '" + angle_var + "': declare it in state: (CVS-A012)"
+				else if orient
+					return "canvasScene: tween \"" + name + "\" has orient = true without along = \"path\" (CVS-A012: orient rotates along a path)"
+			p = nxt
+		return ""
+
+	// Every resource named by a string literal is declared in this scene:
+	// paths (canvas.clip path=, CVS-D012 / CVS-X006 — paths are scene-local),
+	// gradients (gradient=, CVS-D007), sprite sheets and images (asset names,
+	// CVS-D009), animStates (state=, start animState, animState.force,
+	// CVS-A005), tweens, timelines, animSprites (§6, §7, §9) and particle
+	// emitters (CVS-P005).
+	string validate_references(string body)
+		string assets_body = extract_scene_subblock(body, "assets")
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string t = body.substring(p, le).trim()
+			string problem = ""
+			if t.startsWith("//") == false
+				problem = line_reference_problem(body, assets_body, t)
+			if problem != ""
+				return "canvasScene: " + problem
+			p = le + 1
+		return ""
+
+	string line_reference_problem(string body, string assets_body, string t)
+		string ia = after_quoted(t)
+		if t.startsWith("canvas.")
+			string attrs = t
+			integer sp = t.indexOf(" ")
+			if sp != -1
+				attrs = t.substring(sp + 1, t.length()).trim()
+			if attrs.endsWith(":")
+				attrs = attrs.substring(0, attrs.length() - 1).trim()
+			string grad = first_quoted(get_iexpr(attrs, "gradient"), 0)
+			if grad != "" and scene_declares(body, "gradient", grad) == false
+				return "gradient \"" + grad + "\" is not declared in this scene; declare it at scene level with `gradient \"" + grad + "\" linear|radial ...:` (CVS-D007)"
+			if t.startsWith("canvas.clip ")
+				string clip_path = first_quoted(get_iexpr(attrs, "path"), 0)
+				if clip_path != "" and scene_declares(body, "path", clip_path) == false
+					return "canvas.clip path=\"" + clip_path + "\" names no path declared in this scene (CVS-D012; paths are scene-local, CVS-X006)"
+			if t.startsWith("canvas.image ")
+				string img = get_iexpr(attrs, "src")
+				if img.startsWith("\"") and asset_kind(assets_body, first_quoted(img, 0)) != "image"
+					return "canvas.image src=" + img + " is not an `image` asset declared in assets: — src names the asset, not a file path (CVS-D009)"
+			if t.startsWith("canvas.sprite ")
+				string state_name_src = get_iexpr(ia, "state")
+				string sheet_src = get_iexpr(ia, "sheet")
+				string sheet = first_quoted(t, 0)
+				if sheet_src.startsWith("\"") and state_name_src == ""
+					sheet = first_quoted(sheet_src, 0)
+				if asset_kind(assets_body, sheet) != "spritesheet"
+					return "canvas.sprite \"" + sheet + "\" is not a `spritesheet` asset declared in assets: — the sprite names the asset, not a file path (CVS-D009)"
+				if state_name_src.startsWith("\"") and scene_declares(body, "animState", first_quoted(state_name_src, 0)) == false
+					return "canvas.sprite state=" + state_name_src + " names no animState declared in this scene (CVS-A005)"
+			return ""
+		string name = first_quoted(t, 0)
+		if name == ""
+			return ""
+		if t.startsWith("play tween ") or t.startsWith("pause tween ") or t.startsWith("stop tween ") or t.startsWith("resume tween ") or t.startsWith("tween \"")
+			if t.startsWith("tween \"") and t.endsWith(":")
+				return ""
+			if scene_declares(body, "tween", name) == false
+				return "tween \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §6: `tween \"" + name + "\":` at scene level)"
+		if t.startsWith("play timeline ") or t.startsWith("pause timeline ") or t.startsWith("stop timeline ") or t.startsWith("resume timeline ") or t.startsWith("seek timeline ")
+			if scene_declares(body, "timeline", name) == false
+				return "timeline \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §7)"
+		if t.startsWith("start animState ") or t.startsWith("animState.force ")
+			if scene_declares(body, "animState", name) == false
+				return "animState \"" + name + "\" is not declared in this scene (CVS-A005)"
+		if t.startsWith("play animSprite ")
+			if scene_declares(body, "animSprite", name) == false
+				return "animSprite \"" + name + "\" is not declared in this scene (frame-canvas.ebnf §9)"
+		if t.startsWith("emit particles ") or t.startsWith("start particles ") or t.startsWith("stop particles ")
+			if scene_declares(body, "particles", name) == false
+				return "particles \"" + name + "\" is not declared in this scene; emitters are declared at scene level and triggered by name (CVS-P005)"
+		return ""
+
+	// Kind (image, spritesheet, sound, music, font) of asset `name` in assets:, or "".
+	string asset_kind(string assets_body, string name)
+		integer p = 0
+		while p < assets_body.length()
+			integer le = scene_line_end(assets_body, p)
+			string t = assets_body.substring(p, le).trim()
+			if first_quoted(t, 0) == name and name != ""
+				return line_key(t)
 			p = le + 1
 		return ""
 

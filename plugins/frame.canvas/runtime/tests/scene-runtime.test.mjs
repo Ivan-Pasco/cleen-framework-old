@@ -129,6 +129,8 @@ check(slideIn && slideIn.vars[0].ease === 'easeOutBack' && slideIn.vars[0].delay
 const bob = bridge.namedTweens.get('bob');
 check(bob && bob.vars[0].repeat === -1 && bob.vars[0].yoyo === true && bob.vars[0].ease === 'snap', 'repeat / yoyo / custom ease');
 check(bridge.namedTweens.get('follow').vars[0].pathName === 'loop', 'along= names the path');
+check(JSON.stringify(bridge.namedTweens.get('follow').vars.map((v) => [v.varName, v.pathAxis]))
+  === '[["followX",0],["followY",1],["followAngle",2]]', 'path tween: X, Y, then the orient angle variable (CVS-A011, CVS-A012)');
 check(bridge.customEases.get('snap').y2 === 1.55, 'customEase registered');
 
 const intro = bridge.namedTimelines.get('intro');
@@ -154,9 +156,40 @@ check(idle && idle.frameStart === 0 && idle.frameEnd === 3 && idle.fps === 8 && 
 const dust = bridge.namedParticles.get('dust');
 check(dust && dust.config.lifeMin === 0.3 && dust.config.angleMax === -20 && dust.config.burst === 6
   && dust.config.alphaEnd === 0 && dust.config.windX === 8, 'particles config is JSON the runtime reads');
+check(dust && dust.config.shape === 'rect' && dust.config.sizeMin === 3 && dust.config.sizeMax === 3,
+  `particle shape / size are not overwritten by the emitter: block (got ${dust && JSON.stringify(dust.config)})`);
+check(dust && dust.config.emitterShape === 'circle' && dust.config.emitterRadius === 12, 'emitter: shape / radius describe the spawn area');
+check(dust && dust.config.alphaStart === 1 && dust.config.alphaEnd === 0, 'overLifetime alpha = a..b (frame-canvas.ebnf §10 value_range)');
+check(dust && dust.config.speedStart === 1 && dust.config.speedEnd === 0.5 && dust.config.colorStart === '#ffffff'
+  && dust.config.colorEnd === '#000000', 'overLifetime speed / color ramps');
 check(bridge.gradients.get('skyFade').stops.length === 2 && bridge.gradients.get('sun').type === 'radial', 'gradients and stops');
 check(bridge.namedPaths.get('loop').length >= 5, 'path segments registered');
+check(JSON.stringify(bridge.namedPaths.get('wave')) === '[{"op":"move","x":0,"y":0},{"op":"curve","cpx":50,"cpy":-40,"x":100,"y":0}]',
+  `quadTo cpX= cpY= is a quadratic segment (got ${JSON.stringify(bridge.namedPaths.get('wave'))})`);
 check(bridge.cameraFollowX === 40 && bridge.cameraFollowY === 160 && bridge.cameraZoom === 1.5, 'camera follows state expressions');
+
+// A path tween writes the path position into its X / Y variables and the
+// travel direction, in degrees, into the angle variable.
+{
+  const follow = bridge.namedTweens.get('follow');
+  const saved = new Map(vars);
+  follow.state = 'playing';
+  follow.elapsed = 0;
+  follow.vars.forEach((v) => { v.done = false; });
+  const others = [...bridge.namedTweens].filter(([name]) => name !== 'follow').map(([, tw]) => [tw, tw.state]);
+  others.forEach(([tw]) => { tw.state = 'stopped'; });
+  const timelines = [...bridge.namedTimelines.values()].map((tl) => [tl, tl.state]);
+  timelines.forEach(([tl]) => { tl.state = 'stopped'; });
+  bridge._updateAnimations(1.5);
+  const mid = bridge._sampleNamedPath('loop', 0.5);
+  check(Math.abs(vars.get('followX') - mid.x) < 1e-9 && Math.abs(vars.get('followY') - mid.y) < 1e-9,
+    `along= writes the path point to the X / Y variables (got ${vars.get('followX')}, ${vars.get('followY')}; path ${mid.x}, ${mid.y})`);
+  check(Math.abs(vars.get('followAngle') - mid.angle * 180 / Math.PI) < 1e-9, `orient writes the travel direction in degrees (got ${vars.get('followAngle')})`);
+  follow.state = 'stopped';
+  timelines.forEach(([tl, state]) => { tl.state = state; });
+  others.forEach(([tw, state]) => { tw.state = state; });
+  for (const [k, v] of saved) vars.set(k, v);
+}
 
 // ---------------------------------------------------------------------------
 // Frames and handlers
@@ -172,10 +205,14 @@ check(bridge.namedParticles.get('dust').emitters.length === 1, 'emit particles a
 // per row) so the sprite draws reach the 2D context.
 Object.assign(bridge.namedSprites.get('hero'), { loaded: true, framesPerRow: 4, totalFrames: 8 });
 drawCalls.length = 0;
+bridge.lastKey = 'q';
 exports._frame_callback(1);
 check(vars.get('heroX') === 140, `onFrame: heroX += heroVX * dt (got ${vars.get('heroX')})`);
 check(bridge.namedAnimStates.get('heroFSM').current === 'attack', 'animState `when` transition evaluated each frame');
 check(bridge.cameraFollowX === 140, 'camera target re-evaluated each frame');
+check(drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Key: q'), 'input.lastKey is the last key pressed (a string)');
+check(drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'x=3 y=3' && a[1] === 10 && a[2] === 60),
+  'an `x=` / ` y=` inside a string literal is text, not an attribute');
 check(drawCalls.some(([k]) => k === 'fillRect') && drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Lives: 3'), 'draw: ran with state values (text value= is an expression)');
 // canvas.sprite anchorX / anchorY (CVS-C006): x, y name the point at
 // (anchorX, anchorY) of the 48x64 frame; with a transform it is the pivot.
@@ -190,6 +227,17 @@ check(transformCalls.some((c, i) => JSON.stringify(c) === '["translate",100,100]
   `rotation pivots on the anchor point (got ${JSON.stringify(transformCalls)})`);
 check(transformCalls.some((c) => JSON.stringify(c) === '["translate",62,92]'), 'flipped sprite: anchorX shifts the frame before the flip');
 check(bridge.animationFrames.size === 1, 'the frame callback does not request another animation loop');
+
+// `return` inside open scopes (on layer, canvas.clip, canvas.save) closes
+// them first: the 2D state stack is balanced at the end of the frame.
+vars.set('skipRest', 1);
+drawCalls.length = 0;
+exports._frame_callback(1);
+vars.set('skipRest', 0);
+const saves = drawCalls.filter(([k]) => k === 'save').length;
+const restores = drawCalls.filter(([k]) => k === 'restore').length;
+check(saves > 0 && saves === restores, `return inside scoped blocks restores every save (save ${saves}, restore ${restores})`);
+check(bridge.currentLayer === null, 'return inside on layer ends the layer');
 
 bridge.eventKey = 'ArrowLeft';
 exports._on_key_down(1);

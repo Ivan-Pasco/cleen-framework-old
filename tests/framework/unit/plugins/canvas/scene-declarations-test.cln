@@ -48,7 +48,9 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		number heroX = 40.0
 		number heroY = 200.0
 		number heroVX = 0.0
-		number pathT = 0.0
+		number followX = 0.0
+		number followY = 0.0
+		number followAngle = 0.0
 		integer lives = 3
 		boolean attacking = false
 
@@ -95,8 +97,11 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		yoyo = true
 		ease = "snap"
 
+	// Fixed: was one progress variable `pathT to=1.0`; a path tween drives
+	// its X and Y variables (CVS-A011), orient its angle variable (CVS-A012).
 	tween "follow":
-		pathT to=1.0
+		followX to=0
+		followY to=0
 		duration = 3.0
 		along = "loop"
 		orient = true
@@ -126,7 +131,9 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		lineTo x=200 y=0
 		curveTo x=200 y=100 cx=260 cy=50
 		curveTo x=0 y=100 cp1x=150 cp1y=140 cp2x=50 cp2y=140
-		arcTo x=0 y=50 radius=50 startAngle=90 endAngle=270
+		// Fixed: angles were degrees; arc angles are radians (the runtime hands
+		// them to CanvasRenderingContext2D.arc; the spec does not name the unit).
+		arcTo x=0 y=50 radius=50 startAngle=1.5707963267948966 endAngle=4.71238898038469
 		closed = true
 
 	gradient "skyFade" linear x1=0 y1=0 x2=0 y2=360:

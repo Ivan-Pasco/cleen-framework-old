@@ -10,24 +10,26 @@ canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
 	state:
 		number frameCount = 0.0
 
+	draw:
+		canvas.clear color="#0d1117"
+
+		// Center glow
+		canvas.circle x=400 y=200 radius=20 color="#ffffff30"
+		canvas.circle x=400 y=200 radius=10 color="#ffffff"
+
+		// Orbital particles
+		integer i = 0
+		while i < 50
+			number angle = i.toNumber() * 0.12 + frameCount * 0.02
+			number radius = 100.0 + i.toNumber() * 2.0
+			number x = 400.0 + math.cos(angle) * radius
+			number y = 200.0 + math.sin(angle) * radius
+			number size = 3.0 + math.sin(angle * 2.0) * 2.0
+
+			canvas.circle x=x y=y radius=size color="#4ecdc4"
+			canvas.circle x=x y=y radius=size * 2.0 color="#4ecdc450"
+
+			i = i + 1
+
 	onFrame: param="dt"
 		frameCount = frameCount + dt * 60.0
-
-		on layer "particles":
-			// Center glow
-			canvas.circle x=400 y=200 radius=20 color="#ffffff30"
-			canvas.circle x=400 y=200 radius=10 color="#ffffff"
-
-			// Orbital particles
-			integer i = 0
-			while i < 50
-				number angle = i.toNumber() * 0.12 + frameCount * 0.02
-				number radius = 100.0 + i.toNumber() * 2.0
-				number x = 400.0 + math.cos(angle) * radius
-				number y = 200.0 + math.sin(angle) * radius
-				number size = 3.0 + math.sin(angle * 2.0) * 2.0
-
-				canvas.circle x=x y=y radius=size color="#4ecdc4"
-				canvas.circle x=x y=y radius=size * 2.0 color="#4ecdc450"
-
-				i = i + 1

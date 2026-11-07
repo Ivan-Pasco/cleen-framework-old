@@ -26,10 +26,13 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		number heroX = 40.0
 		number heroY = 200.0
 		number heroVX = 0.0
-		number pathT = 0.0
+		number followX = 0.0
+		number followY = 0.0
+		number followAngle = 0.0
 		integer lives = 3
 		boolean attacking = false
 		number pivot = 0.5
+		boolean skipRest = false
 
 	animSprite "heroIdle":
 		sheet = "hero"
@@ -48,13 +51,18 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		speed = 20..60
 		angle = -160..-20
 		color = "#c8b89a"
+		shape = "rect"
 		size = 3
 		emitter:
 			rate = 25
 			burst = 6
+			shape = "circle"
+			radius = 12
 		overLifetime:
 			size = 1.0 -> 0.2
-			alpha = 1.0 -> 0.0
+			alpha = 1.0..0.0
+			speed = 1.0 -> 0.5
+			color = "#ffffff" -> "#000000"
 		forces:
 			gravity = 120
 			drag = 0.95
@@ -74,8 +82,11 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		yoyo = true
 		ease = "snap"
 
+	// Fixed: was one progress variable `pathT to=1.0`; a path tween drives
+	// its X and Y variables (CVS-A011), orient its angle variable (CVS-A012).
 	tween "follow":
-		pathT to=1.0
+		followX to=0
+		followY to=0
 		duration = 3.0
 		along = "loop"
 		orient = true
@@ -116,8 +127,14 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		lineTo x=200 y=0
 		curveTo x=200 y=100 cx=260 cy=50
 		curveTo x=0 y=100 cp1x=150 cp1y=140 cp2x=50 cp2y=140
-		arcTo x=0 y=50 radius=50 startAngle=90 endAngle=270
+		// Fixed: angles were degrees; arc angles are radians (the runtime hands
+		// them to CanvasRenderingContext2D.arc; the spec does not name the unit).
+		arcTo x=0 y=50 radius=50 startAngle=1.5707963267948966 endAngle=4.71238898038469
 		closed = true
+
+	path "wave":
+		moveTo x=0 y=0
+		quadTo cpX=50 cpY=-40 x=100 y=0
 
 	gradient "skyFade" linear x1=0 y1=0 x2=0 y2=360:
 		stop 0.0 color="#0b1020"
@@ -148,6 +165,8 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 	draw:
 		canvas.rect x=0 y=0 width=640 height=360 gradient="skyFade"
 		canvas.circle x=500 y=80 radius=60 gradient="sun"
+
+		// A blank line and a comment inside a body keep the lines after them.
 		on layer "world":
 			canvas.sprite "hero" x=heroX y=heroY state="heroFSM"
 			canvas.sprite "hero" x=300 y=200 clip=1 anchorX=0.5 anchorY=1
@@ -156,8 +175,17 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 			canvas.sprite "hero" x=50 y=60 clip=0 flipX=true anchorX=0.25
 		on layer "hud":
 			canvas.text value="Lives: " + lives.toString() x=10 y=20 size=14 color="#ffffff" font="pixel"
+			canvas.text value="Key: " + input.lastKey x=10 y=40 size=14 color="#ffffff"
+			canvas.text value="x=" + lives.toString() + " y=" + lives.toString() x=10 y=60 size=14 color="#ffffff"
+			canvas.clip x=0 y=0 width=640 height=360:
+				canvas.save
+				if skipRest
+					return
+				canvas.circle x=1 y=1 radius=1 color="#ffffff"
+				canvas.restore
 
 	onFrame: param="dt"
+
 		heroX = heroX + heroVX * dt
 
 

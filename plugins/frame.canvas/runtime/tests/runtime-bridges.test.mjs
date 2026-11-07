@@ -33,7 +33,7 @@ const pluginDir = join(runtimeDir, '..');
 
 const { CanvasBridge } = require(join(runtimeDir, 'canvas-bridge.js'));
 globalThis.CanvasBridge = CanvasBridge; // loader.js constructs the bridge from the global
-const { CleanCanvasLoader } = require(join(runtimeDir, 'loader.js'));
+const { CleanCanvas, CleanCanvasLoader } = require(join(runtimeDir, 'loader.js'));
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -331,6 +331,21 @@ test('scene / page stores return LP strings on the module heap', () => {
   eq(readLP(loader, env._anim_state_current(...raw(loader, 'noFsm'))), '', 'unknown animState');
 });
 
+test('string returns need the module allocator (no fixed scratch region)', () => {
+  const bridge = new CanvasBridge();
+  bridge.memory = new WebAssembly.Memory({ initial: 1 });
+  throws(() => bridge.writeString('x'), /module allocator/, 'no allocator');
+  const { loader, bridge: wired } = freshLoader();
+  eq(readLP(loader, wired.writeString('ok')), 'ok', 'loader-wired bridge allocates on the module heap');
+});
+
+test('input.lastKey returns the last key pressed as an LP string', () => {
+  const { loader, env, bridge } = freshLoader();
+  eq(readLP(loader, env._input_get_last_key()), '', 'no key pressed yet');
+  bridge.lastKey = 'ArrowUp';
+  eq(readLP(loader, env._input_get_last_key()), 'ArrowUp', 'last key');
+});
+
 test('collision helpers return 1 / 0 (CVS-P001) and a ray distance or -1 (CVS-P002)', () => {
   const { env } = freshLoader();
   eq([env._collision_circles(0, 0, 5, 8, 0, 3), env._collision_circles(0, 0, 1, 8, 0, 1)], [1, 0], 'circles');
@@ -368,6 +383,89 @@ test('tweens: a NaN from= starts at the variable value when the tween plays (CVS
   eq(bridge.canvasVars.get('x'), 20, 'finished');
 });
 
+test('tweens: repeat=N plays N+1 times; with yoyo every odd play runs back (CVS-A010)', () => {
+  const { loader, env, bridge } = freshLoader();
+  const define = (name, repeat, yoyo) => env._tween_define_var(...raw(loader, name), ...raw(loader, 'v' + name), 0, 10, 1, ...raw(loader, 'linear'), repeat, yoyo, 0, ...raw(loader, ''));
+  const run = (name, steps) => {
+    env._tween_play(...raw(loader, name));
+    const seen = [];
+    for (const dt of steps) { bridge._updateAnimations(dt); seen.push(bridge.canvasVars.get('v' + name)); }
+    return seen;
+  };
+  define('a', 1, 1);
+  eq(run('a', [0.5, 0.5, 0.5, 0.6]), [5, 10, 5, 0], 'repeat=1 yoyo: out and back, ends at from');
+  eq(bridge.namedTweens.get('a').state, 'stopped', 'repeat=1 yoyo stops after two plays');
+  define('b', 2, 1);
+  eq(run('b', [0.5, 1, 1, 0.75]), [5, 5, 5, 10], 'repeat=2 yoyo: out, back, out — ends at to');
+  define('c', 1, 0);
+  eq(run('c', [0.5, 1, 0.75]), [5, 5, 10], 'repeat=1 without yoyo restarts each play and ends at to');
+});
+
+test('path sampling follows the curve shape, not the segment endpoints', () => {
+  const { loader, env, bridge } = freshLoader();
+  const near = (pt, x, y, what) => ok(Math.abs(pt.x - x) < 0.05 && Math.abs(pt.y - y) < 0.05, `${what}: expected (${x}, ${y}), got (${pt.x}, ${pt.y})`);
+  const name = (n) => raw(loader, n);
+  env._path_begin(...name('quad'));
+  env._path_move_to(...name('quad'), 0, 0);
+  env._path_curve_to(...name('quad'), 50, 100, 100, 0);
+  near(bridge._sampleNamedPath('quad', 0.5), 50, 50, 'quadratic midpoint');
+  env._path_begin(...name('cubic'));
+  env._path_move_to(...name('cubic'), 0, 0);
+  env._path_cubic_to(...name('cubic'), ...[0, 100, 100, 100, 100, 0]);
+  near(bridge._sampleNamedPath('cubic', 0.5), 50, 75, 'cubic midpoint');
+  // arcTo x= y= is the centre: a half circle from angle 0 to pi passes
+  // through the bottom of the circle (y grows downwards).
+  env._path_begin(...name('arc'));
+  env._path_move_to(...name('arc'), 200, 100);
+  env._path_arc_to(...name('arc'), 100, 100, 100, 0, Math.PI);
+  near(bridge._sampleNamedPath('arc', 0.5), 100, 200, 'arc midpoint');
+  near(bridge._sampleNamedPath('arc', 1), 0, 100, 'arc end');
+  // The pen jumps to the arc start, like CanvasRenderingContext2D.arc.
+  env._path_begin(...name('arcJump'));
+  env._path_move_to(...name('arcJump'), 100, 0);
+  env._path_arc_to(...name('arcJump'), 100, 100, 50, 0, Math.PI / 2);
+  near(bridge._sampleNamedPath('arcJump', 0), 100, 0, 'starts at the pen');
+  // closePath returns to the start of the current sub-path.
+  env._path_begin(...name('sq'));
+  env._path_move_to(...name('sq'), 0, 0);
+  env._path_line_to(...name('sq'), 100, 0);
+  env._path_line_to(...name('sq'), 100, 100);
+  env._path_close(...name('sq'));
+  // 100 + 100 + 141.42 long: 90% is 107.28 along the closing diagonal.
+  near(bridge._sampleNamedPath('sq', 0.9), 24.142, 24.142, 'closing diagonal');
+  const tangent = bridge._sampleNamedPath('quad', 0);
+  ok(Math.abs(tangent.angle - Math.atan2(100, 50)) < 0.05, `tangent at the start points at the control point (got ${tangent.angle})`);
+});
+
+// A canvas entry whose 2D context records its calls.
+function recordingCanvas(bridge, id = 1) {
+  const calls = [];
+  const ctx = new Proxy({}, { get: (_, key) => (...args) => { calls.push([key, ...args]); } });
+  bridge.canvases.set(id, { ctx, width: 100, height: 100 });
+  return calls;
+}
+
+test('canvas.clip path= with an undeclared name masks everything, not the last drawn path', () => {
+  const { loader, env, bridge } = freshLoader();
+  const calls = recordingCanvas(bridge);
+  const original = console.error;
+  let logged = '';
+  console.error = (m) => { logged = m; };
+  try {
+    eq(env._canvas_clip_path(1, ...raw(loader, 'ghost')), -1, 'unknown path reported');
+  } finally {
+    console.error = original;
+  }
+  eq(calls.map((c) => c[0]), ['save', 'beginPath', 'clip'], 'empty clip region, balanced with clip_end');
+  ok(logged.includes('ghost') && logged.includes('CVS-X006'), 'error names the path and the rule');
+  env._path_begin(...raw(loader, 'box'));
+  env._path_move_to(...raw(loader, 'box'), 0, 0);
+  env._path_line_to(...raw(loader, 'box'), 5, 0);
+  calls.length = 0;
+  eq(env._canvas_clip_path(1, ...raw(loader, 'box')), 0, 'declared path');
+  eq(calls.map((c) => c[0]), ['save', 'beginPath', 'moveTo', 'lineTo', 'clip'], 'clip to the named path');
+});
+
 test('particles: config from _particles_define_json drives spawn ranges', () => {
   const { loader, env, bridge } = freshLoader();
   const cfg = { lifeMin: 1, lifeMax: 1, speedMin: 10, speedMax: 10, angleMin: -90, angleMax: -90, sizeMin: 4, sizeMax: 4, color: '#fff', burst: 3 };
@@ -378,6 +476,30 @@ test('particles: config from _particles_define_json drives spawn ranges', () => 
   const p = em.particles[0];
   ok(Math.abs(p.vx) < 1e-9 && Math.abs(p.vy + 10) < 1e-9, 'angle is in degrees: -90 points up');
   eq([p.life, p.maxLife, p.size], [1, 1, 4], 'life and size from the config');
+});
+
+test('particles: emitter area, overLifetime speed and colour ramps', () => {
+  const { loader, env, bridge } = freshLoader();
+  const define = (name, cfg) => env._particles_define_json(...raw(loader, name), ...raw(loader, JSON.stringify({ lifeMin: 1, lifeMax: 1, speedMin: 0, speedMax: 0, burst: 40, ...cfg })));
+  define('ring', { emitterShape: 'circle', emitterRadius: 5 });
+  env._particles_emit(...raw(loader, 'ring'), 100, 100);
+  const ring = bridge.namedParticles.get('ring').emitters[0].particles;
+  ok(ring.every((p) => Math.hypot(p.x - 100, p.y - 100) <= 5 + 1e-9) && ring.some((p) => Math.hypot(p.x - 100, p.y - 100) > 0.5),
+    'circle emitter spawns inside its radius');
+  define('strip', { emitterShape: 'rect w=20 h=2' });
+  env._particles_emit(...raw(loader, 'strip'), 0, 0);
+  const strip = bridge.namedParticles.get('strip').emitters[0].particles;
+  ok(strip.every((p) => Math.abs(p.x) <= 10 && Math.abs(p.y) <= 1) && strip.some((p) => Math.abs(p.x) > 2), 'rect emitter with inline w= / h=');
+  define('point', {});
+  env._particles_emit(...raw(loader, 'point'), 7, 8);
+  ok(bridge.namedParticles.get('point').emitters[0].particles.every((p) => p.x === 7 && p.y === 8), 'point emitter (default)');
+  define('slow', { speedMin: 10, speedMax: 10, angleMin: 0, angleMax: 0, burst: 1, speedStart: 1, speedEnd: 0 });
+  env._particles_emit(...raw(loader, 'slow'), 0, 0);
+  bridge._updateAnimations(0.5);
+  const p = bridge.namedParticles.get('slow').emitters[0].particles[0];
+  ok(Math.abs(p.x - 2.5) < 1e-9, `speed multiplier halfway through life is 0.5 (moved ${p.x})`);
+  eq(bridge._lerpColor('#ffffff', '#000', 0.5), 'rgb(128, 128, 128)', 'colour ramp midpoint');
+  eq(bridge._lerpColor('red', '#000', 0.5), 'red', 'non-hex colour stays as given');
 });
 
 test('animState: onComplete moves to the next state when the clip finishes (CVS-A004)', () => {
@@ -510,6 +632,22 @@ test('_time_relative: wording relative to now, localized', () => {
   eq(rel(now - 3 * 3600, 'es'), 'hace 3 horas', 'Spanish');
   eq(rel(now + 2 * 86400 + 30, 'fr'), 'dans 2 jours', 'French');
   eq(rel(now - 400 * 86400, 'de'), 'vor 1 Jahr', 'German');
+});
+
+// ---------------------------------------------------------------------------
+// Module URL policy (shell.html ?wasm=)
+// ---------------------------------------------------------------------------
+
+test('only same-origin relative module paths are loaded', () => {
+  const page = 'https://game.example/play/shell.html?wasm=x';
+  const resolve = (u) => CleanCanvas.sameOriginModuleUrl(u, page);
+  eq(resolve('app.wasm'), 'https://game.example/play/app.wasm', 'relative path');
+  eq(resolve('build/level1.wasm'), 'https://game.example/play/build/level1.wasm', 'nested relative path');
+  eq(resolve('/static/app.wasm'), 'https://game.example/static/app.wasm', 'root-relative path');
+  for (const bad of ['https://evil.example/x.wasm', 'http://game.example/app.wasm', '//evil.example/x.wasm',
+    'data:application/wasm;base64,AGFzbQ==', 'javascript:alert(1)', 'blob:https://evil.example/1', '/\\evil.example/x.wasm', ' ', '']) {
+    throws(() => resolve(bad), /refusing to load|non-empty relative path/, `rejects ${JSON.stringify(bad)}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

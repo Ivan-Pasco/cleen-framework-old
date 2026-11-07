@@ -41,6 +41,10 @@ canvasScene: id="flow" width=400 height=300
 		spritesheet "hero" src="sprites/hero.png" frameWidth=32 frameHeight=32
 		image "logo" src="images/logo.png"
 
+	// Fixed: `pulse` was not declared; a tween animates state: variables (CVS-A008).
+	state:
+		number pulse = 0.0
+
 	tween "pulse":
 		pulse from=0.0 to=1.0
 		duration = 0.5
@@ -91,7 +95,9 @@ canvasScene: id="flow" width=400 height=300
 			canvas.moveTo x=0 y=0
 			canvas.lineTo x=10 y=10
 			canvas.curveTo cpX=5 cpY=0 x=20 y=20
-			canvas.arc x=20 y=20 radius=5 startAngle=0 endAngle=180
+			// Fixed: angles were degrees; arc angles are radians (the runtime hands
+			// them to CanvasRenderingContext2D.arc; the spec does not name the unit).
+			canvas.arc x=20 y=20 radius=5 startAngle=0 endAngle=3.141592653589793
 			canvas.closePath
 			canvas.fill color="#334455"
 			canvas.stroke color="#ffffff" width=2

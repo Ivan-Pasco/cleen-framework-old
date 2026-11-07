@@ -174,17 +174,6 @@ class CanvasBridge {
     this.cameraBounds = null; // {x, y, w, h} or null
 
     // ========================================================================
-    // RETURN-STRING HEAP (for bridge functions that return strings)
-    // ========================================================================
-    // Sits past the loader's STRING_BUFFER_OFFSET=1MB region. The 1MB window
-    // here is large enough for many frames of short string returns before it
-    // wraps. Clean reads each returned string immediately, so wrap-around is
-    // safe in practice.
-    this._returnHeapBase = 2 * 1024 * 1024;
-    this._returnHeapPtr = this._returnHeapBase;
-    this._returnHeapMax = 3 * 1024 * 1024;
-
-    // ========================================================================
     // WASM REFERENCES
     // ========================================================================
     this.memory = null;
@@ -229,36 +218,22 @@ class CanvasBridge {
 
   // Two calling conventions:
   //   writeString(str, ptr) — raw write at given ptr, returns byte length
-  //   writeString(str)      — allocate from the bridge return-string heap
-  //                           and write a 4-byte LE length-prefix followed
-  //                           by the UTF-8 bytes. Returns the pointer to the
-  //                           length prefix, which is the format Clean reads
-  //                           when a bridge function returns a string.
+  //   writeString(str)      — allocate on the module heap (the allocator
+  //                           setWasmInstance received) and write a 4-byte
+  //                           LE length prefix followed by the UTF-8 bytes.
+  //                           Returns the pointer to the length prefix, the
+  //                           format Clean reads when a bridge function
+  //                           returns a string.
   writeString(str, ptr) {
     if (!this.memory) return 0;
     const bytes = new TextEncoder().encode(str || '');
-    if (ptr === undefined && this.allocate) {
-      // Length-prefixed string on the module heap.
+    if (ptr === undefined) {
+      if (!this.allocate) {
+        throw new Error('CanvasBridge: a string return needs the module allocator (setWasmInstance(instance, allocate))');
+      }
       const result = this.allocate(4 + bytes.length);
       new DataView(this.memory.buffer).setUint32(result, bytes.length, true);
       new Uint8Array(this.memory.buffer, result + 4, bytes.length).set(bytes);
-      return result;
-    }
-    if (ptr === undefined) {
-      // Length-prefixed allocation in the bridge's return-string region
-      // (standalone use without a loader-provided allocator).
-      if (this._returnHeapPtr + bytes.length + 8 >= this._returnHeapMax) {
-        // wrap around — return strings are short-lived; Clean reads them
-        // immediately after the call.
-        this._returnHeapPtr = this._returnHeapBase;
-      }
-      const result = this._returnHeapPtr;
-      const dv = new DataView(this.memory.buffer);
-      dv.setUint32(result, bytes.length, true);
-      const view = new Uint8Array(this.memory.buffer, result + 4, bytes.length);
-      view.set(bytes);
-      const pad = (4 - (bytes.length % 4)) % 4;
-      this._returnHeapPtr += 4 + bytes.length + pad;
       return result;
     }
     const view = new Uint8Array(this.memory.buffer, ptr, bytes.length);
@@ -630,7 +605,11 @@ class CanvasBridge {
           const intCycle = Math.floor(cycle);
           const frac = cycle - intCycle;
           if (v.repeat !== -1 && intCycle > v.repeat) {
+            // repeat=N plays N+1 times (CVS-A010); the last play is number
+            // N, which with yoyo runs backwards when N is odd and so ends
+            // at `from`.
             cycle = 1; v.done = true;
+            if (v.yoyo && (v.repeat % 2 === 1)) direction = -1;
           } else {
             cycle = frac;
             if (v.yoyo && (intCycle % 2 === 1)) direction = -1;
@@ -641,13 +620,21 @@ class CanvasBridge {
         const tt = direction === 1 ? cycle : 1 - cycle;
         const eased = this._evalEaseByName(v.ease, tt);
         let value;
-        if (v.pathName && this.namedPaths.has(v.pathName)) {
+        if (v.pathName) {
+          // Path tween (CVS-A011): the variable lines are the X and Y
+          // variables, in that order; with orient = true the plugin adds the
+          // companion angle variable as a third line (CVS-A012), set to the
+          // travel direction in degrees, the unit of canvas.rotate (CVS-C002).
+          if (!this.namedPaths.has(v.pathName)) {
+            if (!v.missingPathReported) {
+              console.error(`[CanvasBridge] tween along= names path "${v.pathName}", which is not declared (CVS-X006)`);
+              v.missingPathReported = true;
+            }
+            if (!v.done) allDone = false;
+            continue;
+          }
           const pt = this._sampleNamedPath(v.pathName, eased);
-          // path tween writes "<varName>_x" and "<varName>_y"
-          this.canvasVars.set(v.varName + '_x', pt.x);
-          this.canvasVars.set(v.varName + '_y', pt.y);
-          if (v.orient) this.canvasVars.set(v.varName + '_angle', pt.angle);
-          value = eased;
+          value = v.pathAxis === 0 ? pt.x : v.pathAxis === 1 ? pt.y : pt.angle * 180 / Math.PI;
         } else {
           // A NaN `from` means the tween omitted from= (CVS-A009): start
           // from the variable's value at play time, captured in _tween_play.
@@ -740,8 +727,13 @@ class CanvasBridge {
           }
           // drag is a per-frame velocity multiplier (CVS-P009).
           if (sys.config.drag != null) { p.vx *= sys.config.drag; p.vy *= sys.config.drag; }
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
+          // overLifetime speed: a multiplier ramped from speedStart to speedEnd.
+          const k = p.maxLife > 0 ? 1 - p.life / p.maxLife : 1;
+          const s0 = cfg.speedStart != null ? cfg.speedStart : 1;
+          const s1 = cfg.speedEnd != null ? cfg.speedEnd : 1;
+          const m = s0 + (s1 - s0) * k;
+          p.x += p.vx * m * dt;
+          p.y += p.vy * m * dt;
         }
         // continuous emission
         if (em.continuous) {
@@ -769,7 +761,7 @@ class CanvasBridge {
         varName, from: start, start, to, duration: duration || 0,
         ease: ease || 'linear',
         repeat: repeat | 0, yoyo: !!yoyo, delay: delay || 0,
-        pathName: null, orient: 0, done: false,
+        pathName: null, pathAxis: -1, done: false,
       }],
     });
   }
@@ -783,11 +775,15 @@ class CanvasBridge {
 
   // Particle config keys (built by the plugin from a `particles` block):
   // lifeMin/lifeMax, speedMin/speedMax, angleMin/angleMax (degrees,
-  // 0 = right, -90 = up), sizeMin/sizeMax, color, shape, rate, burst,
-  // gravity, drag, windX/windY, attractorX/attractorY/attractorStrength,
+  // 0 = right, -90 = up), sizeMin/sizeMax (diameter), color, shape, rate,
+  // burst, gravity, drag, windX/windY, attractorX/attractorY/attractorStrength,
   // turbulenceStrength/turbulenceScale,
-  // alphaStart/alphaEnd, sizeStart/sizeEnd (multipliers).
+  // emitterShape ("point", "circle", "rect"; the shape string may carry
+  // `radius=` / `w=` / `h=`) with emitterRadius / emitterWidth / emitterHeight,
+  // alphaStart/alphaEnd, sizeStart/sizeEnd, speedStart/speedEnd
+  // (multipliers), colorStart/colorEnd (hex colours) — overLifetime ramps.
   _spawnParticle(x, y, cfg) {
+    [x, y] = this._spawnPoint(x, y, cfg);
     const pick = (min, max, dflt) => {
       const lo = cfg[min] != null ? cfg[min] : dflt[0];
       const hi = cfg[max] != null ? cfg[max] : (cfg[min] != null ? lo : dflt[1]);
@@ -805,6 +801,43 @@ class CanvasBridge {
       size: pick('sizeMin', 'sizeMax', [2, 5]),
       color: cfg.color || '#fff',
     };
+  }
+
+  // Spawn position inside the emitter area around (x, y).
+  _spawnPoint(x, y, cfg) {
+    const words = String(cfg.emitterShape || 'point').trim().split(/\s+/);
+    const opts = {};
+    for (const w of words.slice(1)) {
+      const eq = w.indexOf('=');
+      if (eq > 0) opts[w.slice(0, eq)] = Number(w.slice(eq + 1));
+    }
+    if (words[0] === 'circle') {
+      const r = opts.radius != null ? opts.radius : (cfg.emitterRadius || 0);
+      const a = Math.random() * Math.PI * 2;
+      const d = r * Math.sqrt(Math.random());
+      return [x + Math.cos(a) * d, y + Math.sin(a) * d];
+    }
+    if (words[0] === 'rect') {
+      const w = opts.w != null ? opts.w : (cfg.emitterWidth || 0);
+      const h = opts.h != null ? opts.h : (cfg.emitterHeight || 0);
+      return [x + (Math.random() - 0.5) * w, y + (Math.random() - 0.5) * h];
+    }
+    return [x, y];
+  }
+
+  // Colour between two hex colours (#rgb or #rrggbb) at k in 0..1; `a`
+  // unchanged when either is not a hex colour.
+  _lerpColor(a, b, k) {
+    const parse = (c) => {
+      const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(c).trim());
+      if (!m) return null;
+      const h = m[1].length === 3 ? m[1].split('').map((d) => d + d).join('') : m[1];
+      return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+    };
+    const ca = parse(a), cb = parse(b);
+    if (!ca || !cb) return a;
+    const mix = ca.map((v, i) => Math.round(v + (cb[i] - v) * k));
+    return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
   }
 
   // `canvas.image src=` names an `image` asset (CVS-D009); a src that is
@@ -843,7 +876,8 @@ class CanvasBridge {
           const size = p.size * (s0 + (s1 - s0) * k);
           ctx.save();
           ctx.globalAlpha *= Math.max(0, Math.min(1, a0 + (a1 - a0) * k));
-          ctx.fillStyle = p.color;
+          ctx.fillStyle = cfg.colorStart != null && cfg.colorEnd != null
+            ? this._lerpColor(cfg.colorStart, cfg.colorEnd, k) : p.color;
           if (cfg.shape === 'rect') {
             ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
           } else {
@@ -896,48 +930,104 @@ class CanvasBridge {
     return names[id] || 'linear';
   }
 
-  _sampleNamedPath(name, t) {
-    const path = this.namedPaths.get(name);
-    if (!path || !path.length) return { x: 0, y: 0, angle: 0 };
-    // Linearize path: walk segments and pick a point at fractional length t
-    // For simplicity, treat all segments as straight lines between their
-    // endpoints. (Bezier/arc segments are approximated by their endpoint.)
+  // Polyline of a named path: every curve and arc flattened into short
+  // straight pieces, in drawing order. Each point records whether the pen
+  // was down on the way to it (a moveTo lifts it), so sampling skips jumps.
+  // Segments follow _replayPathSegments: `curve` is quadratic, `cubic` is
+  // cubic, `arc` is CanvasRenderingContext2D.arc (x, y = centre, angles in
+  // radians, clockwise on screen) — the pen draws a line to the arc start.
+  _flattenNamedPath(segs) {
     const pts = [];
-    let cx = 0, cy = 0;
-    for (const seg of path) {
+    let cx = 0, cy = 0;          // current pen position
+    let sx = 0, sy = 0;          // start of the current sub-path
+    let started = false;
+    const STEPS = 32;
+    const lineTo = (x, y) => {
+      if (!started) { pts.push({ x, y, pen: false }); sx = x; sy = y; started = true; }
+      else pts.push({ x, y, pen: true });
+      cx = x; cy = y;
+    };
+    for (const seg of segs) {
       switch (seg.op) {
-        case 'move': cx = seg.x; cy = seg.y; pts.push({ x: cx, y: cy }); break;
+        case 'move':
+          pts.push({ x: seg.x, y: seg.y, pen: false });
+          cx = sx = seg.x; cy = sy = seg.y; started = true;
+          break;
         case 'line':
-        case 'curve':
-        case 'cubic':
-        case 'arc':
-          cx = seg.x; cy = seg.y; pts.push({ x: cx, y: cy }); break;
+          lineTo(seg.x, seg.y);
+          break;
+        case 'curve': {
+          const x0 = cx, y0 = cy;
+          if (!started) lineTo(seg.cpx, seg.cpy);
+          for (let i = 1; i <= STEPS; i++) {
+            const u = i / STEPS, m = 1 - u;
+            lineTo(m * m * x0 + 2 * m * u * seg.cpx + u * u * seg.x,
+                   m * m * y0 + 2 * m * u * seg.cpy + u * u * seg.y);
+          }
+          break;
+        }
+        case 'cubic': {
+          const x0 = cx, y0 = cy;
+          if (!started) lineTo(seg.cp1x, seg.cp1y);
+          for (let i = 1; i <= STEPS; i++) {
+            const u = i / STEPS, m = 1 - u;
+            lineTo(m * m * m * x0 + 3 * m * m * u * seg.cp1x + 3 * m * u * u * seg.cp2x + u * u * u * seg.x,
+                   m * m * m * y0 + 3 * m * m * u * seg.cp1y + 3 * m * u * u * seg.cp2y + u * u * u * seg.y);
+          }
+          break;
+        }
+        case 'arc': {
+          const TAU = Math.PI * 2;
+          let sweep = seg.endAngle - seg.startAngle;
+          sweep = sweep >= TAU ? TAU : ((sweep % TAU) + TAU) % TAU;
+          const n = Math.max(1, Math.ceil(sweep / (Math.PI / 32)));
+          for (let i = 0; i <= n; i++) {
+            const a = seg.startAngle + sweep * (i / n);
+            lineTo(seg.x + seg.radius * Math.cos(a), seg.y + seg.radius * Math.sin(a));
+          }
+          break;
+        }
         case 'close':
-          if (pts.length) { pts.push({ x: pts[0].x, y: pts[0].y }); cx = pts[0].x; cy = pts[0].y; }
+          if (started) { pts.push({ x: sx, y: sy, pen: true }); cx = sx; cy = sy; }
           break;
       }
     }
-    if (pts.length < 2) return { x: pts[0] ? pts[0].x : 0, y: pts[0] ? pts[0].y : 0, angle: 0 };
+    return pts;
+  }
+
+  // Point at fraction t (0..1) of the drawn length of a named path, with
+  // the travel direction there (radians, atan2 on screen axes).
+  _sampleNamedPath(name, t) {
+    const path = this.namedPaths.get(name);
+    if (!path || !path.length) return { x: 0, y: 0, angle: 0 };
+    const pts = this._flattenNamedPath(path);
+    if (!pts.length) return { x: 0, y: 0, angle: 0 };
+    const lens = [0];
     let total = 0;
-    const lens = [];
     for (let i = 1; i < pts.length; i++) {
-      const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      const d = pts[i].pen ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) : 0;
       lens.push(d); total += d;
     }
     if (total === 0) return { x: pts[0].x, y: pts[0].y, angle: 0 };
-    let target = t * total;
-    for (let i = 0; i < lens.length; i++) {
+    let target = Math.max(0, Math.min(1, t)) * total;
+    let last = 1;
+    for (let i = 1; i < pts.length; i++) {
+      if (lens[i] === 0) continue;
+      last = i;
       if (target <= lens[i]) {
-        const f = lens[i] > 0 ? target / lens[i] : 0;
-        const x = pts[i].x + (pts[i + 1].x - pts[i].x) * f;
-        const y = pts[i].y + (pts[i + 1].y - pts[i].y) * f;
-        const angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
-        return { x, y, angle };
+        const f = target / lens[i];
+        return {
+          x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f,
+          y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f,
+          angle: Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x),
+        };
       }
       target -= lens[i];
     }
-    const last = pts[pts.length - 1];
-    return { x: last.x, y: last.y, angle: 0 };
+    return {
+      x: pts[last].x, y: pts[last].y,
+      angle: Math.atan2(pts[last].y - pts[last - 1].y, pts[last].x - pts[last - 1].x),
+    };
   }
 
   // ==========================================================================
@@ -1407,11 +1497,17 @@ class CanvasBridge {
           const name = self.readString(namePtr, nameLen);
           const segs = self.namedPaths.get(name);
           const ctx = entry.ctx;
+          // The save pairs with _canvas_clip_end. The clip path always starts
+          // empty, so an unknown name masks everything instead of clipping to
+          // whatever path was drawn last.
           ctx.save();
-          if (segs) {
-            ctx.beginPath();
-            self._replayPathSegments(ctx, segs);
+          ctx.beginPath();
+          if (!segs) {
+            console.error(`[CanvasBridge] canvas.clip path="${name}": no such path is declared (CVS-X006)`);
+            ctx.clip();
+            return -1;
           }
+          self._replayPathSegments(ctx, segs);
           ctx.clip();
           return 0;
         },
@@ -1428,10 +1524,9 @@ class CanvasBridge {
         // ====================================================================
         // Each canvas's current path is the Canvas2D context's own internal
         // path. _canvas_begin_path resets it; the move/line/curve/cubic/arc
-        // calls extend it; _canvas_fill_path commits it with a fill color.
-        // Stroke-the-current-path is intentionally not bridged here — strokes
-        // go through the immediate-mode shape functions (_canvas_line,
-        // _canvas_*_outline) which manage their own paths.
+        // calls extend it; _canvas_fill_path / _canvas_fill_path_gradient
+        // fill it and _canvas_stroke_path strokes it (canvas.fill /
+        // canvas.stroke, spec §6.10).
 
         _canvas_begin_path(canvasId) {
           const entry = self.canvases.get(canvasId);
@@ -2180,8 +2275,9 @@ class CanvasBridge {
         },
 
         _input_get_last_key() {
-          // Would need to write to WASM memory - return 0 for now
-          return 0;
+          // input.lastKey: the KeyboardEvent.key of the most recent keydown
+          // on a scene canvas ("" before any key), as an LP string.
+          return self.writeString(self.lastKey || '');
         },
 
         // ====================================================================
@@ -2978,10 +3074,13 @@ class CanvasBridge {
           if (!self._isKnownEase(ease)) {
             console.error(`[CanvasBridge] tween "${name}": unknown easing "${ease}" (frame-canvas.ebnf §28)`);
           }
+          // A path tween's lines arrive in order: X, Y, then the orient
+          // angle variable (see _updateAnimations).
+          const pathAxis = pathName ? tw.vars.filter((x) => x.pathName).length : -1;
           tw.vars.push({
             varName, from, start: 0, to, duration, ease,
             repeat: repeat | 0, yoyo: !!yoyo, delay,
-            pathName: pathName || null, orient: 0, done: false,
+            pathName: pathName || null, pathAxis, done: false,
           });
           return 0;
         },
@@ -3041,14 +3140,18 @@ class CanvasBridge {
           if (!self.namedTweens.has(tweenName)) {
             self.namedTweens.set(tweenName, { state: 'stopped', elapsed: 0, vars: [] });
           }
+          // No DSL form reaches this bridge (the plugin registers path
+          // tweens with _tween_define_var). It drives `<tweenName>_x`,
+          // `<tweenName>_y` and, with orient, `<tweenName>_angle` (degrees).
           const tw = self.namedTweens.get(tweenName);
-          tw.vars.push({
-            varName: tweenName,
-            from: 0, to: 1, duration,
+          const suffixes = orient ? ['_x', '_y', '_angle'] : ['_x', '_y'];
+          suffixes.forEach((suffix, pathAxis) => tw.vars.push({
+            varName: tweenName + suffix,
+            from: 0, to: 0, duration,
             ease: self._easeIdToName(easingId),
             repeat: 0, yoyo: false, delay: 0,
-            pathName, orient: orient ? 1 : 0, done: false,
-          });
+            pathName, pathAxis, done: false,
+          }));
           tw.state = 'playing';
           tw.elapsed = 0;
           return 0;
