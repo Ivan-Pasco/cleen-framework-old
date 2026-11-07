@@ -900,48 +900,104 @@ class CanvasBridge {
     return names[id] || 'linear';
   }
 
-  _sampleNamedPath(name, t) {
-    const path = this.namedPaths.get(name);
-    if (!path || !path.length) return { x: 0, y: 0, angle: 0 };
-    // Linearize path: walk segments and pick a point at fractional length t
-    // For simplicity, treat all segments as straight lines between their
-    // endpoints. (Bezier/arc segments are approximated by their endpoint.)
+  // Polyline of a named path: every curve and arc flattened into short
+  // straight pieces, in drawing order. Each point records whether the pen
+  // was down on the way to it (a moveTo lifts it), so sampling skips jumps.
+  // Segments follow _replayPathSegments: `curve` is quadratic, `cubic` is
+  // cubic, `arc` is CanvasRenderingContext2D.arc (x, y = centre, angles in
+  // radians, clockwise on screen) — the pen draws a line to the arc start.
+  _flattenNamedPath(segs) {
     const pts = [];
-    let cx = 0, cy = 0;
-    for (const seg of path) {
+    let cx = 0, cy = 0;          // current pen position
+    let sx = 0, sy = 0;          // start of the current sub-path
+    let started = false;
+    const STEPS = 32;
+    const lineTo = (x, y) => {
+      if (!started) { pts.push({ x, y, pen: false }); sx = x; sy = y; started = true; }
+      else pts.push({ x, y, pen: true });
+      cx = x; cy = y;
+    };
+    for (const seg of segs) {
       switch (seg.op) {
-        case 'move': cx = seg.x; cy = seg.y; pts.push({ x: cx, y: cy }); break;
+        case 'move':
+          pts.push({ x: seg.x, y: seg.y, pen: false });
+          cx = sx = seg.x; cy = sy = seg.y; started = true;
+          break;
         case 'line':
-        case 'curve':
-        case 'cubic':
-        case 'arc':
-          cx = seg.x; cy = seg.y; pts.push({ x: cx, y: cy }); break;
+          lineTo(seg.x, seg.y);
+          break;
+        case 'curve': {
+          const x0 = cx, y0 = cy;
+          if (!started) lineTo(seg.cpx, seg.cpy);
+          for (let i = 1; i <= STEPS; i++) {
+            const u = i / STEPS, m = 1 - u;
+            lineTo(m * m * x0 + 2 * m * u * seg.cpx + u * u * seg.x,
+                   m * m * y0 + 2 * m * u * seg.cpy + u * u * seg.y);
+          }
+          break;
+        }
+        case 'cubic': {
+          const x0 = cx, y0 = cy;
+          if (!started) lineTo(seg.cp1x, seg.cp1y);
+          for (let i = 1; i <= STEPS; i++) {
+            const u = i / STEPS, m = 1 - u;
+            lineTo(m * m * m * x0 + 3 * m * m * u * seg.cp1x + 3 * m * u * u * seg.cp2x + u * u * u * seg.x,
+                   m * m * m * y0 + 3 * m * m * u * seg.cp1y + 3 * m * u * u * seg.cp2y + u * u * u * seg.y);
+          }
+          break;
+        }
+        case 'arc': {
+          const TAU = Math.PI * 2;
+          let sweep = seg.endAngle - seg.startAngle;
+          sweep = sweep >= TAU ? TAU : ((sweep % TAU) + TAU) % TAU;
+          const n = Math.max(1, Math.ceil(sweep / (Math.PI / 32)));
+          for (let i = 0; i <= n; i++) {
+            const a = seg.startAngle + sweep * (i / n);
+            lineTo(seg.x + seg.radius * Math.cos(a), seg.y + seg.radius * Math.sin(a));
+          }
+          break;
+        }
         case 'close':
-          if (pts.length) { pts.push({ x: pts[0].x, y: pts[0].y }); cx = pts[0].x; cy = pts[0].y; }
+          if (started) { pts.push({ x: sx, y: sy, pen: true }); cx = sx; cy = sy; }
           break;
       }
     }
-    if (pts.length < 2) return { x: pts[0] ? pts[0].x : 0, y: pts[0] ? pts[0].y : 0, angle: 0 };
+    return pts;
+  }
+
+  // Point at fraction t (0..1) of the drawn length of a named path, with
+  // the travel direction there (radians, atan2 on screen axes).
+  _sampleNamedPath(name, t) {
+    const path = this.namedPaths.get(name);
+    if (!path || !path.length) return { x: 0, y: 0, angle: 0 };
+    const pts = this._flattenNamedPath(path);
+    if (!pts.length) return { x: 0, y: 0, angle: 0 };
+    const lens = [0];
     let total = 0;
-    const lens = [];
     for (let i = 1; i < pts.length; i++) {
-      const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      const d = pts[i].pen ? Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) : 0;
       lens.push(d); total += d;
     }
     if (total === 0) return { x: pts[0].x, y: pts[0].y, angle: 0 };
-    let target = t * total;
-    for (let i = 0; i < lens.length; i++) {
+    let target = Math.max(0, Math.min(1, t)) * total;
+    let last = 1;
+    for (let i = 1; i < pts.length; i++) {
+      if (lens[i] === 0) continue;
+      last = i;
       if (target <= lens[i]) {
-        const f = lens[i] > 0 ? target / lens[i] : 0;
-        const x = pts[i].x + (pts[i + 1].x - pts[i].x) * f;
-        const y = pts[i].y + (pts[i + 1].y - pts[i].y) * f;
-        const angle = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
-        return { x, y, angle };
+        const f = target / lens[i];
+        return {
+          x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f,
+          y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f,
+          angle: Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x),
+        };
       }
       target -= lens[i];
     }
-    const last = pts[pts.length - 1];
-    return { x: last.x, y: last.y, angle: 0 };
+    return {
+      x: pts[last].x, y: pts[last].y,
+      angle: Math.atan2(pts[last].y - pts[last - 1].y, pts[last].x - pts[last - 1].x),
+    };
   }
 
   // ==========================================================================

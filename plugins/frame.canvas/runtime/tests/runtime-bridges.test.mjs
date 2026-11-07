@@ -386,6 +386,42 @@ test('tweens: repeat=N plays N+1 times; with yoyo every odd play runs back (CVS-
   eq(run('c', [0.5, 1, 0.75]), [5, 5, 10], 'repeat=1 without yoyo restarts each play and ends at to');
 });
 
+test('path sampling follows the curve shape, not the segment endpoints', () => {
+  const { loader, env, bridge } = freshLoader();
+  const near = (pt, x, y, what) => ok(Math.abs(pt.x - x) < 0.05 && Math.abs(pt.y - y) < 0.05, `${what}: expected (${x}, ${y}), got (${pt.x}, ${pt.y})`);
+  const name = (n) => raw(loader, n);
+  env._path_begin(...name('quad'));
+  env._path_move_to(...name('quad'), 0, 0);
+  env._path_curve_to(...name('quad'), 50, 100, 100, 0);
+  near(bridge._sampleNamedPath('quad', 0.5), 50, 50, 'quadratic midpoint');
+  env._path_begin(...name('cubic'));
+  env._path_move_to(...name('cubic'), 0, 0);
+  env._path_cubic_to(...name('cubic'), ...[0, 100, 100, 100, 100, 0]);
+  near(bridge._sampleNamedPath('cubic', 0.5), 50, 75, 'cubic midpoint');
+  // arcTo x= y= is the centre: a half circle from angle 0 to pi passes
+  // through the bottom of the circle (y grows downwards).
+  env._path_begin(...name('arc'));
+  env._path_move_to(...name('arc'), 200, 100);
+  env._path_arc_to(...name('arc'), 100, 100, 100, 0, Math.PI);
+  near(bridge._sampleNamedPath('arc', 0.5), 100, 200, 'arc midpoint');
+  near(bridge._sampleNamedPath('arc', 1), 0, 100, 'arc end');
+  // The pen jumps to the arc start, like CanvasRenderingContext2D.arc.
+  env._path_begin(...name('arcJump'));
+  env._path_move_to(...name('arcJump'), 100, 0);
+  env._path_arc_to(...name('arcJump'), 100, 100, 50, 0, Math.PI / 2);
+  near(bridge._sampleNamedPath('arcJump', 0), 100, 0, 'starts at the pen');
+  // closePath returns to the start of the current sub-path.
+  env._path_begin(...name('sq'));
+  env._path_move_to(...name('sq'), 0, 0);
+  env._path_line_to(...name('sq'), 100, 0);
+  env._path_line_to(...name('sq'), 100, 100);
+  env._path_close(...name('sq'));
+  // 100 + 100 + 141.42 long: 90% is 107.28 along the closing diagonal.
+  near(bridge._sampleNamedPath('sq', 0.9), 24.142, 24.142, 'closing diagonal');
+  const tangent = bridge._sampleNamedPath('quad', 0);
+  ok(Math.abs(tangent.angle - Math.atan2(100, 50)) < 0.05, `tangent at the start points at the control point (got ${tangent.angle})`);
+});
+
 test('particles: config from _particles_define_json drives spawn ranges', () => {
   const { loader, env, bridge } = freshLoader();
   const cfg = { lifeMin: 1, lifeMax: 1, speedMin: 10, speedMax: 10, angleMin: -90, angleMax: -90, sizeMin: 4, sizeMax: 4, color: '#fff', burst: 3 };
