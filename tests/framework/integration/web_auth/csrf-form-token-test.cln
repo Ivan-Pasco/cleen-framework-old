@@ -1,0 +1,50 @@
+// Test: frame.ui + frame.auth — a POST form carries the session's CSRF token.
+// Semantic: AUTH-S006 (token stored server-side with the session, delivered
+// as a hidden form input), frame-ui-semantics UI-B011.
+//
+// Regression: the form's hidden input called csrf_generate(), which made a
+// new token on every render; a page with two forms (or two open tabs) left
+// every form but the last with a token the server no longer held. The input
+// now carries the session's current token, the one clean-server checks on
+// the form's POST.
+
+plugins:
+	frame.server
+	frame.auth
+	frame.ui
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+page TwoForms:
+	<div>
+		<form method="post" action="/a"><input name="x"></form>
+		<form method="post" action="/b"><input name="y"></form>
+	</div>
+
+endpoints:
+	GET "/test":
+		auth.setSession("{\"user_id\":1,\"role\":\"user\"}")
+		string token = auth.csrf.generate()
+		boolean ok_token = token.length() > 0
+
+		TwoForms page = TwoForms()
+		string html = page.render()
+		string input = "<input type='hidden' name='_csrf' value='" + token + "'>"
+		// Both forms carry the token, and rendering did not replace it.
+		boolean ok_both = html.contains("<input name='x'>" + input) and html.contains("<input name='y'>" + input)
+		boolean ok_still_valid = auth.csrf.validate(token)
+
+		if ok_token and ok_both and ok_still_valid
+			printl("PASS: csrf-form-token")
+		else
+			printl("FAIL: csrf-form-token token=" + ok_token.toString() + " both=" + ok_both.toString() + " valid=" + ok_still_valid.toString() + " html=" + html)
+		return json({ok: true})
+
+start:
+	printl("[boot] csrf-form-token server ready")

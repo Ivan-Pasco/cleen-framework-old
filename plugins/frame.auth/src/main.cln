@@ -352,6 +352,13 @@ functions:
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush csrf_validate failed")
 
+		fn_h = build_csrf_enabled_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_csrf_enabled_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_csrf_enabled failed")
+
 		fn_h = build_tenant_get_id(ctx)
 		if fn_h == 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "build_tenant_get_id failed")
@@ -1231,6 +1238,15 @@ functions:
 			return 0
 
 		return _batch_func(ctx, "csrf_validate", params, "boolean", body_arr)
+
+	// __auth_csrf_enabled() -> boolean — the csrf: enabled setting. The host
+	// calls it once at startup: while it is true, a POST / PUT / PATCH /
+	// DELETE request authenticated by the session cookie must carry the
+	// session's CSRF token in the X-CSRF-Token header or the _csrf form field
+	// (AUTH-S006 / AUTH-S007), or the host answers 403 CSRF_FAIL before the
+	// handler runs.
+	integer build_csrf_enabled_helper(integer ctx)
+		return source_helper(ctx, "__auth_csrf_enabled", "", "boolean", "return __csrf_enabled\n")
 
 	// 16. tenant_getId() -> string
 	integer build_tenant_get_id(integer ctx)
