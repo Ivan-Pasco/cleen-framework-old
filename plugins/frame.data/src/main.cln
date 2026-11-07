@@ -2741,19 +2741,33 @@ functions:
 			return "\"\""
 		return out
 
-	// Split `s` on `sep` where `sep` is outside double-quoted literals.
-	// Parts are newline-separated in the result.
+	// Split `s` on `sep` where `sep` is outside double-quoted literals and
+	// outside (...) / [...] groups. Parts are newline-separated in the result.
 	string split_outside_quotes(string s, string sep)
 		string out = ""
 		boolean in_str = false
+		integer depth = 0
 		integer seg_start = 0
 		integer i = 0
 		while i < s.length()
 			string ch = s.substring(i, i + 1)
-			if ch == "\""
-				in_str = not in_str
+			if in_str
+				if ch == "\\"
+					i = i + 2
+				else
+					if ch == "\""
+						in_str = false
+					i = i + 1
+			else if ch == "\""
+				in_str = true
 				i = i + 1
-			else if not in_str and s.substring(i, s.length()).startsWith(sep)
+			else if ch == "(" or ch == "["
+				depth = depth + 1
+				i = i + 1
+			else if ch == ")" or ch == "]"
+				depth = depth - 1
+				i = i + 1
+			else if depth == 0 and s.substring(i, s.length()).startsWith(sep)
 				out = out + s.substring(seg_start, i) + "\n"
 				i = i + sep.length()
 				seg_start = i
@@ -2761,10 +2775,35 @@ functions:
 				i = i + 1
 		return out + s.substring(seg_start, s.length())
 
-	// Strip one pair of wrapping parentheses: `(a == 1)` -> `a == 1`.
+	// Index of the `)` closing the `(` at `open` in `s` (string literals
+	// skipped), or -1 when it is not closed.
+	integer matching_paren(string s, integer open)
+		boolean in_str = false
+		integer depth = 0
+		integer i = open
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if in_str
+				if ch == "\\"
+					i = i + 1
+				else if ch == "\""
+					in_str = false
+			else if ch == "\""
+				in_str = true
+			else if ch == "("
+				depth = depth + 1
+			else if ch == ")"
+				depth = depth - 1
+				if depth == 0
+					return i
+			i = i + 1
+		return -1
+
+	// Strip parentheses that wrap the whole of `s`: `((a == 1))` -> `a == 1`.
+	// `(a) or (b)` is left alone — its first `(` closes before the end.
 	string strip_parens(string s)
 		string t = s.trim()
-		while t.startsWith("(") and t.endsWith(")")
+		while t.startsWith("(") and matching_paren(t, 0) == t.length() - 1
 			t = t.substring(1, t.length() - 1).trim()
 		return t
 
@@ -2872,7 +2911,8 @@ functions:
 		return cat_expr(sql_lit(head + "'"), "(" + rhs + ").toString().replace(\"'\", \"''\") + \"'\"")
 
 	// Clean expression for one where: line: conditions joined by `and` /
-	// `or` (DAT-Q009), wrapped in parentheses when `or` is present.
+	// `or` (DAT-Q009), wrapped in parentheses when `or` is present. A
+	// parenthesised group is expanded recursively.
 	string build_line_expr(string line, string qualifiers)
 		string or_parts = split_outside_quotes(strip_parens(line), " or ")
 		string result = ""
@@ -2893,7 +2933,10 @@ functions:
 				if c.length() > 0
 					if and_expr.length() > 0
 						and_expr = and_expr + " + \" AND \""
-					and_expr = cat_expr(and_expr, build_condition_expr(c, qualifiers))
+					if strip_parens(c) != c
+						and_expr = cat_expr(and_expr, build_line_expr(c, qualifiers))
+					else
+						and_expr = cat_expr(and_expr, build_condition_expr(c, qualifiers))
 				apos = ae + 1
 			if result.length() > 0
 				result = result + " + \" OR \""

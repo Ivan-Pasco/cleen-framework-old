@@ -1,0 +1,75 @@
+// Test: frame.data — parenthesised groups in where: lines.
+// Spec: frame-data.ebnf §5.1 (where_condition = expression), DAT-Q009
+// (`or` and grouping use the `or` keyword and parenthesised expressions).
+// Regression: `(a) or (b)` lost its first `(` and last `)` (the outer pair
+// was stripped although it did not match), and `or` inside a group split
+// the line at the wrong place.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Task:
+	fields:
+		integer id primary generated
+		string title required
+		string status required
+		integer priority required
+
+start:
+	printl("[boot] data-query-where-grouping server ready")
+
+endpoints:
+	GET "/test":
+		Task.migrate()
+		Task t1 = Task()
+		t1.title = "alpha"
+		t1.status = "open"
+		t1.priority = 1
+		Database.save(t1)
+		Task t2 = Task()
+		t2.title = "be(ta)"
+		t2.status = "done"
+		t2.priority = 2
+		Database.save(t2)
+		Task t3 = Task()
+		t3.title = "gamma"
+		t3.status = "blocked"
+		t3.priority = 3
+		Database.save(t3)
+
+		integer either = Task.count:
+			where:
+				(status == "open") or (status == "done")
+		boolean ok_either = either == 2
+
+		list<Task> grouped = Task.find:
+			where:
+				(status == "open" or status == "blocked") and priority > 1
+		boolean ok_grouped = grouped.length() == 1 and grouped[0].title == "gamma"
+
+		integer nested = Task.count:
+			where:
+				((priority == 1))
+		boolean ok_nested = nested == 1
+
+		// Parentheses inside a string literal are not grouping.
+		string wanted = "done"
+		integer quoted = Task.count:
+			where:
+				(title == "be(ta)" and status == wanted) or (title == "x)")
+		boolean ok_quoted = quoted == 1
+
+		integer mixed = Task.count:
+			where:
+				priority == 3 or (status == "open" and priority == 1)
+		boolean ok_mixed = mixed == 2
+
+		if ok_either and ok_grouped and ok_nested and ok_quoted and ok_mixed
+			printl("PASS: data-query-where-grouping")
+		else
+			printl("FAIL: data-query-where-grouping either=" + ok_either.toString() + " grouped=" + ok_grouped.toString() + " nested=" + ok_nested.toString() + " quoted=" + ok_quoted.toString() + " mixed=" + ok_mixed.toString())
+		return json({ok: true})
