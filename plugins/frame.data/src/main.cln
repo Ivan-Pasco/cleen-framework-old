@@ -147,6 +147,9 @@ functions:
 	// Run-time helpers shared by every generated query:
 	//   __frame_data_row_count(clause, value)  `value` when it is a
 	//       non-negative integer (a limit:/offset: row count), else raises.
+	//   __frame_data_sql(sql, base)  numbers the `?` placeholders.
+	//   __frame_data_params(a, b) / __frame_data_append(arr, v)  build the
+	//       JSON params array.
 	integer emit_query_runtime_helpers(integer ctx)
 		string two_str = string_params2(ctx, "clause", "value")
 		string rc = "string __v = value.trim()\n"
@@ -161,6 +164,47 @@ functions:
 		rc = rc + "\terror(\"VALIDATION: \" + clause + \": expects a non-negative integer row count\")\n"
 		rc = rc + "return __v\n"
 		if emit_fn(ctx, "__frame_data_row_count", two_str, _type_string(ctx), rc) != 0
+			return 1
+
+		// __frame_data_sql(sql, base): every `?` outside '...' / "..."
+		// becomes $<base+1>, $<base+2>, ... (the numbered placeholders
+		// both SQLite and PostgreSQL bind positionally).
+		string ns = "string __out = \"\"\n"
+		ns = ns + "string __q = \"\"\n"
+		ns = ns + "integer __n = base\n"
+		ns = ns + "integer __s = 0\n"
+		ns = ns + "integer __i = 0\n"
+		ns = ns + "while __i < sql.length()\n"
+		ns = ns + "\tstring __ch = sql.substring(__i, __i + 1)\n"
+		ns = ns + "\tif __q != \"\"\n"
+		ns = ns + "\t\tif __ch == __q\n"
+		ns = ns + "\t\t\t__q = \"\"\n"
+		ns = ns + "\telse if __ch == \"'\" or __ch == \"\\\"\"\n"
+		ns = ns + "\t\t__q = __ch\n"
+		ns = ns + "\telse if __ch == \"?\"\n"
+		ns = ns + "\t\t__n = __n + 1\n"
+		ns = ns + "\t\t__out = __out + sql.substring(__s, __i) + \"$\" + __n.toString()\n"
+		ns = ns + "\t\t__s = __i + 1\n"
+		ns = ns + "\t__i = __i + 1\n"
+		ns = ns + "return __out + sql.substring(__s, sql.length())\n"
+		string ns_params = "[{\"name\":\"sql\",\"type_handle\":" + _type_string(ctx).toString() + "},{\"name\":\"base\",\"type_handle\":" + _type_integer(ctx).toString() + "}]"
+		if emit_fn(ctx, "__frame_data_sql", ns_params, _type_string(ctx), ns) != 0
+			return 1
+
+		// __frame_data_params(a, b): JSON array of the comma-separated JSON
+		// values `a` then `b` (either may be "").
+		string pm = "if a == \"\"\n\treturn \"[\" + b + \"]\"\n"
+		pm = pm + "if b == \"\"\n\treturn \"[\" + a + \"]\"\n"
+		pm = pm + "return \"[\" + a + \",\" + b + \"]\"\n"
+		if emit_fn(ctx, "__frame_data_params", string_params2(ctx, "a", "b"), _type_string(ctx), pm) != 0
+			return 1
+
+		// __frame_data_append(arr, v): JSON array text `arr` with the JSON
+		// value `v` appended ("" appends nothing).
+		string ap = "if v == \"\"\n\treturn arr\n"
+		ap = ap + "if arr == \"[]\"\n\treturn \"[\" + v + \"]\"\n"
+		ap = ap + "return arr.substring(0, arr.length() - 1) + \",\" + v + \"]\"\n"
+		if emit_fn(ctx, "__frame_data_append", string_params2(ctx, "arr", "v"), _type_string(ctx), ap) != 0
 			return 1
 		return 0
 
@@ -1857,7 +1901,9 @@ functions:
 		string set_sql = generate_update_set_sql(field_names, field_columns, pk_field)
 		string update_call = ""
 		if set_sql.length() > 0
-			update_call = "_db_execute(" + clean_str("UPDATE " + table_name + " SET " + set_sql) + " + __" + model_name + "_where(" + clean_str(pk_col + " = $1") + "), __to_update_params())"
+			// $1..$n are the key and the fields; the tenant scope's `?`
+			// becomes $(n+1) and its value is appended.
+			update_call = "_db_execute(__frame_data_sql(" + clean_str("UPDATE " + table_name + " SET " + set_sql) + " + __" + model_name + "_where(" + clean_str(pk_col + " = $1") + "), " + (other_count + 1).toString() + "), __frame_data_append(__to_update_params(), __" + model_name + "_tenant_param()))"
 		string insert_all_sql = "INSERT INTO " + table_name + " (" + pk_col + ") VALUES ($1)"
 		if other_count > 0
 			insert_all_sql = "INSERT INTO " + table_name + " (" + pk_col + ", " + other_cols + ") VALUES (" + placeholders_sql(other_count + 1) + ")"
@@ -1904,7 +1950,7 @@ functions:
 		else
 			src = "if " + pk + " == \"\"\n\treturn false\n"
 		string pk_col = column_of(field_names, field_columns, pk_field)
-		src = src + "return _db_execute(" + clean_str("DELETE FROM " + table_name) + " + __" + model_name + "_where(" + clean_str(pk_col + " = $1") + "), \"[\" + " + field_param_expr(pk_field, pk_type) + " + \"]\") > 0\n"
+		src = src + "return _db_execute(__frame_data_sql(" + clean_str("DELETE FROM " + table_name) + " + __" + model_name + "_where(" + clean_str(pk_col + " = $1") + "), 1), __frame_data_append(\"[\" + " + field_param_expr(pk_field, pk_type) + " + \"]\", __" + model_name + "_tenant_param())) > 0\n"
 		return src
 
 	// Body of `boolean migrate()` (DAT-C005): CREATE TABLE IF NOT EXISTS,
@@ -2143,12 +2189,15 @@ functions:
 	// Top-level helpers shared by the class and by every query on M:
 	//   __M_table()          the table name (DAT-M018)
 	//   __M_cols(sql)        renamed field names rewritten to columns (DAT-M017)
+	//   __M_tenant_param()   the bound tenant value (JSON), "" without a tenant field
 	//   __M_cond(w)          w (columns resolved) with the tenant scope (DAT-I001)
+	//   __M_cond_inline(w)   same with the tenant value quoted in place
 	//   __M_where(w)         " WHERE <cond>", or "" when there is no condition
 	//   __parse_as_M(json)   rows of a _db_query result as list<M>
 	//   __first_as_M(json)   first row or null (DAT-Q001)
 	//   __find_or_fail_as_M  first row or NOT_FOUND (DAT-Q002)
-	//   __M_count(w) / __M_exists(w)  (DAT-Q004 / DAT-Q003)
+	//   __M_count(w, p) / __M_exists(w, p)  (DAT-Q004 / DAT-Q003); p holds
+	//                        the bound where: values (comma-separated JSON)
 	integer emit_model_helpers(integer ctx, string model_name, string table_name, string field_names, string field_types, string field_columns)
 		integer t_str = _type_string(ctx)
 		if emit_fn(ctx, "__" + model_name + "_table", "[]", t_str, "return " + clean_str(table_name) + "\n") != 0
@@ -2157,15 +2206,34 @@ functions:
 		if emit_fn(ctx, "__" + model_name + "_cols", string_param(ctx, "sql"), _type_string(ctx), cols_source(model_name, field_names, field_columns)) != 0
 			return 1
 
+		// The tenant scope is a bound parameter (`?`, value from
+		// __M_tenant_param) in __M_cond; __M_cond_inline quotes it in place
+		// for the paginate/cursor `__where` fragment, which the host does
+		// not bind.
 		string tf = tenant_field(field_names)
+		string tp_src = "return \"\"\n"
 		string cond_src = "string __w = __" + model_name + "_cols(w)\n"
+		string inline_src = cond_src
 		if tf.length() > 0
-			cond_src = cond_src + "string __t = " + clean_str(table_name + "." + column_of(field_names, field_columns, tf) + " = '") + " + tenant_getId().replace(\"'\", \"''\") + \"'\"\n"
-			cond_src = cond_src + "if __w.length() == 0\n\treturn __t\n"
-			cond_src = cond_src + "return __t + \" AND (\" + __w + \")\"\n"
+			string tcol = table_name + "." + column_of(field_names, field_columns, tf)
+			if field_type_of(field_names, field_types, tf) == "integer"
+				tp_src = "return json.dataToText(tenant_getId().toInteger())\n"
+			else
+				tp_src = "return json.dataToText(tenant_getId())\n"
+			cond_src = cond_src + "string __t = " + clean_str(tcol + " = ?") + "\n"
+			inline_src = inline_src + "string __t = " + clean_str(tcol + " = '") + " + tenant_getId().replace(\"'\", \"''\") + \"'\"\n"
+			string join_src = "if __w.length() == 0\n\treturn __t\n"
+			join_src = join_src + "return __t + \" AND (\" + __w + \")\"\n"
+			cond_src = cond_src + join_src
+			inline_src = inline_src + join_src
 		else
 			cond_src = cond_src + "return __w\n"
+			inline_src = inline_src + "return __w\n"
+		if emit_fn(ctx, "__" + model_name + "_tenant_param", "[]", _type_string(ctx), tp_src) != 0
+			return 1
 		if emit_fn(ctx, "__" + model_name + "_cond", string_param(ctx, "w"), _type_string(ctx), cond_src) != 0
+			return 1
+		if emit_fn(ctx, "__" + model_name + "_cond_inline", string_param(ctx, "w"), _type_string(ctx), inline_src) != 0
 			return 1
 
 		string where_src = "string __c = __" + model_name + "_cond(w)\n"
@@ -2204,23 +2272,23 @@ functions:
 		if emit_fn(ctx, "__find_or_fail_as_" + model_name, string_param(ctx, "__json"), _type_class_ref(ctx, model_name), ff) != 0
 			return 1
 
-		string cnt = "string __cnt = _db_query(" + clean_str("SELECT COUNT(*) AS count FROM " + table_name) + " + __" + model_name + "_where(w), \"[]\")\n"
+		string cnt = "string __cnt = _db_query(__frame_data_sql(" + clean_str("SELECT COUNT(*) AS count FROM " + table_name) + " + __" + model_name + "_where(w), 0), __frame_data_params(__" + model_name + "_tenant_param(), p))\n"
 		cnt = cnt + raise_on_db_error("__cnt")
 		cnt = cnt + "string __cnt_data = json.get(__cnt, \"data\")\n"
 		cnt = cnt + "string __cnt_rows = json.get(__cnt_data, \"rows\")\n"
 		cnt = cnt + "string __cnt_row = json.get(__cnt_rows, \"0\")\n"
 		cnt = cnt + "if __cnt_row == \"\"\n\treturn 0\n"
 		cnt = cnt + "return json.get(__cnt_row, \"count\").toInteger()\n"
-		if emit_fn(ctx, "__" + model_name + "_count", string_param(ctx, "w"), _type_integer(ctx), cnt) != 0
+		if emit_fn(ctx, "__" + model_name + "_count", string_params2(ctx, "w", "p"), _type_integer(ctx), cnt) != 0
 			return 1
 
-		string ex = "string __ex = _db_query(" + clean_str("SELECT 1 AS present FROM " + table_name) + " + __" + model_name + "_where(w) + \" LIMIT 1\", \"[]\")\n"
+		string ex = "string __ex = _db_query(__frame_data_sql(" + clean_str("SELECT 1 AS present FROM " + table_name) + " + __" + model_name + "_where(w) + \" LIMIT 1\", 0), __frame_data_params(__" + model_name + "_tenant_param(), p))\n"
 		ex = ex + raise_on_db_error("__ex")
 		ex = ex + "string __ex_data = json.get(__ex, \"data\")\n"
 		ex = ex + "string __ex_rows = json.get(__ex_data, \"rows\")\n"
 		ex = ex + "string __ex_row = json.get(__ex_rows, \"0\")\n"
 		ex = ex + "return __ex_row != \"\" and __ex_row != \"null\"\n"
-		if emit_fn(ctx, "__" + model_name + "_exists", string_param(ctx, "w"), _type_boolean(ctx), ex) != 0
+		if emit_fn(ctx, "__" + model_name + "_exists", string_params2(ctx, "w", "p"), _type_boolean(ctx), ex) != 0
 			return 1
 		return 0
 
@@ -2521,7 +2589,8 @@ functions:
 			i = i + 1
 		return true
 
-	// Replace double-quoted string literals with single-quoted SQL strings.
+	// Replace double-quoted Clean string literals with single-quoted SQL
+	// strings: escapes are resolved and `'` is doubled.
 	string sql_quote_strings(string s)
 		string result = ""
 		integer i = 0
@@ -2530,17 +2599,20 @@ functions:
 			if ch == "\""
 				integer j = i + 1
 				string inner = ""
-				while j < s.length()
+				boolean closed = false
+				while j < s.length() and not closed
 					string c = s.substring(j, j + 1)
-					if c == "\""
-						break
-					inner = inner + c
-					j = j + 1
-				result = result + "'" + inner + "'"
-				if j < s.length()
-					i = j + 1
-				else
-					i = j
+					if c == "\\" and j + 1 < s.length()
+						inner = inner + s.substring(j + 1, j + 2)
+						j = j + 2
+					else if c == "\""
+						closed = true
+						j = j + 1
+					else
+						inner = inner + c
+						j = j + 1
+				result = result + "'" + inner.replace("'", "''") + "'"
+				i = j
 			else
 				result = result + ch
 				i = i + 1
@@ -2643,23 +2715,6 @@ functions:
 		result = result.replace(" and ", " AND ")
 		result = result.replace(" or ", " OR ")
 		result = sql_quote_strings(result)
-		return result
-
-	// Parse where: body into a SQL fragment (AND-joined conditions).
-	string parse_where_clause(string where_body)
-		string result = ""
-		string lines = where_body
-		integer line_start = 0
-		while line_start < lines.length()
-			integer line_end = lines.indexOf("\n", line_start)
-			if line_end == -1
-				line_end = lines.length()
-			string line = lines.substring(line_start, line_end).trim()
-			if line.length() > 0
-				if result.length() > 0
-					result = result + " AND "
-				result = result + parse_condition(line)
-			line_start = line_end + 1
 		return result
 
 	// Parse order: body into a SQL ORDER BY column list.
@@ -2847,11 +2902,37 @@ functions:
 			return t
 		return ""
 
+	// A where:/having: condition is built in one of three parts, all from
+	// the same walk so they stay in step:
+	//   "sql"     SQL text with a `?` placeholder for every run-time value
+	//             (numbered $1, $2, ... at run time by __frame_data_sql);
+	//   "params"  the matching bound values: a Clean expression for the
+	//             comma-separated JSON values, or "" when there are none;
+	//   "inline"  SQL text with every run-time value quoted in place, for
+	//             the paginate/cursor host calls, whose `__where` fragment
+	//             cannot carry bound parameters.
+	// Literal right-hand sides are SQL literals at plugin time in every part.
+
+	// Join two "params" parts.
+	string param_cat(string a, string b)
+		if a.length() == 0
+			return b
+		if b.length() == 0
+			return a
+		return a + " + \",\" + " + b
+
+	// One run-time value `v` (Clean source) in part `part`, after the SQL
+	// text `head`.
+	string value_part(string head, string v, string part)
+		if part == "params"
+			return "json.dataToText(" + v + ")"
+		if part == "inline"
+			return cat_expr(sql_lit(head + "'"), "(" + v + ").toString().replace(\"'\", \"''\") + \"'\"")
+		return sql_lit(head + "?")
+
 	// Clean expression for one comparison `lhs <op> rhs` (frame-data.ebnf
-	// §5.1). Literal right-hand sides become SQL literals at plugin time;
-	// any other right-hand side is a Clean expression evaluated at run time
-	// and quoted as an SQL string with `'` doubled.
-	string build_condition_expr(string condition, string qualifiers)
+	// §5.1) in part `part` (see above).
+	string build_condition_expr(string condition, string qualifiers, string part)
 		string cond = strip_parens(condition)
 		string op_sql = ""
 		integer op_pos = -1
@@ -2869,14 +2950,20 @@ functions:
 			k = k + 1
 		if op_pos == -1
 			// Bare boolean column or other expression without an operator.
+			if part == "params"
+				return ""
 			return sql_lit(parse_condition(cond))
 		string lhs = qualify_lhs(cond.substring(0, op_pos), qualifiers)
 		string rhs = cond.substring(op_pos + op_len, cond.length()).trim()
 		string head = lhs + " " + op_sql + " "
 		string lowered = lower_datetime_arith(rhs)
 		if lowered != rhs
+			if part == "params"
+				return ""
 			return sql_lit(head + lowered)
 		if rhs == "null" or rhs == "NULL"
+			if part == "params"
+				return ""
 			if op_sql == "<>"
 				return sql_lit(lhs + " IS NOT NULL")
 			return sql_lit(lhs + " IS NULL")
@@ -2899,24 +2986,40 @@ functions:
 					string lit = sql_literal(item)
 					if lit.length() > 0
 						pending = pending + lit
+					else if part == "params"
+						in_expr = param_cat(in_expr, value_part("", item, part))
+					else if part == "inline"
+						in_expr = cat_expr(in_expr, value_part(pending, item, part))
+						pending = ""
 					else
-						in_expr = cat_expr(in_expr, sql_lit(pending + "'"))
-						in_expr = cat_expr(in_expr, "(" + item + ").toString().replace(\"'\", \"''\")")
-						pending = "'"
+						pending = pending + "?"
 				pos = e + 1
+			if part == "params"
+				return in_expr
 			return cat_expr(in_expr, sql_lit(pending + ")"))
 		string lit = sql_literal(rhs)
 		if lit.length() > 0
+			if part == "params"
+				return ""
 			return sql_lit(head + lit)
-		return cat_expr(sql_lit(head + "'"), "(" + rhs + ").toString().replace(\"'\", \"''\") + \"'\"")
+		return value_part(head, rhs, part)
+
+	// Join two parts of a condition with the SQL keyword `kw`.
+	string join_part(string a, string kw, string b, string part)
+		if part == "params"
+			return param_cat(a, b)
+		if a.length() == 0
+			return b
+		return cat_expr(a + " + \" " + kw + " \"", b)
 
 	// Clean expression for one where: line: conditions joined by `and` /
 	// `or` (DAT-Q009), wrapped in parentheses when `or` is present. A
 	// parenthesised group is expanded recursively.
-	string build_line_expr(string line, string qualifiers)
+	string build_line_expr(string line, string qualifiers, string part)
 		string or_parts = split_outside_quotes(strip_parens(line), " or ")
 		string result = ""
 		boolean has_or = or_parts.indexOf("\n") != -1
+		boolean first_or = true
 		integer pos = 0
 		while pos <= or_parts.length()
 			integer e = or_parts.indexOf("\n", pos)
@@ -2924,6 +3027,7 @@ functions:
 				e = or_parts.length()
 			string and_parts = split_outside_quotes(strip_parens(or_parts.substring(pos, e)), " and ")
 			string and_expr = ""
+			boolean first_and = true
 			integer apos = 0
 			while apos <= and_parts.length()
 				integer ae = and_parts.indexOf("\n", apos)
@@ -2931,25 +3035,32 @@ functions:
 					ae = and_parts.length()
 				string c = and_parts.substring(apos, ae).trim()
 				if c.length() > 0
-					if and_expr.length() > 0
-						and_expr = and_expr + " + \" AND \""
+					string term = ""
 					if strip_parens(c) != c
-						and_expr = cat_expr(and_expr, build_line_expr(c, qualifiers))
+						term = build_line_expr(c, qualifiers, part)
 					else
-						and_expr = cat_expr(and_expr, build_condition_expr(c, qualifiers))
+						term = build_condition_expr(c, qualifiers, part)
+					if first_and
+						and_expr = term
+					else
+						and_expr = join_part(and_expr, "AND", term, part)
+					first_and = false
 				apos = ae + 1
-			if result.length() > 0
-				result = result + " + \" OR \""
-			result = cat_expr(result, and_expr)
+			if first_or
+				result = and_expr
+			else
+				result = join_part(result, "OR", and_expr, part)
+			first_or = false
 			pos = e + 1
-		if has_or
+		if has_or and part != "params"
 			return "\"(\" + " + result + " + \")\""
 		return result
 
-	// Clean expression for a whole where: body (lines AND-ed, DAT-Q009);
-	// "\"\"" when the body is empty.
-	string build_where_expr(string where_body, string qualifiers)
+	// Clean expression for a whole where: body (lines AND-ed, DAT-Q009) in
+	// part `part`; "\"\"" ("" for "params") when the body is empty.
+	string build_where_expr(string where_body, string qualifiers, string part)
 		string result = ""
+		boolean first = true
 		integer line_start = 0
 		while line_start < where_body.length()
 			integer line_end = where_body.indexOf("\n", line_start)
@@ -2957,11 +3068,14 @@ functions:
 				line_end = where_body.length()
 			string line = where_body.substring(line_start, line_end).trim()
 			if line.length() > 0
-				if result.length() > 0
-					result = result + " + \" AND \""
-				result = cat_expr(result, build_line_expr(line, qualifiers))
+				string term = build_line_expr(line, qualifiers, part)
+				if first
+					result = term
+				else
+					result = join_part(result, "AND", term, part)
+				first = false
 			line_start = line_end + 1
-		if result.length() == 0
+		if result.length() == 0 and part != "params"
 			return "\"\""
 		return result
 
@@ -3206,15 +3320,37 @@ functions:
 			q = q + inc
 		return q
 
-	// Clean expression for the condition of a query (without WHERE), with
-	// `<Model>.` references resolved.
-	string query_where_expr(string model_name, string dsl_body)
-		string where_clause = extract_subblock(dsl_body, "where:")
-		if where_clause.length() == 0
+	// The condition of a query (without WHERE) in part `part` (see
+	// build_condition_expr), with `<Model>.` references resolved.
+	string query_where_expr(string model_name, string dsl_body, string part)
+		return clause_expr(model_name, dsl_body, "where:", part)
+
+	// A where:/having: clause of a query in part `part`.
+	string clause_expr(string model_name, string dsl_body, string clause, string part)
+		string body = extract_subblock(dsl_body, clause)
+		if body.length() == 0
+			if part == "params"
+				return ""
 			return "\"\""
 		string join_clause = extract_subblock(dsl_body, "join:")
-		string resolved = resolve_link_refs(resolve_model_refs(where_clause, model_name, join_clause), extract_subblock(dsl_body, "link:"))
-		return build_where_expr(resolved, query_qualifiers(dsl_body))
+		string resolved = resolve_link_refs(resolve_model_refs(body, model_name, join_clause), extract_subblock(dsl_body, "link:"))
+		return build_where_expr(resolved, query_qualifiers(dsl_body), part)
+
+	// Bound parameters of a find/first/findOrFail query (JSON array text):
+	// the tenant scope, the where: values, then the having: values, in the
+	// order their placeholders appear in the SQL.
+	string select_params_expr(string model_name, string dsl_body)
+		string p = param_cat(query_where_expr(model_name, dsl_body, "params"), clause_expr(model_name, dsl_body, "having:", "params"))
+		if p.length() == 0
+			p = "\"\""
+		return "__frame_data_params(__" + model_name + "_tenant_param(), " + p + ")"
+
+	// "params" part of the where: clause as a value for __M_count/__M_exists.
+	string where_params_arg(string model_name, string dsl_body)
+		string p = query_where_expr(model_name, dsl_body, "params")
+		if p.length() == 0
+			return "\"\""
+		return p
 
 	// Rewrite `<JunctionModel>.` references to its table for every model
 	// named in a link: body.
@@ -3261,17 +3397,15 @@ functions:
 			head = head + parse_include_clause(include_clause, model_name)
 		// __M_cols resolves `as "<column>"` field names (DAT-M017); the
 		// condition is resolved inside __M_where.
-		string expr = cat_expr(cols_expr(model_name, sql_lit(head)), "__" + model_name + "_where(" + query_where_expr(model_name, dsl_body) + ")")
+		string expr = cat_expr(cols_expr(model_name, sql_lit(head)), "__" + model_name + "_where(" + query_where_expr(model_name, dsl_body, "sql") + ")")
 
-		string tail = ""
 		if group_clause.length() > 0
-			tail = tail + " GROUP BY " + parse_group_clause(group_clause)
+			expr = cat_expr(expr, cols_expr(model_name, sql_lit(" GROUP BY " + parse_group_clause(group_clause))))
+		// having: is a condition like where:, its values bound the same way.
 		if having_clause.length() > 0
-			tail = tail + " HAVING " + parse_where_clause(having_clause)
+			expr = cat_expr(expr, cols_expr(model_name, cat_expr(clean_str(" HAVING "), clause_expr(model_name, dsl_body, "having:", "sql"))))
 		if order_clause.length() > 0
-			tail = tail + " ORDER BY " + parse_order_clause(resolve_model_refs(order_clause, model_name, join_clause))
-		if tail.length() > 0
-			expr = cat_expr(expr, cols_expr(model_name, sql_lit(tail)))
+			expr = cat_expr(expr, cols_expr(model_name, sql_lit(" ORDER BY " + parse_order_clause(resolve_model_refs(order_clause, model_name, join_clause)))))
 		if single_row
 			expr = cat_expr(expr, "\" LIMIT 1\"")
 		else if limit_clause.length() > 0
@@ -3293,7 +3427,9 @@ functions:
 	// JSON where-object for _db_paginate / _db_cursor_page:
 	// {"__where": <condition incl. tenant scope>, "__order": <ORDER BY list>}.
 	string where_json_expr(string model_name, string dsl_body)
-		string expr = "\"{\\\"__where\\\":\" + json.dataToText(__" + model_name + "_cond(" + query_where_expr(model_name, dsl_body) + "))"
+		// The host appends `__where` verbatim and binds no parameters for
+		// it, so values are quoted in place here ("inline" part).
+		string expr = "\"{\\\"__where\\\":\" + json.dataToText(__" + model_name + "_cond_inline(" + query_where_expr(model_name, dsl_body, "inline") + "))"
 		string order_clause = extract_subblock(dsl_body, "order:")
 		if order_clause.length() > 0
 			expr = expr + " + " + clean_str(",\"__order\":") + " + json.dataToText(" + cols_expr(model_name, clean_str(parse_order_clause(order_clause))) + ")"
@@ -3302,15 +3438,15 @@ functions:
 	// The Clean expression a query verb evaluates to.
 	string query_expr(string model_name, string verb, string dsl_body)
 		if verb == "find"
-			return "__parse_as_" + model_name + "(_db_query(" + select_sql_expr(model_name, dsl_body, false) + ", \"[]\"))"
+			return "__parse_as_" + model_name + "(_db_query(__frame_data_sql(" + select_sql_expr(model_name, dsl_body, false) + ", 0), " + select_params_expr(model_name, dsl_body) + "))"
 		if verb == "first"
-			return "__first_as_" + model_name + "(_db_query(" + select_sql_expr(model_name, dsl_body, true) + ", \"[]\"))"
+			return "__first_as_" + model_name + "(_db_query(__frame_data_sql(" + select_sql_expr(model_name, dsl_body, true) + ", 0), " + select_params_expr(model_name, dsl_body) + "))"
 		if verb == "findOrFail"
-			return "__find_or_fail_as_" + model_name + "(_db_query(" + select_sql_expr(model_name, dsl_body, true) + ", \"[]\"))"
+			return "__find_or_fail_as_" + model_name + "(_db_query(__frame_data_sql(" + select_sql_expr(model_name, dsl_body, true) + ", 0), " + select_params_expr(model_name, dsl_body) + "))"
 		if verb == "count"
-			return "__" + model_name + "_count(" + query_where_expr(model_name, dsl_body) + ")"
+			return "__" + model_name + "_count(" + query_where_expr(model_name, dsl_body, "sql") + ", " + where_params_arg(model_name, dsl_body) + ")"
 		if verb == "exists"
-			return "__" + model_name + "_exists(" + query_where_expr(model_name, dsl_body) + ")"
+			return "__" + model_name + "_exists(" + query_where_expr(model_name, dsl_body, "sql") + ", " + where_params_arg(model_name, dsl_body) + ")"
 		if verb == "paginate"
 			string pclause = extract_subblock(dsl_body, "paginate:")
 			string page = extract_paginate_field(pclause, "page")
