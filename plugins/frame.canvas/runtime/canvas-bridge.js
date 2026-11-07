@@ -645,13 +645,21 @@ class CanvasBridge {
         const tt = direction === 1 ? cycle : 1 - cycle;
         const eased = this._evalEaseByName(v.ease, tt);
         let value;
-        if (v.pathName && this.namedPaths.has(v.pathName)) {
+        if (v.pathName) {
+          // Path tween (CVS-A011): the variable lines are the X and Y
+          // variables, in that order; with orient = true the plugin adds the
+          // companion angle variable as a third line (CVS-A012), set to the
+          // travel direction in degrees, the unit of canvas.rotate (CVS-C002).
+          if (!this.namedPaths.has(v.pathName)) {
+            if (!v.missingPathReported) {
+              console.error(`[CanvasBridge] tween along= names path "${v.pathName}", which is not declared (CVS-X006)`);
+              v.missingPathReported = true;
+            }
+            if (!v.done) allDone = false;
+            continue;
+          }
           const pt = this._sampleNamedPath(v.pathName, eased);
-          // path tween writes "<varName>_x" and "<varName>_y"
-          this.canvasVars.set(v.varName + '_x', pt.x);
-          this.canvasVars.set(v.varName + '_y', pt.y);
-          if (v.orient) this.canvasVars.set(v.varName + '_angle', pt.angle);
-          value = eased;
+          value = v.pathAxis === 0 ? pt.x : v.pathAxis === 1 ? pt.y : pt.angle * 180 / Math.PI;
         } else {
           // A NaN `from` means the tween omitted from= (CVS-A009): start
           // from the variable's value at play time, captured in _tween_play.
@@ -773,7 +781,7 @@ class CanvasBridge {
         varName, from: start, start, to, duration: duration || 0,
         ease: ease || 'linear',
         repeat: repeat | 0, yoyo: !!yoyo, delay: delay || 0,
-        pathName: null, orient: 0, done: false,
+        pathName: null, pathAxis: -1, done: false,
       }],
     });
   }
@@ -3038,10 +3046,13 @@ class CanvasBridge {
           if (!self._isKnownEase(ease)) {
             console.error(`[CanvasBridge] tween "${name}": unknown easing "${ease}" (frame-canvas.ebnf §28)`);
           }
+          // A path tween's lines arrive in order: X, Y, then the orient
+          // angle variable (see _updateAnimations).
+          const pathAxis = pathName ? tw.vars.filter((x) => x.pathName).length : -1;
           tw.vars.push({
             varName, from, start: 0, to, duration, ease,
             repeat: repeat | 0, yoyo: !!yoyo, delay,
-            pathName: pathName || null, orient: 0, done: false,
+            pathName: pathName || null, pathAxis, done: false,
           });
           return 0;
         },
@@ -3101,14 +3112,18 @@ class CanvasBridge {
           if (!self.namedTweens.has(tweenName)) {
             self.namedTweens.set(tweenName, { state: 'stopped', elapsed: 0, vars: [] });
           }
+          // No DSL form reaches this bridge (the plugin registers path
+          // tweens with _tween_define_var). It drives `<tweenName>_x`,
+          // `<tweenName>_y` and, with orient, `<tweenName>_angle` (degrees).
           const tw = self.namedTweens.get(tweenName);
-          tw.vars.push({
-            varName: tweenName,
-            from: 0, to: 1, duration,
+          const suffixes = orient ? ['_x', '_y', '_angle'] : ['_x', '_y'];
+          suffixes.forEach((suffix, pathAxis) => tw.vars.push({
+            varName: tweenName + suffix,
+            from: 0, to: 0, duration,
             ease: self._easeIdToName(easingId),
             repeat: 0, yoyo: false, delay: 0,
-            pathName, orient: orient ? 1 : 0, done: false,
-          });
+            pathName, pathAxis, done: false,
+          }));
           tw.state = 'playing';
           tw.elapsed = 0;
           return 0;

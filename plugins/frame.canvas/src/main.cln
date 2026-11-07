@@ -1505,6 +1505,9 @@ functions:
 		return 0
 
 	// tween "name": one `var [from=] to=` line per variable plus config lines (§6).
+	// With along = "path" the two variable lines are the X and Y variables
+	// (CVS-A011); orient = true adds the companion angle variable as a third
+	// path line (CVS-A012). The runtime assigns path lines in that order.
 	integer declare_tween(integer ctx, integer arr, string name, string sub)
 		string duration = body_attr(sub, "duration", "0.5")
 		string ease = body_attr(sub, "ease", "\"linear\"")
@@ -1519,26 +1522,76 @@ functions:
 			integer le = scene_line_end(sub, p)
 			string t = sub.substring(p, le).trim()
 			string ia = t.substring(line_key(t).length(), t.length()).trim()
-			if t.length() > 0 and t.startsWith("//") == false and get_iexpr(ia, "to") != ""
+			if is_tween_var_line(t)
 				// from= omitted: NaN tells the runtime to start from the
 				// variable's value when the tween plays (CVS-A009).
 				string from_src = get_iexpr(ia, "from")
 				if from_src == ""
 					from_src = "math.sqrt(-1.0)"
-				integer a = _batch_arrayNew(ctx)
-				_batch_arrayPush(ctx, a, sl(ctx, name))
-				_batch_arrayPush(ctx, a, sl(ctx, line_key(t)))
-				_batch_arrayPush(ctx, a, ue(ctx, from_src))
-				_batch_arrayPush(ctx, a, av(ctx, ia, "to", "0.0"))
-				_batch_arrayPush(ctx, a, ue(ctx, duration))
-				_batch_arrayPush(ctx, a, ue(ctx, ease))
-				_batch_arrayPush(ctx, a, ue(ctx, repeat_src))
-				_batch_arrayPush(ctx, a, ue(ctx, yoyo_src))
-				_batch_arrayPush(ctx, a, ue(ctx, delay))
-				_batch_arrayPush(ctx, a, ue(ctx, along))
-				_batch_arrayPush(ctx, arr, _batch_stmtCall(ctx, "_tween_define_var", a))
+				_batch_arrayPush(ctx, arr, tween_var_call(ctx, name, line_key(t), from_src, get_iexpr(ia, "to"), duration, ease, repeat_src, yoyo_src, delay, along))
 			p = le + 1
+		if along != "\"\"" and body_attr(sub, "orient", "false") == "true"
+			string angle_var = orient_angle_var(tween_var_name(sub, 0), tween_var_name(sub, 1))
+			_batch_arrayPush(ctx, arr, tween_var_call(ctx, name, angle_var, "0.0", "0.0", duration, ease, repeat_src, yoyo_src, delay, along))
 		return 0
+
+	integer tween_var_call(integer ctx, string name, string var_name, string from_src, string to_src, string duration, string ease, string repeat_src, string yoyo_src, string delay, string along)
+		integer a = _batch_arrayNew(ctx)
+		_batch_arrayPush(ctx, a, sl(ctx, name))
+		_batch_arrayPush(ctx, a, sl(ctx, var_name))
+		_batch_arrayPush(ctx, a, ue(ctx, from_src))
+		_batch_arrayPush(ctx, a, ue(ctx, to_src))
+		_batch_arrayPush(ctx, a, ue(ctx, duration))
+		_batch_arrayPush(ctx, a, ue(ctx, ease))
+		_batch_arrayPush(ctx, a, ue(ctx, repeat_src))
+		_batch_arrayPush(ctx, a, ue(ctx, yoyo_src))
+		_batch_arrayPush(ctx, a, ue(ctx, delay))
+		_batch_arrayPush(ctx, a, ue(ctx, along))
+		return _batch_stmtCall(ctx, "_tween_define_var", a)
+
+	// True when the trimmed tween line `t` is a variable line `name [from=] to=`.
+	boolean is_tween_var_line(string t)
+		if t.length() == 0 or t.startsWith("//")
+			return false
+		return get_iexpr(t.substring(line_key(t).length(), t.length()).trim(), "to") != ""
+
+	// Number of variable lines of a tween body.
+	integer tween_var_count(string sub)
+		integer n = 0
+		integer p = 0
+		while p < sub.length()
+			integer le = scene_line_end(sub, p)
+			if is_tween_var_line(sub.substring(p, le).trim())
+				n = n + 1
+			p = le + 1
+		return n
+
+	// Variable of the `idx`-th variable line of a tween body; "" when absent.
+	string tween_var_name(string sub, integer idx)
+		integer n = 0
+		integer p = 0
+		while p < sub.length()
+			integer le = scene_line_end(sub, p)
+			string t = sub.substring(p, le).trim()
+			if is_tween_var_line(t)
+				if n == idx
+					return line_key(t)
+				n = n + 1
+			p = le + 1
+		return ""
+
+	// Companion angle variable of a path tween with orient = true
+	// (CVS-A012): `<base>Angle` for the variables `<base>X` / `<base>Y`
+	// (`angle` for `x` / `y`); "" when the names do not follow that pattern.
+	string orient_angle_var(string x_name, string y_name)
+		if x_name == "x" and y_name == "y"
+			return "angle"
+		if x_name.length() < 2 or x_name.endsWith("X") == false
+			return ""
+		string base = x_name.substring(0, x_name.length() - 1)
+		if y_name != base + "Y"
+			return ""
+		return base + "Angle"
 
 	// path "name": moveTo / lineTo / curveTo / arcTo / closePath (§11).
 	integer declare_path(integer ctx, integer arr, string name, string sub)
@@ -2229,6 +2282,10 @@ functions:
 				return "canvasScene: draw: must not start animations ('" + t + "', CVS-X003) — use init: or an event handler"
 			p = le + 1
 
+		string tween_problem = validate_tweens(body, state_body)
+		if tween_problem != ""
+			return tween_problem
+
 		// CVS-C006 — anchors are fractions of a spritesheet frame.
 		string assets_body = extract_scene_subblock(body, "assets")
 		p = 0
@@ -2243,6 +2300,65 @@ functions:
 				if is_spritesheet_asset(assets_body, frame_name) == false
 					return "canvasScene: canvas.sprite anchorX= / anchorY= need a spritesheet asset: '" + frame_name + "' is not declared as `spritesheet` in assets: (anchors are fractions of the frame size, CVS-C006)"
 			p = le + 1
+		return ""
+
+	// True when the scene body declares `keyword "name"` at sub-block level
+	// (tween, timeline, animState, particles, path, gradient, customEase, ...).
+	boolean scene_declares(string body, string keyword, string name)
+		integer base = scene_base_indent(body)
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string line = body.substring(p, le)
+			string t = line.trim()
+			if scene_indent(line) == base and t.startsWith(keyword + " ") and first_quoted(t, 0) == name
+				return true
+			p = le + 1
+		return false
+
+	// Tween declarations (§6): variables are state variables (CVS-A008);
+	// a path tween names a declared path (CVS-X006) and animates exactly its
+	// X and Y variables (CVS-A011); orient = true needs the companion angle
+	// variable in state: (CVS-A012).
+	string validate_tweens(string body, string state_body)
+		integer base = scene_base_indent(body)
+		integer p = 0
+		while p < body.length()
+			integer le = scene_line_end(body, p)
+			string line = body.substring(p, le)
+			string t = line.trim()
+			integer nxt = le + 1
+			if scene_indent(line) == base and t.startsWith("tween ")
+				string name = first_quoted(t, 0)
+				integer ce = scene_child_end(body, p, base)
+				string sub = ""
+				if ce > le + 1
+					sub = body.substring(le + 1, ce)
+				if ce > nxt
+					nxt = ce
+				integer i = 0
+				integer count = tween_var_count(sub)
+				while i < count
+					string v = tween_var_name(sub, i)
+					if state_var_type(state_body, v) == ""
+						return "canvasScene: tween \"" + name + "\" animates '" + v + "', which is not declared in state: (CVS-A008)"
+					i = i + 1
+				string along = first_quoted(body_attr(sub, "along", ""), 0)
+				boolean orient = body_attr(sub, "orient", "false") == "true"
+				if along != ""
+					if scene_declares(body, "path", along) == false
+						return "canvasScene: tween \"" + name + "\" has along = \"" + along + "\", but no path \"" + along + "\" is declared in this scene (CVS-X006)"
+					if count != 2
+						return "canvasScene: tween \"" + name + "\" follows path \"" + along + "\", so it takes exactly two variable lines, the X then the Y variable (CVS-A011); found " + count.toString()
+					if orient
+						string angle_var = orient_angle_var(tween_var_name(sub, 0), tween_var_name(sub, 1))
+						if angle_var == ""
+							return "canvasScene: tween \"" + name + "\" has orient = true: its variables must be named <name>X / <name>Y (or x / y) so the angle variable <name>Angle (or angle) can be found (CVS-A012)"
+						if state_var_type(state_body, angle_var) == ""
+							return "canvasScene: tween \"" + name + "\" has orient = true, which sets the angle variable '" + angle_var + "': declare it in state: (CVS-A012)"
+				else if orient
+					return "canvasScene: tween \"" + name + "\" has orient = true without along = \"path\" (CVS-A012: orient rotates along a path)"
+			p = nxt
 		return ""
 
 	// True when assets: declares `spritesheet "name"`.

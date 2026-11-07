@@ -41,6 +41,10 @@ canvasScene: id="flow" width=400 height=300
 		spritesheet "hero" src="sprites/hero.png" frameWidth=32 frameHeight=32
 		image "logo" src="images/logo.png"
 
+	// Fixed: `pulse` was not declared; a tween animates state: variables (CVS-A008).
+	state:
+		number pulse = 0.0
+
 	tween "pulse":
 		pulse from=0.0 to=1.0
 		duration = 0.5

@@ -48,7 +48,9 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		number heroX = 40.0
 		number heroY = 200.0
 		number heroVX = 0.0
-		number pathT = 0.0
+		number followX = 0.0
+		number followY = 0.0
+		number followAngle = 0.0
 		integer lives = 3
 		boolean attacking = false
 
@@ -95,8 +97,11 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		yoyo = true
 		ease = "snap"
 
+	// Fixed: was one progress variable `pathT to=1.0`; a path tween drives
+	// its X and Y variables (CVS-A011), orient its angle variable (CVS-A012).
 	tween "follow":
-		pathT to=1.0
+		followX to=0
+		followY to=0
 		duration = 3.0
 		along = "loop"
 		orient = true

@@ -129,6 +129,8 @@ check(slideIn && slideIn.vars[0].ease === 'easeOutBack' && slideIn.vars[0].delay
 const bob = bridge.namedTweens.get('bob');
 check(bob && bob.vars[0].repeat === -1 && bob.vars[0].yoyo === true && bob.vars[0].ease === 'snap', 'repeat / yoyo / custom ease');
 check(bridge.namedTweens.get('follow').vars[0].pathName === 'loop', 'along= names the path');
+check(JSON.stringify(bridge.namedTweens.get('follow').vars.map((v) => [v.varName, v.pathAxis]))
+  === '[["followX",0],["followY",1],["followAngle",2]]', 'path tween: X, Y, then the orient angle variable (CVS-A011, CVS-A012)');
 check(bridge.customEases.get('snap').y2 === 1.55, 'customEase registered');
 
 const intro = bridge.namedTimelines.get('intro');
@@ -157,6 +159,29 @@ check(dust && dust.config.lifeMin === 0.3 && dust.config.angleMax === -20 && dus
 check(bridge.gradients.get('skyFade').stops.length === 2 && bridge.gradients.get('sun').type === 'radial', 'gradients and stops');
 check(bridge.namedPaths.get('loop').length >= 5, 'path segments registered');
 check(bridge.cameraFollowX === 40 && bridge.cameraFollowY === 160 && bridge.cameraZoom === 1.5, 'camera follows state expressions');
+
+// A path tween writes the path position into its X / Y variables and the
+// travel direction, in degrees, into the angle variable.
+{
+  const follow = bridge.namedTweens.get('follow');
+  const saved = new Map(vars);
+  follow.state = 'playing';
+  follow.elapsed = 0;
+  follow.vars.forEach((v) => { v.done = false; });
+  const others = [...bridge.namedTweens].filter(([name]) => name !== 'follow').map(([, tw]) => [tw, tw.state]);
+  others.forEach(([tw]) => { tw.state = 'stopped'; });
+  const timelines = [...bridge.namedTimelines.values()].map((tl) => [tl, tl.state]);
+  timelines.forEach(([tl]) => { tl.state = 'stopped'; });
+  bridge._updateAnimations(1.5);
+  const mid = bridge._sampleNamedPath('loop', 0.5);
+  check(Math.abs(vars.get('followX') - mid.x) < 1e-9 && Math.abs(vars.get('followY') - mid.y) < 1e-9,
+    `along= writes the path point to the X / Y variables (got ${vars.get('followX')}, ${vars.get('followY')}; path ${mid.x}, ${mid.y})`);
+  check(Math.abs(vars.get('followAngle') - mid.angle * 180 / Math.PI) < 1e-9, `orient writes the travel direction in degrees (got ${vars.get('followAngle')})`);
+  follow.state = 'stopped';
+  timelines.forEach(([tl, state]) => { tl.state = state; });
+  others.forEach(([tw, state]) => { tw.state = state; });
+  for (const [k, v] of saved) vars.set(k, v);
+}
 
 // ---------------------------------------------------------------------------
 // Frames and handlers
