@@ -1,0 +1,65 @@
+// Test: frame.data — limit:/offset: expressions reach SQL only as integers.
+// Spec: frame-data.ebnf §5.3, DAT-Q007 (limit:/offset: take expressions that
+// are evaluated at run time and passed to the SQL layer as row counts).
+// Regression: a non-literal limit:/offset: value was spliced into the SQL
+// text with toString(), so a string holding SQL ran as part of the query.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Person:
+	fields:
+		integer id primary generated
+		string name required
+
+start:
+	printl("[boot] data-query-limit-integer server ready")
+
+functions:
+	integer limitedCount(string lim)
+		list<Person> rows = Person.find:
+			order: id
+			limit: lim
+		return rows.length()
+
+	integer offsetCount(string off)
+		list<Person> rows = Person.find:
+			order: id
+			limit: 10
+			offset: off
+		return rows.length()
+
+endpoints:
+	GET "/test":
+		Person.migrate()
+		Person a = Person()
+		a.name = "a"
+		Database.save(a)
+		Person b = Person()
+		b.name = "b"
+		Database.save(b)
+		Person c = Person()
+		c.name = "c"
+		Database.save(c)
+
+		// A digit string is a valid row count.
+		boolean ok_digits = limitedCount("2") == 2
+		// SQL in the value must not run: the query raises instead.
+		integer injected = limitedCount("(SELECT COUNT(*) FROM persons WHERE name LIKE char(99))+1") onError -1
+		boolean ok_limit = injected == -1
+		integer injected_off = offsetCount("1; DROP TABLE persons") onError -1
+		boolean ok_offset = injected_off == -1
+		boolean ok_fraction = (limitedCount("1.5") onError -1) == -1
+		// The table is still there and intact.
+		integer remaining = Person.count
+		boolean ok_table = remaining == 3
+
+		if ok_digits and ok_limit and ok_offset and ok_fraction and ok_table
+			printl("PASS: data-query-limit-integer")
+		else
+			printl("FAIL: data-query-limit-integer digits=" + ok_digits.toString() + " limit=" + ok_limit.toString() + " offset=" + ok_offset.toString() + " fraction=" + ok_fraction.toString() + " table=" + ok_table.toString())
+		return json({ok: true})

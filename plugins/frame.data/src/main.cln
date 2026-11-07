@@ -142,6 +142,26 @@ functions:
 		_emit_class_full(ctx, db_spec_ptr, 1)
 		if _ctx_had_error(ctx) != 0
 			return 1
+		return emit_query_runtime_helpers(ctx)
+
+	// Run-time helpers shared by every generated query:
+	//   __frame_data_row_count(clause, value)  `value` when it is a
+	//       non-negative integer (a limit:/offset: row count), else raises.
+	integer emit_query_runtime_helpers(integer ctx)
+		string two_str = string_params2(ctx, "clause", "value")
+		string rc = "string __v = value.trim()\n"
+		rc = rc + "boolean __ok = __v.length() > 0\n"
+		rc = rc + "integer __i = 0\n"
+		rc = rc + "while __ok and __i < __v.length()\n"
+		rc = rc + "\tstring __ch = __v.substring(__i, __i + 1)\n"
+		rc = rc + "\tif __ch < \"0\" or __ch > \"9\"\n"
+		rc = rc + "\t\t__ok = false\n"
+		rc = rc + "\t__i = __i + 1\n"
+		rc = rc + "if not __ok\n"
+		rc = rc + "\terror(\"VALIDATION: \" + clause + \": expects a non-negative integer row count\")\n"
+		rc = rc + "return __v\n"
+		if emit_fn(ctx, "__frame_data_row_count", two_str, _type_string(ctx), rc) != 0
+			return 1
 		return 0
 
 	// Connection setup and migration auto-apply live in clean-server; this
@@ -278,6 +298,11 @@ functions:
 	// `[{"name":"<n>","type_handle":<string>}]` for a one-string-param function.
 	string string_param(integer ctx, string name)
 		return "[{\"name\":\"" + name + "\",\"type_handle\":" + _type_string(ctx).toString() + "}]"
+
+	// Parameter list of a two-string-param function (fresh type handles:
+	// a handle is consumed by the declaration that uses it).
+	string string_params2(integer ctx, string a, string b)
+		return "[{\"name\":\"" + a + "\",\"type_handle\":" + _type_string(ctx).toString() + "},{\"name\":\"" + b + "\",\"type_handle\":" + _type_string(ctx).toString() + "}]"
 
 // ============================================================================
 // PLUGIN-TIME STRING HELPERS
@@ -3094,13 +3119,27 @@ functions:
 			line_start = line_end + 1
 		return ""
 
-	// Clean expression for a LIMIT/OFFSET value: literal numbers stay in the
-	// SQL text, any other expression is evaluated at run time (DAT-Q007).
+	// True when `s` is a non-empty run of decimal digits.
+	boolean is_digits(string s)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch < "0" or ch > "9"
+				return false
+			i = i + 1
+		return true
+
+	// Clean expression for a LIMIT/OFFSET value: a literal row count stays
+	// in the SQL text; any other expression is evaluated at run time
+	// (DAT-Q007) and passes through __frame_data_row_count, which raises
+	// unless the value is a non-negative integer, so only digits reach SQL.
 	string sql_number_expr(string keyword, string value)
 		string v = value.trim()
-		if is_numeric(v)
+		if is_digits(v)
 			return clean_str(" " + keyword + " " + v)
-		return clean_str(" " + keyword + " ") + " + (" + v + ").toString()"
+		return clean_str(" " + keyword + " ") + " + __frame_data_row_count(" + clean_str(keyword.toLowerCase()) + ", (" + v + ").toString())"
 
 // ============================================================================
 // QUERY EXPRESSIONS (find / first / findOrFail / count / exists / paginate /
