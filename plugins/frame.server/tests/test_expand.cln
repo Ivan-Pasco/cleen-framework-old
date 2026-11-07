@@ -15,14 +15,20 @@ start:
 
 functions:
 	void test_route_header_scanning()
-		string body = "\tGET \"/a\":\n\t\tstring INPUT = \"x\"\n\tPUT \"/b\" [admin]:\n\t\treturn \"ok\"\n"
-		integer first = next_route_pos(body)
+		string body = "\tGET \"/a\":\n\t\tstring INPUT = \"x\"\n\t\tprintl(\"GET \\\"/no\\\"\")\n\t\tGET \"/deeper\": no\n\tPUT \"/b\" [admin]:\n\t\treturn \"ok\"\n"
+		string indent = route_indent(body)
+		assert(indent == "\t")
+		integer first = next_route_pos(body, indent)
 		assert(route_method_at(body, first) == "GET")
 		string after_first = body.substring(first + 4, body.length())
-		assert(route_method_at(after_first, next_route_pos(after_first)) == "PUT")
-		assert(find_method_pos("string INPUT \"x\"", "PUT") == -1)
-		assert(route_region("\t\treturn 1\n\tGET \"/x\":\n").trim() == "return 1")
-		assert(sanitize_route_id("/users/:id") == "_users__id")
+		integer second = next_route_pos(after_first, indent)
+		assert(route_method_at(after_first, second) == "PUT")
+		assert(next_route_pos("string INPUT \"x\"", "") == -1)
+		assert(route_region("\t\treturn 1\n\tGET \"/x\":\n", "\t").trim() == "return 1")
+		assert(sanitize_route_id("/users/:id") == "_susers_s_cid")
+		assert(sanitize_route_id("/user-settings") != sanitize_route_id("/user/settings"))
+		assert(sanitize_route_id("/a_b") != sanitize_route_id("/a/b"))
+		assert(sanitize_route_id("/café") == "!")
 
 	void test_modifier_parsing()
 		string mods = "[admin, editor] cache(\"5m\") middleware(RateLimit, Auth)"
@@ -47,6 +53,17 @@ functions:
 		assert(wrap_returns_with_json("return value\n", true) == "return value\n")
 		assert(wrap_returns_with_json("return \"plain\"\n", true) == "return __route_default_body(\"plain\")\n")
 		assert(handler_streams("feed.emit(\"x\")\n"))
+		// Response helpers are matched as whole identifiers.
+		assert(contains_response_call("string s = user_status(u)\n") == false)
+		assert(contains_response_call("string j = parse_json(x)\n") == false)
+		assert(contains_response_call("log_error(x)\n") == false)
+		assert(contains_response_call("string p = prerender(x)\n") == false)
+		assert(contains_response_call("string p = obj.render(x)\n") == false)
+		assert(contains_response_call("return status(201)\n"))
+		assert(contains_response_call("x = json({a: 1})\n"))
+		assert(contains_response_call("http.respond(200, \"text/plain\", b)\n"))
+		assert(contains_response_call("printl(\"call json( later\")\n") == false)
+		assert(wrap_returns_with_json("string s = user_status(u)\nreturn s\n", contains_response_call("string s = user_status(u)\nreturn s\n")) == "string s = user_status(u)\nreturn __route_default_body(s)\n")
 
 	void test_reindent()
 		assert(reindent_block("\t\t// note\n\t\tstring a = \"x\"\n\t\t\tprintl(a)\n") == "string a = \"x\"\n\tprintl(a)\n")

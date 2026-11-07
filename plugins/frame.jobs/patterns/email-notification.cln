@@ -15,36 +15,40 @@ plugins:
 // in job args. Never pass a model object — it cannot be serialized across the job boundary.
 // Fetch the record inside the job handler using the id you pass.
 
+// Job args arrive as the JSON text given to queue.enqueue (job.args()).
+
 jobs:
 	SendWelcomeEmail:
-		retry: 3
+		retry:
+			maxAttempts: 3
+			backoff: exponential
+			delay: 5
 		timeout: 30
-		handle(any args)
-			string to_email = args.email
-			string to_name = args.name
-			string subject = "Welcome to the platform, " + to_name + "!"
-			string html_body = "<h1>Hi " + to_name + ",</h1><p>Your account is ready. <a href=\"https://app.example.com/login\">Log in now</a>.</p>"
-			string text_body = "Hi " + to_name + ", your account is ready. Log in at https://app.example.com/login"
-			boolean ok = email.send(to_email, subject, html_body, text_body)
-			if ok == false
-				job.fail("SMTP rejected: " + email.lastError())
+		string args = job.args()
+		string to_email = json.get(args, "email")
+		string to_name = json.get(args, "name")
+		string subject = "Welcome to the platform, " + to_name + "!"
+		string html_body = "<h1>Hi " + to_name + ",</h1><p>Your account is ready. <a href=\"https://app.example.com/login\">Log in now</a>.</p>"
+		string text_body = "Hi " + to_name + ", your account is ready. Log in at https://app.example.com/login"
+		boolean ok = email.send(to_email, subject, html_body, text_body)
+		if ok == false
+			job.fail("SMTP rejected: " + email.lastError())
 
 endpoints:
 	POST "/users/register":
 		string email_addr = req.body_field("email")
 		string name = req.body_field("name")
-		string password = req.body_field("password")
 
 		if email_addr.length() == 0
-			return badRequest(json({ "code": "VALIDATION_ERROR", "field": "email", "message": "email is required" }))
+			return badRequest("email is required")
 
 		if name.length() == 0
-			return badRequest(json({ "code": "VALIDATION_ERROR", "field": "name", "message": "name is required" }))
+			return badRequest("name is required")
 
 		// ... create the user record ...
 
 		// Enqueue — returns immediately regardless of SMTP availability.
 		// Pass primitives only: email address and display name strings.
-		queue.enqueue("SendWelcomeEmail", json.encode({ "email": email_addr, "name": name }))
+		queue.enqueue("SendWelcomeEmail", json.dataToText({email: email_addr, name: name}))
 
-		return json({ "status": "registered", "email": email_addr })
+		return json({status: "registered", email: email_addr})

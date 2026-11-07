@@ -20,6 +20,13 @@ start:
 	failures = failures + check(decl_field(record, 2) == "1" and decl_field(record, 3) == "[\"a\"]", "parse_decl: default")
 	failures = failures + check(colon_decl_error("tool \"t\"", "params", "string mode = \"a:b\"") == "", "colon in a default value is not a name: type declaration")
 
+	// Handler names are one to one with primitive names.
+	failures = failures + check(sanitize_name("get-user") != sanitize_name("get_user"), "names: dash and underscore differ")
+	failures = failures + check(sanitize_name("get.user") != sanitize_name("get_user"), "names: dot and underscore differ")
+	failures = failures + check(sanitize_name("docs://readme") == "docs_c_s_sreadme", "names: resource uri spelled out")
+	string unicode = "\ttool \"café\":\n\t\tdescription: \"x\"\n\t\treturn mcpText(\"x\")\n"
+	failures = failures + check(validate_block("mcp", "\"n\"", unicode).contains("may only use"), "names: unsupported character rejected")
+
 	if failures == 0
 		printl("PASS: frame-mcp-plugin-helpers")
 	else

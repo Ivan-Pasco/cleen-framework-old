@@ -37,7 +37,11 @@ per-model `PagedResult_M` / `CursorResult_M` classes.
 `M.paginate:`, `M.cursor:` with the clauses `where:`, `order:`, `limit:`,
 `offset:`, `select:`, `join:`, `link:`, `include:`, `group:`, `having:`,
 `paginate:` and `cursor:`. Each query becomes one expression that builds the
-SQL at run time; values are quoted, never pasted raw.
+SQL at run time. Run-time values in `where:` / `having:` (and the tenant
+scope) are bound parameters; `paginate:` / `cursor:` quote them in place,
+because the host binds no parameters for their condition. `limit:` /
+`offset:` values must be non-negative integers. `include: <relation>` joins
+the relation declared in `relations:` and returns each row of `M` once.
 
 ## Writing
 

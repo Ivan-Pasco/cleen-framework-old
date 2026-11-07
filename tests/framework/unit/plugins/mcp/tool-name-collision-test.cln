@@ -1,0 +1,40 @@
+// Test: frame.mcp — tools whose names differ only in punctuation stay apart.
+// Spec: frame-mcp.ebnf (tool_decl = "tool" string_literal ":"),
+//       frame-mcp-semantics.md MCP-T001 (tools/call runs the named tool).
+// Regression: handler names replaced every non-alphanumeric character with
+// `_`, so "get-user" and "get_user" got one handler and one tool answered
+// with the other's code.
+
+plugins:
+	frame.mcp
+
+mcp "names":
+	version: "1.0.0"
+	description: "Tools with similar names"
+	transport: http:
+		port: 0
+		host: "127.0.0.1"
+
+	tool "get-user":
+		description: "dash"
+		return mcpText("dash")
+
+	tool "get_user":
+		description: "underscore"
+		return mcpText("underscore")
+
+	tool "get.user":
+		description: "dot"
+		return mcpText("dot")
+
+start:
+	string dash = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get-user\",\"arguments\":\{\}}}")
+	string under = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_user\",\"arguments\":\{\}}}")
+	string dot = __mcp_handle("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get.user\",\"arguments\":\{\}}}")
+	boolean ok_dash = json.get(dash, "result.content.0.text") == "dash"
+	boolean ok_under = json.get(under, "result.content.0.text") == "underscore"
+	boolean ok_dot = json.get(dot, "result.content.0.text") == "dot"
+	if ok_dash and ok_under and ok_dot
+		printl("PASS: mcp-tool-name-collision")
+	else
+		printl("FAIL: mcp-tool-name-collision dash=" + dash + " under=" + under + " dot=" + dot)

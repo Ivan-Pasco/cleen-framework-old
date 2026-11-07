@@ -12,9 +12,12 @@
 #           Tail = the test's functions: block
 #        b. Concatenate: head + plugin/src/main.cln + assert helper + tail
 #           (section order required by Clean: start, then functions blocks)
-#      `cln check` is used instead of running them because the plugin source
-#      imports the compiler's typed-emission bridges (_batch_*, _emit_*),
-#      which no standalone runner provides.
+#      The combined file is type-checked with `cln check`, then compiled and
+#      run in clean-server (run_helper_test below). The plugin source imports
+#      the compiler's typed-emission bridges (_batch_*, _emit_*), which no
+#      runtime provides, so scripts/stub-wasm-imports.py turns those imports
+#      into trapping stubs first. A helper test fails when the run traps
+#      (a failed assert raises) or prints a FAIL line.
 #
 #   2. Unit suite — tests/framework/unit/plugins/<short-name>/ (frame.auth ->
 #      auth). These are executed for real by run-framework-tests.sh: compiled
@@ -52,8 +55,35 @@ if [ ! -x "$CLN" ]; then
     echo "Compiler not found at: $CLN (set CLEEN_CLN to override)" >&2
     exit 1
 fi
+SERVER="${CLEEN_SERVER:-$HOME/.cleen/bin/clean-server}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+# Compile a combined helper test, stub the compiler-only imports and run its
+# start: block in clean-server. Succeeds when the server comes up (start:
+# finished) with no FAIL line in the output.
+run_helper_test() {
+    local combined="$1" src_main="$2" wasm="$TMP_DIR/helper.wasm" log="$TMP_DIR/helper.log"
+    "$CLN" compile "$combined" -o "$TMP_DIR/helper-raw.wasm" > "$log" 2>&1 || { cat "$log"; return 1; }
+    python3 "$SCRIPT_DIR/stub-wasm-imports.py" "$TMP_DIR/helper-raw.wasm" "$wasm" "$src_main" >> "$log" 2>&1 || { cat "$log"; return 1; }
+    local port
+    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    "$SERVER" "$wasm" --port "$port" < /dev/null > "$log" 2>&1 &
+    local pid=$! i
+    for i in $(seq 1 100); do
+        grep -q "Server listening" "$log" && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    local up=false
+    grep -q "Server listening" "$log" && up=true
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if [ "$up" = true ] && ! grep -q "FAIL" "$log"; then
+        return 0
+    fi
+    grep -E "FAIL|assertion failed|rror" "$log" | head -10
+    return 1
+}
 
 # Minimal assert() implementation injected into combined test files.
 # Clean Language has no built-in assert.
@@ -127,8 +157,14 @@ for plugin_dir in "$PLUGINS_DIR"/*/; do
                 } > "$combined"
 
                 if "$CLN" check "$combined" >/dev/null 2>&1; then
-                    echo "  ✓ $test_name type-checks against src/main.cln"
-                    ((PASSED++)) || true
+                    if run_out=$(run_helper_test "$combined" "$src_main"); then
+                        echo "  ✓ $test_name passes against src/main.cln"
+                        ((PASSED++)) || true
+                    else
+                        echo "  ✗ $test_name failed when run:"
+                        printf '%s\n' "$run_out" | sed 's/^/      /' | head -20
+                        ((FAILED++)) || true
+                    fi
                 else
                     echo "  ✗ $test_name failed:"
                     "$CLN" check "$combined" 2>&1 | sed 's/^/      /' | head -20

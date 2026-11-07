@@ -1,0 +1,52 @@
+// Test: frame.server — every route gets its own handler.
+// Spec: frame-server.ebnf §2 (endpoint = http_method route_path ...), each
+// route path served by the handler written under it.
+// Regression: handler names were made by replacing every non-alphanumeric
+// path character with `_`, so "/user-settings" and "/user/settings" got
+// the same handler name and one route answered with the other's handler
+// (bypassing its guard). A `GET "` inside a handler line was also taken for
+// a new route header.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+endpoints:
+	GET "/user-settings":
+		return json({which: "dash"})
+
+	GET "/user/settings":
+		return json({which: "slash"})
+
+	GET "/user_settings":
+		return json({which: "underscore"})
+
+	GET "/inline":
+		string m = "x"
+		printl("handled GET " + m)
+		string note = "see POST \"/elsewhere\": for that"
+		return json({which: "inline", note: note})
+
+	GET "/test":
+		// clean-server's HTTP client refuses loopback addresses, so the test
+		// calls each route's handler function directly. Handler names are
+		// __route_handler_<METHOD>_<path id>; the path id spells `/` as
+		// `_s`, `-` as `_d` and `_` as `_u`.
+		string dash = __route_handler_GET__suser_dsettings()
+		string slash = __route_handler_GET__suser_ssettings()
+		string under = __route_handler_GET__suser_usettings()
+		string inline = __route_handler_GET__sinline()
+		boolean ok_dash = dash.contains("dash")
+		boolean ok_slash = slash.contains("slash")
+		boolean ok_under = under.contains("underscore")
+		boolean ok_inline = inline.contains("inline") and inline.contains("elsewhere")
+		if ok_dash and ok_slash and ok_under and ok_inline
+			printl("PASS: server-endpoint-route-names")
+		else
+			printl("FAIL: server-endpoint-route-names dash=" + dash + " slash=" + slash + " under=" + under + " inline=" + inline)
+		return json({ok: true})
+
+start:
+	printl("[boot] server-endpoint-route-names server ready")

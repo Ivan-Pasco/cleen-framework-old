@@ -1,0 +1,130 @@
+// Test: frame.data — where: and having: values are bound parameters.
+// Spec: frame-data.ebnf §5.1 (where: right-hand side is any expression),
+// §5.7 (having: expression), stdlib-reference §9 (db params are a JSON
+// array bound by the host), DAT-I001 (tenant scope).
+// Regression: run-time values were quoted into the SQL text and every query
+// sent "[]" params; having: put Clean variable names into the SQL text and
+// did not double `'` in string literals.
+
+plugins:
+	frame.server
+	frame.auth
+	frame.data
+
+server:
+	port: 3400
+
+// tenant_getId() comes from frame.auth, which emits it with its auth: block.
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+data Person:
+	fields:
+		integer id primary generated
+		string name required
+		integer age
+		boolean active
+
+data Memo:
+	fields:
+		integer id primary generated
+		string tenantId
+		string body required
+
+start:
+	printl("[boot] data-query-bound-params server ready")
+
+endpoints:
+	GET "/test":
+		Person.migrate()
+		Memo.migrate()
+		Person a = Person()
+		a.name = "what?"
+		a.age = 10
+		a.active = true
+		Database.save(a)
+		Person b = Person()
+		b.name = "$1"
+		b.age = 20
+		b.active = false
+		Database.save(b)
+		Person c = Person()
+		c.name = "it's"
+		c.age = 20
+		c.active = true
+		Database.save(c)
+
+		// Values that look like placeholders stay values.
+		string q = "what?"
+		string d = "$1"
+		integer n_q = Person.count:
+			where:
+				name == q
+		Person by_d = Person.first:
+			where:
+				name == d
+		boolean ok_marks = n_q == 1 and by_d != null and by_d.age == 20
+		// A literal with `?` next to a bound value.
+		integer n_mix = Person.count:
+			where:
+				name == "what?" or name == d
+		boolean ok_mix = n_mix == 2
+
+		// Typed values: integers and booleans compare as their types.
+		integer minAge = 15
+		boolean wanted = true
+		integer n_typed = Person.count:
+			where:
+				age > minAge
+				active == wanted
+		boolean ok_typed = n_typed == 1
+
+		// in: with run-time items.
+		string x = "it's"
+		integer n_in = Person.count:
+			where:
+				name in [q, x, "nobody"]
+		boolean ok_in = n_in == 2
+
+		// having: with a variable and with a quoted literal.
+		list<Person> older = Person.find:
+			group: age
+			having: age > minAge
+		boolean ok_having_var = older.length() == 1 and older[0].age == 20
+		list<Person> named = Person.find:
+			group: name
+			having: name == "it's"
+		boolean ok_having_lit = named.length() == 1 and named[0].name == "it's"
+		string attack = "x' OR '1'='1"
+		list<Person> leaked = Person.find:
+			group: name
+			having: name == attack
+		boolean ok_having_inject = leaked.length() == 0
+
+		// Tenant scope is bound too: rows of another tenant stay hidden and
+		// the tenant's own rows match a bound where: value.
+		Memo mine = Memo()
+		mine.body = "mine"
+		Database.save(mine)
+		db.execute("INSERT INTO memos (tenantId, body) VALUES ('other', 'mine')", "[]")
+		string want_body = "mine"
+		integer n_memo = Memo.count:
+			where:
+				body == want_body
+		list<Memo> memos = Memo.find:
+			where:
+				body == want_body
+		mine.body = "edited"
+		boolean saved = Database.save(mine)
+		integer n_edited = Memo.count:
+			where:
+				body == "edited"
+		boolean ok_tenant = n_memo == 1 and memos.length() == 1 and saved and n_edited == 1
+
+		if ok_marks and ok_mix and ok_typed and ok_in and ok_having_var and ok_having_lit and ok_having_inject and ok_tenant
+			printl("PASS: data-query-bound-params")
+		else
+			printl("FAIL: data-query-bound-params marks=" + ok_marks.toString() + " mix=" + ok_mix.toString() + " typed=" + ok_typed.toString() + " in=" + ok_in.toString() + " having_var=" + ok_having_var.toString() + " having_lit=" + ok_having_lit.toString() + " having_inject=" + ok_having_inject.toString() + " tenant=" + ok_tenant.toString())
+		return json({ok: true})

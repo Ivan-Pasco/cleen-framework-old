@@ -7,67 +7,58 @@
 //   a real user request while cleanup executes. Use schedule to register a cron job
 //   with the server; the runner fires it independently of request traffic.
 
+// Scheduled jobs are `schedule <name> "<cron>":` entries inside jobs:
+// (frame-jobs.ebnf §3); the cron expression has 5 fields
+// (minute hour day-of-month month day-of-week).
+
 plugins:
 	frame.server
 	frame.jobs
 	frame.data
 
 data Session:
-	id: integer pk auto
-	user_id: integer
-	token: string unique
-	expires_at: datetime
-	created_at: datetime auto
+	fields:
+		integer id primary generated
+		integer userId required
+		string token required unique
+		integer expiresAt required    // Unix time
 
-data UserDigestSubscription:
-	id: integer pk auto
-	user_id: integer
-	email: string
-	subscribed_at: datetime auto
+data DigestSubscription:
+	fields:
+		integer id primary generated
+		integer userId required
+		string email required
+		integer subscribedAt default: 0
 
 jobs:
-	CleanExpiredSessions:
-		retry: 1
-		timeout: 60
-		handle(any args)
-			integer attempt = job.attempt()
-			// job.attempt() is 1-based: log which attempt is running
-			// so that on-call engineers can correlate log lines with retry history
-			_log_info("CleanExpiredSessions attempt " + attempt.toString())
+	// Every hour, on the hour: purge expired sessions. A bulk delete by
+	// predicate is raw SQL (frame.data Rule A).
+	schedule cleanExpiredSessions "0 * * * *":
+		integer cutoff = now()
+		integer removed = db.execute("DELETE FROM sessions WHERE expiresAt < ?", json.dataToText([cutoff]))
+		printl("cleanExpiredSessions removed " + removed.toString() + " sessions")
 
-			Session.delete:
-				where:
-					expires_at < now()
+	// Every Monday at 09:00: hand each subscriber to the mailer job, so a
+	// slow SMTP server never holds the schedule up and each email retries
+	// on its own.
+	schedule weeklyDigest "0 9 * * 1":
+		list<DigestSubscription> subscribers = DigestSubscription.find:
+			order: subscribedAt asc
+		iterate subscriber in subscribers
+			queue.enqueue("sendDigest", json.dataToText({email: subscriber.email}))
+		printl("weeklyDigest queued " + subscribers.length().toString() + " emails")
 
-	WeeklyDigest:
-		retry: 2
+	sendDigest:
+		retry:
+			maxAttempts: 3
+			backoff: exponential
+			delay: 30
 		timeout: 120
 		queue: "mailers"
-		handle(any args)
-			integer attempt = job.attempt()
-			_log_info("WeeklyDigest attempt " + attempt.toString())
-
-			list<any> subscribers = UserDigestSubscription.find:
-				order:
-					subscribed_at asc
-
-			integer sent = 0
-			integer failed = 0
-			for subscriber in subscribers
-				string subject = "Your weekly digest"
-				string html_body = "<p>Here is what happened this week.</p>"
-				string text_body = "Here is what happened this week."
-				boolean ok = email.send(subscriber.email, subject, html_body, text_body)
-				if ok
-					sent = sent + 1
-				else
-					failed = failed + 1
-
-			_log_info("WeeklyDigest complete: sent=" + sent.toString() + " failed=" + failed.toString())
-			if failed > 0
-				job.fail(failed.toString() + " subscriber emails failed")
-
-// Register cron schedules — these run independently of HTTP traffic.
-// Format: standard 5-field cron expression (minute hour day month weekday)
-schedule CleanExpiredSessions "0 * * * *"      // every hour, on the hour
-schedule WeeklyDigest "0 9 * * MON"            // every Monday at 09:00 server time
+		integer attempt = job.attempt()
+		printl("sendDigest attempt " + attempt.toString())
+		string args = job.args()
+		string recipient = json.get(args, "email")
+		boolean ok = email.send(recipient, "Your weekly digest", "<p>Here is what happened this week.</p>", "Here is what happened this week.")
+		if ok == false
+			job.fail("SMTP rejected: " + email.lastError())

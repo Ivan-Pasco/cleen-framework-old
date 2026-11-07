@@ -340,8 +340,11 @@ functions:
 
 functions:
 	integer expand_endpoints_typed(integer ctx, string body)
+		// Route headers sit at the indentation of the block's first line;
+		// handler lines are deeper.
+		string indent = route_indent(body)
 		string remaining = body
-		integer method_pos = next_route_pos(remaining)
+		integer method_pos = next_route_pos(remaining, indent)
 		while method_pos >= 0
 			string method = route_method_at(remaining, method_pos)
 			integer path_first_pos = method_pos + method.length() + 1
@@ -367,17 +370,37 @@ functions:
 			// Advance past the route ':' — the handler body follows.
 			remaining = remaining.substring(header_start_pos + colon_pos + 1, remaining.length())
 			string route_id = sanitize_route_id(path)
+			if route_id == "!"
+				_emit_error(ctx, 2, "FRAME-SERVER-E003", "route " + method + " \"" + path + "\": a route path may only use ASCII letters, digits and the URL path characters " + route_path_specials() + " (write other characters percent-encoded)", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
+			if claim_route(method, path) == false
+				_emit_error(ctx, 2, "FRAME-SERVER-E003", "route " + method + " \"" + path + "\" is declared more than once", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+				return 1
 
+			string region = route_region(remaining, indent)
 			integer route_err = 0
 			if method == "LIVE"
-				route_err = emit_live_route(ctx, path, route_id, route_region(remaining), guard_roles)
+				route_err = emit_live_route(ctx, path, route_id, region, guard_roles)
 			else
-				route_err = emit_http_route(ctx, method, path, route_id, route_region(remaining), guard_roles, cache_arg, mw_list)
+				route_err = emit_http_route(ctx, method, path, route_id, region, guard_roles, cache_arg, mw_list)
 			if route_err != 0
 				return route_err
 
-			method_pos = next_route_pos(remaining)
+			method_pos = next_route_pos(remaining, indent)
 		return 0
+
+	// Record `method path` as declared in this build; false when it already
+	// was (a second handler would be merged into the first by name).
+	boolean claim_route(string method, string path)
+		string key = method + " " + path
+		string seen = _build_state_get("frame.server:routes")
+		if ("\n" + seen + "\n").indexOf("\n" + key + "\n") != -1
+			return false
+		if seen.length() == 0
+			_build_state_set("frame.server:routes", key)
+		else
+			_build_state_set("frame.server:routes", seen + "\n" + key)
+		return true
 
 	// GET/POST/PUT/PATCH/DELETE and FEED (SSE) routes: one string-returning
 	// handler plus its registration.
@@ -941,9 +964,15 @@ functions:
 // (typed-emission.md §3.11).
 
 functions:
-	// sanitize_route_id converts a route path to a valid identifier segment.
+	// sanitize_route_id turns a route path into an identifier segment, one
+	// to one: letters and digits stay, every other path character becomes
+	// `_` plus a letter naming it (`/` -> `_s`, `-` -> `_d`, `_` -> `_u`,
+	// ...), so distinct paths always get distinct handler names. A path
+	// character outside the table yields "!".
 	string sanitize_route_id(string path)
 		string valid_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		string specials = route_path_specials()
+		string codes = "sdputxrnqbkalmiecgfowyzhvj"
 		string result = ""
 		integer i = 0
 		while i < path.length()
@@ -951,36 +980,57 @@ functions:
 			if valid_chars.indexOf(ch) >= 0
 				result = result + ch
 			else
-				result = result + "_"
+				integer k = specials.indexOf(ch)
+				if k == -1
+					return "!"
+				result = result + "_" + codes.substring(k, k + 1)
 			i = i + 1
 		return result
+
+	// The non-alphanumeric characters a route path may contain; each maps to
+	// the code letter at the same position in sanitize_route_id.
+	string route_path_specials()
+		return "/-._~!$&'()*+,;=:@%{}[]?# "
 
 	// Every route method keyword (frame-server.ebnf §2 http_method).
 	list<string> route_methods()
 		return "GET,POST,PUT,DELETE,PATCH,FEED,LIVE".split(",")
 
-	// Position of the next `METHOD "` route header in text, or -1. A match
-	// must start a word, so `INPUT "` or `TARGET "` inside handler code is
-	// not taken for a PUT / GET header.
-	integer find_method_pos(string text, string method)
-		string needle = method + " \""
-		integer pos = text.indexOf(needle)
-		while pos > 0
-			string before = text.substring(pos - 1, pos)
-			if before == "\n" or before == "\t" or before == " "
-				return pos
-			pos = text.indexOf(needle, pos + 1)
-		return pos
+	// Leading whitespace of the first non-blank line of `body`: the
+	// indentation of its route headers.
+	string route_indent(string body)
+		integer pos = 0
+		while pos < body.length()
+			integer e = body.indexOf("\n", pos)
+			if e == -1
+				e = body.length()
+			string ln = body.substring(pos, e)
+			if ln.trim().length() > 0
+				integer k = 0
+				while k < ln.length() and (ln.substring(k, k + 1) == "\t" or ln.substring(k, k + 1) == " ")
+					k = k + 1
+				return ln.substring(0, k)
+			pos = e + 1
+		return ""
 
-	// Position of the next route header of any method, or -1.
-	integer next_route_pos(string text)
-		integer best = -1
-		list<string> methods = route_methods()
-		iterate i in 0 to methods.length() - 1
-			integer p = find_method_pos(text, methods[i])
-			if p >= 0 and (best == -1 or p < best)
-				best = p
-		return best
+	// Position of the next route header (`METHOD "` starting a line indented
+	// exactly `indent`) in text, or -1. The first line of `text` only counts
+	// when `text` starts at a line start (pos 0 of the block). Handler code —
+	// deeper lines, and string literals such as "GET \"/x\"" — never matches.
+	integer next_route_pos(string text, string indent)
+		integer pos = 0
+		while pos < text.length()
+			integer e = text.indexOf("\n", pos)
+			if e == -1
+				e = text.length()
+			string ln = text.substring(pos, e)
+			if ln.startsWith(indent)
+				string rest = ln.substring(indent.length(), ln.length())
+				string first = rest.substring(0, 1)
+				if first != " " and first != "\t" and route_method_at(rest, 0).length() > 0
+					return pos + indent.length()
+			pos = e + 1
+		return -1
 
 	// The method keyword of the route header that starts at pos.
 	string route_method_at(string text, integer pos)
@@ -993,11 +1043,11 @@ functions:
 
 	// The text of the current route's body: everything up to the next route
 	// header.
-	string route_region(string text)
-		integer end_pos = next_route_pos(text)
+	string route_region(string text, string indent)
+		integer end_pos = next_route_pos(text, indent)
 		if end_pos == -1
 			return text
-		return text.substring(0, end_pos)
+		return text.substring(0, end_pos - indent.length())
 
 	string parse_guard_roles(string modifiers)
 		integer open_b = modifiers.indexOf("[")
@@ -1092,10 +1142,53 @@ functions:
 	// HTTP response itself (status, headers, body).
 	boolean contains_response_call(string code)
 		list<string> helpers = "jsonResponse(,jsonResponseStatus(,htmlResponse(,redirect(,redirectTo(,redirectToStatus(,notFound(,notFoundMsg(,badRequest(,unauthorized(,forbidden(,httpStatus(,httpError(,httpHeader(,status(,json(,html(,error(,render(,renderWith(,resDownload(,__route_default_body(,_http_respond(,_http_redirect(,_http_set_header(,http.respond(,http.redirect(,http.setHeader(,_res_json(,_res_body(,_res_redirect(,_res_status(,_res_set_header(,_res_download(".split(",")
+		string text = blank_string_literals(code)
 		iterate i in 0 to helpers.length() - 1
-			if code.indexOf(helpers[i]) >= 0
+			if has_call_to(text, helpers[i])
 				return true
 		return false
+
+	// True when `text` calls `callee(` (e.g. "json(" or "http.respond(") as
+	// a whole name: not part of a longer identifier (`parse_json(`) nor a
+	// method on some other value (`obj.render(`).
+	boolean has_call_to(string text, string callee)
+		integer at = text.indexOf(callee)
+		while at != -1
+			if at == 0
+				return true
+			string before = text.substring(at - 1, at)
+			boolean ident = (before >= "a" and before <= "z") or (before >= "A" and before <= "Z") or (before >= "0" and before <= "9") or before == "_" or before == "."
+			if not ident
+				return true
+			at = text.indexOf(callee, at + 1)
+		return false
+
+	// `code` with the contents of every double-quoted string literal
+	// replaced by spaces (escapes honoured), so text inside strings is not
+	// read as code.
+	string blank_string_literals(string code)
+		string out = ""
+		boolean in_str = false
+		integer i = 0
+		while i < code.length()
+			string ch = code.substring(i, i + 1)
+			if in_str
+				if ch == "\\" and i + 1 < code.length()
+					out = out + "  "
+					i = i + 2
+				else
+					if ch == "\""
+						in_str = false
+						out = out + ch
+					else
+						out = out + " "
+					i = i + 1
+			else
+				if ch == "\""
+					in_str = true
+				out = out + ch
+				i = i + 1
+		return out
 
 	// True when the handler drives a stream (FEED / LIVE): it has no single
 	// response body to wrap.
@@ -1252,21 +1345,21 @@ functions:
 	// Canonical source of the emitted text: plugins/frame.server/dev/*.cln.
 	// The strings below MUST match those files verbatim.
 	integer emit_dev_capture(integer ctx)
-		if emit_dc_helper(ctx, "jsonEscapeString", "s", "string", dc_body_jsonEscapeString()) != 0
+		if emit_dc_helper(ctx, "__dc_jsonEscapeString", "s", "string", dc_body_jsonEscapeString()) != 0
 			return 1
-		if emit_dc_helper(ctx, "buildRuntimeCrash", "entry", "string", dc_body_buildRuntimeCrash()) != 0
+		if emit_dc_helper(ctx, "__dc_buildRuntimeCrash", "entry", "string", dc_body_buildRuntimeCrash()) != 0
 			return 1
-		if emit_dc_helper(ctx, "buildWrongOutput", "entry,regex", "string", dc_body_buildWrongOutput()) != 0
+		if emit_dc_helper(ctx, "__dc_buildWrongOutput", "entry,regex", "string", dc_body_buildWrongOutput()) != 0
 			return 1
-		if emit_dc_helper(ctx, "countJsonArrayEntries", "arr", "integer", dc_body_countJsonArrayEntries()) != 0
+		if emit_dc_helper(ctx, "__dc_countJsonArrayEntries", "arr", "integer", dc_body_countJsonArrayEntries()) != 0
 			return 1
-		if emit_dc_helper(ctx, "findMostRecentFailingStatus", "request_log", "integer", dc_body_findMostRecentFailingStatus()) != 0
+		if emit_dc_helper(ctx, "__dc_findMostRecentFailingStatus", "request_log", "integer", dc_body_findMostRecentFailingStatus()) != 0
 			return 1
-		if emit_dc_helper(ctx, "logsContainWasmTrap", "logs", "boolean", dc_body_logsContainWasmTrap()) != 0
+		if emit_dc_helper(ctx, "__dc_logsContainWasmTrap", "logs", "boolean", dc_body_logsContainWasmTrap()) != 0
 			return 1
-		if emit_dc_helper(ctx, "computePassCriteria", "request_log,logs,wrong_output_hint,entry", "string", dc_body_computePassCriteria()) != 0
+		if emit_dc_helper(ctx, "__dc_computePassCriteria", "request_log,logs,wrong_output_hint,entry", "string", dc_body_computePassCriteria()) != 0
 			return 1
-		if emit_dc_helper(ctx, "mergePassCriteriaIntoSnapshot", "snapshot,pass_criteria_json", "string", dc_body_mergePassCriteriaIntoSnapshot()) != 0
+		if emit_dc_helper(ctx, "__dc_mergePassCriteriaIntoSnapshot", "snapshot,pass_criteria_json", "string", dc_body_mergePassCriteriaIntoSnapshot()) != 0
 			return 1
 		if emit_dc_helper(ctx, "__debug_capture_handler", "", "string", dc_body_handler()) != 0
 			return 1
@@ -1335,7 +1428,7 @@ functions:
 		return "return \"{\\\"kind\\\":\\\"runtime_crash\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_status\\\":200}\"\n"
 
 	string dc_body_buildWrongOutput()
-		return "return \"{\\\"kind\\\":\\\"wrong_output\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_stdout_regex\\\":\" + jsonEscapeString(regex) + \"}\"\n"
+		return "return \"{\\\"kind\\\":\\\"wrong_output\\\",\\\"entry\\\":\\\"\" + entry + \"\\\",\\\"expected_stdout_regex\\\":\" + __dc_jsonEscapeString(regex) + \"}\"\n"
 
 	string dc_body_countJsonArrayEntries()
 		// The fragment parser used by _emit_stmt_from_source folds a statement
@@ -1360,7 +1453,7 @@ functions:
 		string s = ""
 		s = s + "if request_log.length() == 0\n"
 		s = s + "\treturn 0\n"
-		s = s + "integer count = countJsonArrayEntries(request_log)\n"
+		s = s + "integer count = __dc_countJsonArrayEntries(request_log)\n"
 		s = s + "if count == 0\n"
 		s = s + "\treturn 0\n"
 		s = s + "integer i = count - 1\n"
@@ -1387,12 +1480,12 @@ functions:
 	string dc_body_computePassCriteria()
 		string s = ""
 		s = s + "if wrong_output_hint.length() > 0\n"
-		s = s + "\treturn buildWrongOutput(entry, wrong_output_hint)\n"
-		s = s + "if logsContainWasmTrap(logs)\n"
-		s = s + "\treturn buildRuntimeCrash(entry)\n"
-		s = s + "integer failing_status = findMostRecentFailingStatus(request_log)\n"
+		s = s + "\treturn __dc_buildWrongOutput(entry, wrong_output_hint)\n"
+		s = s + "if __dc_logsContainWasmTrap(logs)\n"
+		s = s + "\treturn __dc_buildRuntimeCrash(entry)\n"
+		s = s + "integer failing_status = __dc_findMostRecentFailingStatus(request_log)\n"
 		s = s + "if failing_status >= 500\n"
-		s = s + "\treturn buildRuntimeCrash(entry)\n"
+		s = s + "\treturn __dc_buildRuntimeCrash(entry)\n"
 		s = s + "return \"\"\n"
 		return s
 
@@ -1419,10 +1512,10 @@ functions:
 		s = s + "string request_log = _json_get(snapshot, \"request_log\")\n"
 		s = s + "string logs = _json_get(snapshot, \"last_log_lines\")\n"
 		s = s + "string entry = \"app/server/main.cln\"\n"
-		s = s + "string pc = computePassCriteria(request_log, logs, hint, entry)\n"
+		s = s + "string pc = __dc_computePassCriteria(request_log, logs, hint, entry)\n"
 		s = s + "string body = snapshot\n"
 		s = s + "if pc.length() > 0\n"
-		s = s + "\tbody = mergePassCriteriaIntoSnapshot(snapshot, pc)\n"
+		s = s + "\tbody = __dc_mergePassCriteriaIntoSnapshot(snapshot, pc)\n"
 		s = s + "return http.respond(200, \"application/json\", body)\n"
 		return s
 
@@ -1435,10 +1528,15 @@ functions:
 		if body.trim().length() == 0
 			return "endpoints: block is empty"
 
+		// Only lines at the route-header indentation are route headers (see
+		// next_route_pos); handler lines are deeper.
+		string indent = route_indent(body)
 		list<string> lines = body.split("\n")
 		iterate li in 0 to lines.length() - 1
 			string trimmed = lines[li].trim()
 			if trimmed.length() == 0
+				continue
+			if not lines[li].startsWith(indent + trimmed.substring(0, 1))
 				continue
 			if route_method_at(trimmed, 0).length() == 0
 				continue
