@@ -2199,10 +2199,13 @@ functions:
 				result = result + html_nodes(inner, target, page_mode, registry_json, has_data, inner_preserve)
 		if page_mode and tag_name == "form"
 			// UI-B011: a non-GET form gets the CSRF input. A form without a
-			// method attribute is a GET form.
+			// method attribute is a GET form. The value is the current
+			// session's CSRF token, which the server checks on the form's
+			// POST (frame.auth csrf:, AUTH-S006); without a session there is
+			// no token and the request needs none.
 			string method_upper = extract_attr_value("<" + tag_content + ">", "method").toUpperCase()
 			if method_upper == "POST" or method_upper == "PUT" or method_upper == "PATCH" or method_upper == "DELETE"
-				result = result + append_stmt(target, "\"<input type='hidden' name='_csrf' value='\" + csrf_generate() + \"'>\"")
+				result = result + append_stmt(target, "\"<input type='hidden' name='_csrf' value='\" + _html_escape(_session_get_csrf()) + \"'>\"")
 		if is_void_element(tag_name) == false
 			result = result + append_stmt(target, "\"</" + tag_name + ">\"")
 		if page_mode and tag_name == "head"

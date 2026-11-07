@@ -84,9 +84,13 @@ functions:
 	void test_page_mode_events_and_forms()
 		assert(html_attributes("button onclick.stop=\"save\"", true) == "data-on-click='save' data-on-click-stop='true'")
 		string get_form = html_to_stmts("<form action=\"/s\"></form>", "html", true, "\{\}", false)
-		assert(get_form.contains("csrf_generate") == false)
+		assert(get_form.contains("_csrf") == false)
+		// Fixed: asserted the old csrf_generate() call — a frame.auth-only
+		// helper that also replaced the token on every render; the input
+		// now carries the session's current token.
 		string post_form = html_to_stmts("<form method=\"post\"></form>", "html", true, "\{\}", false)
-		assert(post_form.contains("csrf_generate()"))
+		assert(post_form.contains("name='_csrf' value='\" + _html_escape(_session_get_csrf()) + \"'"))
+		assert(post_form.contains("csrf_generate") == false)
 
 	// A component tag builds the component and passes its attributes (UI-C010).
 	void test_component_tag()

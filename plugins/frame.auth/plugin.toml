@@ -1,7 +1,7 @@
 [plugin]
 name = "frame.auth"
 version = "2.4.5"
-description = "Authentication and authorization plugin — v2.4.5: declare byte-handle SHA-256 bridge (_crypto_sha256_bytes) and language surface (crypto.sha256_bytes(handle)). Companion consumer for _req_body_bytes → _crypto_sha256_bytes → _fs_write_bytes triad enabling binary tarball uploads that must not be UTF-8 decoded. Signature per canonical registry: params=[\"ptr\"], returns=\"ptr\". Backs the errors dashboard's POST /api/v1/reports/tarball-upload endpoint which recomputes SHA-256 on the raw body bytes and rejects on mismatch against X-Tarball-SHA256. Depends on compiler ≥0.33.69 registry entry + clean-server/clean-node-server host impls (PROMPTS A/B/C). — v2.4.4: align _json_get bridge declaration with frame.server 2.8.4 / compiler 0.33.55 registry (params = [\"any\", \"string\"], returns = \"any\", expand_strings = false) so `framework_plugins_match_registry` passes and CI on the CODEGEN-STRING-ARG-ALIAS-JSONGET landing stays green. Unblocks compiler prompt 5ca89f33-7da4. — v2.4.3: fix PLUGIN013 batch/arena handle-kind mismatch (fingerprint f81afcc2ce38) in build_jwt_build_payload_helper. Uses _batch_func2 (Amendment 12 §3.14) with the from_source_handle path instead of the invalid _batch_func + _batch_arrayPush(arena_handle) pattern that _emit_stmt_from_source's plain arena stmt handle was hitting. Contract per compiler prompt ad41f1b4-7bbd-11f1. Also declares _batch_func2 in the external block. — v2.4.2: widen bridge ABI declarations for _jwt_refresh_and_rotate (new_ttl_seconds i32→i64), _auth_create_reset_token (user_id + ttl_seconds i32→i64 params), and _auth_consume_reset_token (return i32→i64) so the plugin registry contract matches the compiler-side registry snapshot that expects i64 for time/id-typed args. Unblocks COMPILER-REGISTRY-SNAPSHOT-STALE (fingerprint b1babb1048f1); pairs with the compiler-side registry widening landing in the next compiler release. Mirrors the _time_now i64 precedent. — v2.4.1: user-facing auth.jwt.sign/verify/refresh now resolve via maps_to_helper (compiler 0.33.14+) to the plugin-emitted jwt_sign/jwt_verify/jwt_refresh helpers, closing FRAME-AUTH-JWT-HELPERS-UNREACHABLE (fingerprint 7eb619a1d49e). — v2.4.0: password reset tokens via auth.createResetToken(userId, ttlSeconds) / auth.consumeResetToken(token), direct 1:1 aliases over clean-server 1.9.71 bridges _auth_create_reset_token / _auth_consume_reset_token; server stores only sha256(token) under in-memory PasswordResets map with atomic single-use consumption under SessionStore write lock. Closes FRAME-AUTH-RESET-TOKEN-BRIDGES-MISSING (fingerprint 22e30f7da2ad). — v2.3.0: single-use refresh-token rotation via _jwt_refresh_and_rotate (clean-server 1.9.70); jwt.sign() injects a random jti (16 bytes hex via _crypto_random_hex) on every token so rotation can detect replay. Closes FRAME-AUTH-REFRESH-TOKEN-NO-ROTATION (fingerprint 8c3b4a8103ad). Spec: AUTH-J007 / AUTH-J009 (frame-auth-semantics.md)."
+description = "Authentication and authorization: sessions, JWT, roles and permissions, CSRF protection, password hashing and reset tokens."
 author = "Clean Language Team"
 license = "MIT"
 
@@ -23,14 +23,9 @@ abi_version = "1.0.0"
 # via _emit_helpers_batch with flags=0 (not BFS roots). Kept true to ensure
 # bridge import reachability for helpers called from user code via plugin-emitted
 # guards (same rationale as v2, now applies to batch-emitted functions).
+# No lifecycle slot is declared: the auth configuration is emitted by
+# expand_block_typed for the auth: block.
 module_helpers_are_roots = true
-
-# Typed lifecycle slot variants — typed-emission.md §7.
-# All three are no-op placeholders (same rationale as v2 — auth config state
-# is managed inside expand_block_typed, not in lifecycle slots).
-module_helpers = "emit_module_helpers_typed"
-server_init = "emit_server_init_typed"
-per_request = "emit_per_request_typed"
 
 [exports]
 # v3 typed entry point — typed-emission.md §2.2.
@@ -165,13 +160,13 @@ functions = [
   { name = "auth.session.get", signature = "auth.session.get()", description = "Get current session data (checks expiry)", maps_to = "_session_get", params = [], returns = "string" },
   { name = "auth.session.destroy", signature = "auth.session.destroy()", description = "End session and clear cookie", maps_to = "_auth_clear_session", params = [], returns = "boolean" },
   # auth.jwt.* wrappers resolve to the plugin-emitted helpers `jwt_sign`, `jwt_verify`,
-  # `jwt_refresh` (emitted by expand_block_typed → build_jwt_sign/verify/refresh at
-  # src/main.cln:1211, 1332, 1390). The helpers read the auth-block-configured
+  # `jwt_refresh` (emitted by expand_block_typed → build_jwt_sign/verify/refresh in
+  # src/main.cln). The helpers read the auth-block-configured
   # __jwt_secret / __jwt_alg locals and delegate to the _jwt_* bridges. Requires
   # compiler 0.33.14+ maps_to_helper support (see foundation team prompt c6682df8).
-  { name = "auth.jwt.sign",    signature = "auth.jwt.sign(claims)",         description = "Sign JWT with configured secret and algorithm",  maps_to_helper = "jwt_sign",    params = ["string"], returns = "string" },
-  { name = "auth.jwt.verify",  signature = "auth.jwt.verify(token)",        description = "Verify JWT and return payload or empty string",  maps_to_helper = "jwt_verify",  params = ["string"], returns = "string" },
-  { name = "auth.jwt.refresh", signature = "auth.jwt.refresh(refreshToken)", description = "Refresh a JWT refresh token (single-use rotation)", maps_to_helper = "jwt_refresh", params = ["string"], returns = "string" },
+  { name = "auth.jwt.sign",    signature = "auth.jwt.sign(claims)",         description = "Sign an access token (typ \"access\", expires after ttlMinutes) with the configured secret and algorithm",  maps_to_helper = "jwt_sign",    params = ["string"], returns = "string" },
+  { name = "auth.jwt.verify",  signature = "auth.jwt.verify(token)",        description = "Verify an access token and return its payload, or empty string when it is invalid, expired or a refresh token",  maps_to_helper = "jwt_verify",  params = ["string"], returns = "string" },
+  { name = "auth.jwt.refresh", signature = "auth.jwt.refresh(refreshToken)", description = "Consume a refresh token (single use) and return a new access token; the rotated refresh token is set in the HttpOnly frame.refresh cookie. Returns empty string for an invalid, expired, replayed or non-refresh token", maps_to_helper = "jwt_refresh", params = ["string"], returns = "string" },
   { name = "auth.hashPassword", signature = "auth.hashPassword(password)", description = "Hash password with Argon2id", maps_to = "_crypto_hash_password", params = ["string"], returns = "string" },
   { name = "auth.verifyPassword", signature = "auth.verifyPassword(password, hash)", description = "Verify password against Argon2id hash", maps_to = "_crypto_verify_password", params = ["string", "string"], returns = "boolean" },
 
@@ -241,7 +236,6 @@ implicit_import = true
 # Starter files created when plugin is added to a project
 files = [
   { path = "app/auth/auth.cln", template = "auth.cln" },
-  { path = "app/auth/project.cln", template = "project.cln" },
 ]
 
 [enforcement]
@@ -286,7 +280,7 @@ example = "patterns/session-scoped-tenant.cln"
 [[ai.patterns]]
 name = "csrf-protection"
 use_when = "any server-rendered form that mutates state (login, settings, payments)"
-anti_pattern = "no CSRF protection on POST endpoints — a third-party site can submit a form as the logged-in user; generate a token with auth.csrf.generate(), embed it in the form, and validate with auth.csrf.validate() on every mutation"
+anti_pattern = "turning csrf: off or moving mutations to GET routes — a third-party site can submit a form as the logged-in user; keep csrf: on (the default): frame.ui puts the session's token in a hidden _csrf input of every non-GET form, and the server rejects session-cookie POST/PUT/PATCH/DELETE requests without it (403 CSRF_FAIL)"
 example = "patterns/csrf-protection.cln"
 
 [build]

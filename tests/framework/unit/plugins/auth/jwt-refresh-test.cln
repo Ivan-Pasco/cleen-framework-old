@@ -1,5 +1,11 @@
 // Test: frame.auth — JWT refresh single-use rotation + replay rejection.
 // Requires server context (auth.jwt.refresh reads the configured secret).
+// Semantic: AUTH-J005..J007, AUTH-J009, AUTH-D004
+// Fixed: the test refreshed an access token from auth.jwt.sign — exactly
+// the hole where any access token became a refreshTtlMinutes (30-day)
+// token. Only refresh tokens (typ "refresh") are refreshable; the test
+// mints one with the configured secret, since frame.auth has no call that
+// issues refresh tokens yet.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -9,34 +15,48 @@ plugins:
 server:
 	port: 3400
 
+// Fixed: was `key: value` lines with a hardcoded secret; frame-auth.ebnf
+// requires `key = value` and jwt_secret_field = env.get(...) (AUTH-C004).
+// The colon form was silently ignored.
 auth:
 	session:
-		cookie: "test.sid"
-		timeoutMinutes: 5
+		cookie = "test.sid"
+		timeoutMinutes = 5
 	jwt:
-		secret: "test-secret-for-refresh-test-32bytes"
-		alg: "HS256"
-		ttlMinutes: 5
-		refreshTtlMinutes: 60
+		secret = env.get("JWT_SECRET")
+		alg = "HS256"
+		ttlMinutes = 5
+		refreshTtlMinutes = 60
 
 endpoints:
 	GET "/test":
-		string payload = "{\"sub\":\"user1\"}"
-		string first = auth.jwt.sign(payload)
-		boolean ok_first = first.length() > 0
+		integer now = time.now()
+		string refreshToken = jwt.sign("{\"iat\":" + now.toString() + ",\"exp\":" + (now + 3600).toString() + ",\"jti\":\"" + crypto.randomHex(16) + "\",\"typ\":\"refresh\",\"claims\":{\"sub\":\"user1\"}}", env.get("JWT_SECRET"), "HS256")
+		boolean ok_minted = refreshToken.length() > 0
 
-		// Refresh once — must return a new token distinct from the input.
-		string second = auth.jwt.refresh(first)
-		boolean ok_second = second.length() > 0 and second != first
+		// A refresh token is not an access token.
+		boolean ok_not_access = auth.jwt.verify(refreshToken) == ""
 
-		// Replay: same token cannot be refreshed twice (jti single-use).
-		string replay = auth.jwt.refresh(first)
-		boolean ok_replay_rejected = replay.length() == 0
+		// Refresh once: a new access token carrying the same claims.
+		string access = auth.jwt.refresh(refreshToken)
+		string payload = auth.jwt.verify(access)
+		boolean ok_access = access.length() > 0 and payload.length() > 0
+		boolean ok_typ = payload.contains("\"typ\":\"access\"")
+		boolean ok_claims = payload.contains("\"sub\":\"user1\"")
+		// Signed for ttlMinutes (5), not refreshTtlMinutes (60).
+		integer exp = json.get(json.textToData(payload), "exp")
+		boolean ok_ttl = exp <= time.now() + 5 * 60 and exp > time.now() + 4 * 60
 
-		if ok_first and ok_second and ok_replay_rejected
+		// Replay: the same refresh token cannot be used twice (jti single-use).
+		boolean ok_replay_rejected = auth.jwt.refresh(refreshToken) == ""
+
+		// An access token is not a refresh token.
+		boolean ok_access_rejected = auth.jwt.refresh(auth.jwt.sign("{\"sub\":\"user1\"}")) == ""
+
+		if ok_minted and ok_not_access and ok_access and ok_typ and ok_claims and ok_ttl and ok_replay_rejected and ok_access_rejected
 			printl("PASS: auth-jwt-refresh")
 		else
-			printl("FAIL: auth-jwt-refresh")
+			printl("FAIL: auth-jwt-refresh minted=" + ok_minted.toString() + " not_access=" + ok_not_access.toString() + " access=" + ok_access.toString() + " typ=" + ok_typ.toString() + " claims=" + ok_claims.toString() + " ttl=" + ok_ttl.toString() + " replay=" + ok_replay_rejected.toString() + " access_rejected=" + ok_access_rejected.toString())
 		return json({ok: true})
 
 start:

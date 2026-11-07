@@ -1,0 +1,23 @@
+// Test: frame.ui — a POST form gets the CSRF hidden input without frame.auth
+// (frame-ui-semantics UI-B011).
+//
+// Regression: the hidden input's value came from csrf_generate(), a helper
+// only frame.auth emits, so a page with a POST form failed to build with
+// "csrf_generate not found" unless frame.auth was loaded. The input now
+// carries the current session's CSRF token; outside a session (here, at
+// startup) it is empty.
+
+plugins:
+	frame.ui
+
+page SignupPage:
+	<form method="post" action="/signup"><input name="email"></form>
+
+start:
+	SignupPage page = SignupPage()
+	string out = page.render()
+	string expected = "<form method='post' action='/signup'><input name='email'><input type='hidden' name='_csrf' value=''></form>"
+	if out == expected
+		printl("PASS: ui-post-form-csrf-input")
+	else
+		printl("FAIL: ui-post-form-csrf-input " + out)

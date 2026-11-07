@@ -205,6 +205,10 @@ functions = [
   # so server-only API apps (no frame.ui) aren't forced to load it.
   { name = "_ui_render_page", params = ["string", "string"], returns = "ptr", description = "Render HTML page template by name with JSON data for { key } substitution; resolves app/ui/web/pages/<name>.html", expand_strings = true, hosts = ["server"], callback = { purpose = "component_tag_render", plugin_target = "frame.ui", discovery = "exports_matching", export_pattern = "{tagname}_render", fallback = "passthrough" } },
 
+  # CSRF token of the current session (empty without one), for the hidden
+  # _csrf input of non-GET forms (UI-B011). Shared with frame.auth.
+  { name = "_session_get_csrf", params = [], returns = "ptr", description = "Get CSRF token from current session", hosts = ["server"] },
+
   # HTML Rendering
   { name = "_html_escape", params = ["string"], returns = "ptr", description = "Escape HTML entities in string", expand_strings = true, signature = "_html_escape(text) -> string", hosts = ["all"] },
   { name = "_html_raw", params = ["string"], returns = "ptr", description = "Return raw HTML without escaping", expand_strings = true, signature = "_html_raw(html) -> string", hosts = ["all"] },

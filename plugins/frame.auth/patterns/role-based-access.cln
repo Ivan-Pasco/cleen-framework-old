@@ -2,58 +2,46 @@
 // Use when: different user types have different permissions to routes or features
 // Anti-pattern: DON'T check roles inline: if user.role == "admin" { ... }
 //   Inline checks scatter auth logic across handlers, are easy to forget, and
-//   can't be audited in one place. Declare roles in auth: roles: block and
-//   apply them as inline [role,role] modifiers on each route header — the
-//   compiler enforces the check before the handler body runs.
+//   can't be audited in one place. Declare roles and their permissions in a
+//   roles: block and put the allowed roles on the route header as an inline
+//   [role, role] modifier — the check runs before the handler body.
 
 plugins:
 	frame.server
 	frame.auth
 
-// Declare all roles and their permissions in one place
 auth:
 	session:
 		cookie = "app.sid"
 		timeoutMinutes = 60
 
+// Every role lists its permissions in full; roles do not inherit (AUTH-R002).
 roles:
-	admin:
-		permissions = ["users.read", "users.write", "users.delete", "reports.read", "settings.write"]
-	editor:
-		permissions = ["users.read", "reports.read"]
-	viewer:
-		permissions = ["reports.read"]
+	admin: ["users.read", "users.write", "users.delete", "reports.read", "settings.write"]
+	editor: ["users.read", "reports.read"]
+	viewer: ["reports.read"]
 
 endpoints:
-	// Public — no role modifier needed
+	// Public — no role modifier
 	GET "/":
-		return jsonResponse("{\"message\": \"Welcome\"}")
+		return json({message: "Welcome"})
 
-	// Any authenticated user — the [auth] modifier requires a session
-	GET "/profile" [auth]:
-		string user = auth.getCurrentUser()
-		return jsonResponse("{\"user_id\": " + user.id + ", \"role\": \"" + user.role + "\"}")
+	// Any signed-in role
+	GET "/profile" [viewer, editor, admin]:
+		return json({user_id: auth.userId(), role: auth.userRole()})
 
-	// Editor or admin — listed roles are an OR check
-	GET "/reports" [admin, editor]:
-		return jsonResponse("{\"reports\": []}")
+	// Editor or admin — the listed roles are an OR check
+	GET "/reports" [editor, admin]:
+		return json({reports: "[]"})
 
-	// Admin only — single role
+	// Admin only
 	GET "/admin/users" [admin]:
-		return jsonResponse("{\"users\": []}")
+		return json({users: "[]"})
 
-	// Permission-based check — more granular than role-based.
-	// The [admin] modifier filters to admins; auth.can(user, permission)
-	// additionally checks for the specific permission within the user's role.
+	// A permission check inside the handler, for a decision the route header
+	// cannot express: auth.can(user, permission) reads the user's role.
 	DELETE "/admin/users/:id" [admin]:
-		string id = param("id")
 		string user = auth.getCurrentUser()
 		if not auth.can(user, "users.delete")
-			return unauthorized("Insufficient permissions")
-		return jsonResponse("{\"deleted\": \"" + id + "\"}")
-
-	// Settings — only admin with specific permission
-	PUT "/settings" [admin]:
-		if not auth.can(auth.getCurrentUser(), "settings.write")
-			return unauthorized("settings.write permission required")
-		return jsonResponse("{\"updated\": true}")
+			return forbidden()
+		return json({deleted: req.param("id")})

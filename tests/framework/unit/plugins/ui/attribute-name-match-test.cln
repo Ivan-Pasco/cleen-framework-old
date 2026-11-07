@@ -4,7 +4,7 @@
 // `name=`, which also matched inside another attribute's name or value:
 //   - <screen data-name="Wrong" name="Right"> placed the screen Wrong;
 //   - <form data-method="post"> was taken for a POST form and got a CSRF
-//     input (UI-B011), which needs frame.auth's csrf_generate;
+//     input (UI-B011);
 //   - <p title="cl-if=hidden()"> was rendered only when hidden() held.
 
 plugins:

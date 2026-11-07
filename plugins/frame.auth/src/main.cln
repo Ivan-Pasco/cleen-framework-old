@@ -1,6 +1,6 @@
 // frame.auth plugin - Authentication and Authorization DSL
 // Provides: auth config, session handling, JWT, roles/permissions, CSRF
-// Version: 2.3.0
+// Version: 2.4.5
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
 
 // ============================================================================
@@ -24,7 +24,6 @@ external:
 	integer _batch_intLit(integer ctx, integer value_lo, integer value_hi)
 	integer _batch_call(integer ctx, string callee, integer args_array_handle)
 	integer _batch_binop(integer ctx, string op, integer lhs_handle, integer rhs_handle)
-	integer _batch_methodCall(integer ctx, integer receiver_handle, string method, integer args_array_handle)
 	// Statement builders (§3.14)
 	integer _batch_stmtAssign(integer ctx, string target, integer expr_handle)
 	// Real let-declaration; required for the first introduction of a local
@@ -65,21 +64,6 @@ external:
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
 
 // ============================================================================
-// V3 LIFECYCLE SLOTS
-// ============================================================================
-// typed-emission.md §7: atomic migration — every lifecycle slot must be typed.
-
-functions:
-	integer emit_module_helpers_typed(integer ctx, string ctx_json)
-		return 0
-
-	integer emit_server_init_typed(integer ctx, string ctx_json)
-		return 0
-
-	integer emit_per_request_typed(integer ctx, string ctx_json)
-		return 0
-
-// ============================================================================
 // V3 BLOCK EXPAND ENTRY POINT
 // ============================================================================
 
@@ -104,6 +88,8 @@ functions:
 	string validate_block(string block_name, string attributes, string body)
 		if block_name == "auth"
 			return validate_auth_config(body)
+		if block_name == "login"
+			return login_not_supported_message()
 		return ""
 
 // ============================================================================
@@ -113,64 +99,39 @@ functions:
 functions:
 	integer expand_auth_config_typed(integer ctx, string body)
 		// ── Session config defaults ──
-		string cookie_name = "frame.sid"
-		string same_site = "Lax"
-		boolean sess_secure = true
-		boolean sess_http_only = true
-		string session_path = "/"
-		integer timeout_mins = 60
-
+		// validate_block (validate_auth_config) has already rejected
+		// malformed lines, unknown keys and httpOnly = false (AUTH-S005).
 		string session_config = extract_subblock(body, "session:")
-		if session_config.length() > 0
-			cookie_name = get_config_value(session_config, "cookie", "frame.sid")
-			same_site = get_config_value(session_config, "sameSite", "Lax")
-			string secure_str = get_config_value(session_config, "secure", "true")
-			sess_secure = secure_str == "true"
-			string http_only_str = get_config_value(session_config, "httpOnly", "true")
-			sess_http_only = http_only_str == "true"
-			session_path = get_config_value(session_config, "path", "/")
-			string timeout_str = get_config_value(session_config, "timeoutMinutes", "60")
-			timeout_mins = timeout_str.toInteger()
+		string cookie_name = get_config_value(session_config, "cookie", "frame.sid")
+		string same_site = get_config_value(session_config, "sameSite", "Lax")
+		boolean sess_secure = get_config_value(session_config, "secure", "true") == "true"
+		string session_path = get_config_value(session_config, "path", "/")
+		// AUTH-S010: no domain (null) scopes the cookie to the exact host.
+		string session_domain = get_config_value(session_config, "domain", "")
+		if session_domain == "null"
+			session_domain = ""
+		integer timeout_mins = get_config_value(session_config, "timeoutMinutes", "60").toInteger()
 
 		// ── JWT config defaults ──
-		boolean jwt_enabled = true
-		string secret_env = "JWT_SECRET"
-		string alg = "HS256"
-		integer jwt_ttl_mins = 60
-		integer jwt_refresh_mins = 43200
-
 		string jwt_config = extract_subblock(body, "jwt:")
-		if jwt_config.length() > 0
-			string enabled_str = get_config_value(jwt_config, "enabled", "true")
-			jwt_enabled = enabled_str == "true"
-			secret_env = get_config_value(jwt_config, "secret", "JWT_SECRET")
-			alg = get_config_value(jwt_config, "alg", "HS256")
-			string ttl_str = get_config_value(jwt_config, "ttlMinutes", "60")
-			jwt_ttl_mins = ttl_str.toInteger()
-			string refresh_str = get_config_value(jwt_config, "refreshTtlMinutes", "43200")
-			jwt_refresh_mins = refresh_str.toInteger()
+		boolean jwt_enabled = get_config_value(jwt_config, "enabled", "true") == "true"
+		string secret_env = get_config_value(jwt_config, "secret", "JWT_SECRET")
+		string alg = get_config_value(jwt_config, "alg", "HS256")
+		integer jwt_ttl_mins = get_config_value(jwt_config, "ttlMinutes", "60").toInteger()
+		integer jwt_refresh_mins = get_config_value(jwt_config, "refreshTtlMinutes", "43200").toInteger()
 
 		// ── CSRF config (enabled by default) ──
-		boolean csrf_on = true
-		string csrf_config = extract_subblock(body, "csrf:")
-		if csrf_config.length() > 0
-			string csrf_str = get_config_value(csrf_config, "enabled", "true")
-			csrf_on = csrf_str == "true"
+		boolean csrf_on = get_config_value(extract_subblock(body, "csrf:"), "enabled", "true") == "true"
 
-		// ── Tenant config ──
-		string tenant_field = "tenantId"
-		string tenant_header = ""
-		string tenant_config = extract_subblock(body, "tenant:")
-		if tenant_config.length() > 0
-			tenant_field = get_config_value(tenant_config, "field", "tenantId")
-			tenant_header = get_config_value(tenant_config, "header", "")
+		// ── Tenant config: the session claim holding the tenant id ──
+		string tenant_field = get_config_value(extract_subblock(body, "tenant:"), "field", "tenantId")
 
 		// ── Auth configuration as module state (one state: block per expansion) ──
 		string fields = string_var_field(ctx, "__session_cookie", cookie_name)
 		fields = fields + "," + string_var_field(ctx, "__session_same_site", same_site)
 		fields = fields + "," + bool_var_field(ctx, "__session_secure", sess_secure)
-		fields = fields + "," + bool_var_field(ctx, "__session_http_only", sess_http_only)
 		fields = fields + "," + string_var_field(ctx, "__session_path", session_path)
+		fields = fields + "," + string_var_field(ctx, "__session_domain", session_domain)
 		fields = fields + "," + int_var_field(ctx, "__session_timeout", timeout_mins)
 		fields = fields + "," + bool_var_field(ctx, "__jwt_enabled", jwt_enabled)
 		fields = fields + "," + env_var_field(ctx, "__jwt_secret", secret_env)
@@ -178,10 +139,7 @@ functions:
 		fields = fields + "," + int_var_field(ctx, "__jwt_ttl", jwt_ttl_mins)
 		fields = fields + "," + int_var_field(ctx, "__jwt_refresh_ttl", jwt_refresh_mins)
 		fields = fields + "," + bool_var_field(ctx, "__csrf_enabled", csrf_on)
-		if tenant_config.length() > 0
-			fields = fields + "," + string_var_field(ctx, "__tenant_field", tenant_field)
-			if tenant_header.length() > 0
-				fields = fields + "," + string_var_field(ctx, "__tenant_header", tenant_header)
+		fields = fields + "," + string_var_field(ctx, "__tenant_field", tenant_field)
 		if _ctx_had_error(ctx) != 0
 			return plugin_error(ctx, "FRAME-AUTH-E001", "auth config: building state fields failed")
 		integer err = _emit_state_block(ctx, "[" + fields + "]")
@@ -316,7 +274,21 @@ functions:
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_expire_cookie_header failed")
 
-		// Internal helper used by jwt_sign (builds payload JSON with jti).
+		fn_h = build_jwt_issue_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_jwt_issue_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_jwt_issue failed")
+
+		fn_h = build_refresh_cookie_header_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_refresh_cookie_header_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_refresh_cookie_header failed")
+
+		// Internal helper used by __auth_jwt_issue (builds payload JSON).
 		fn_h = build_jwt_build_payload_helper(ctx)
 		if fn_h == 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "build_jwt_build_payload_helper failed")
@@ -379,6 +351,13 @@ functions:
 		err = _batch_arrayPush(ctx, fns_arr, fn_h)
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush csrf_validate failed")
+
+		fn_h = build_csrf_enabled_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_csrf_enabled_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_csrf_enabled failed")
 
 		fn_h = build_tenant_get_id(ctx)
 		if fn_h == 0
@@ -449,19 +428,6 @@ functions:
 	// Build an empty param array
 	integer no_params(integer ctx)
 		return _batch_arrayNew(ctx)
-
-	// Build a call-expression with one string-literal argument
-	integer call1_str(integer ctx, string callee, string arg_val)
-		integer arg_e = _batch_stringLit(ctx, arg_val)
-		if arg_e == 0
-			return 0
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		integer push_err = _batch_arrayPush(ctx, args, arg_e)
-		if push_err != 0
-			return 0
-		return _batch_call(ctx, callee, args)
 
 	// Build a call-expression with one integer-literal argument
 	integer call1_int(integer ctx, string callee, integer arg_val)
@@ -534,68 +500,6 @@ functions:
 			return 0
 		return _batch_call(ctx, callee, args)
 
-	// Build a call-expression: callee(str_lit, ident1, ident2)
-	integer call3_str_ident_ident(integer ctx, string callee, string str_val, string id1, string id2)
-		integer e1 = _batch_stringLit(ctx, str_val)
-		if e1 == 0
-			return 0
-		integer e2 = _batch_ident(ctx, id1)
-		if e2 == 0
-			return 0
-		integer e3 = _batch_ident(ctx, id2)
-		if e3 == 0
-			return 0
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		integer push1 = _batch_arrayPush(ctx, args, e1)
-		if push1 != 0
-			return 0
-		integer push2 = _batch_arrayPush(ctx, args, e2)
-		if push2 != 0
-			return 0
-		integer push3 = _batch_arrayPush(ctx, args, e3)
-		if push3 != 0
-			return 0
-		return _batch_call(ctx, callee, args)
-
-	// Build a call-expression: callee(ident, ident, ident, int, int) for _session_store
-	integer call_session_store(integer ctx, string sid_ident, string empty_str, string data_ident)
-		integer e_sid = _batch_ident(ctx, sid_ident)
-		if e_sid == 0
-			return 0
-		integer e_key = _batch_stringLit(ctx, empty_str)
-		if e_key == 0
-			return 0
-		integer e_data = _batch_ident(ctx, data_ident)
-		if e_data == 0
-			return 0
-		integer e_zero1 = _batch_intLit(ctx, 0, 0)
-		if e_zero1 == 0
-			return 0
-		integer e_zero2 = _batch_intLit(ctx, 0, 0)
-		if e_zero2 == 0
-			return 0
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, args, e_sid)
-		if p1 != 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, args, e_key)
-		if p2 != 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, args, e_data)
-		if p3 != 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, args, e_zero1)
-		if p4 != 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, args, e_zero2)
-		if p5 != 0
-			return 0
-		return _batch_call(ctx, "_session_store", args)
-
 	// stmtReturn an ident
 	integer ret_ident(integer ctx, string name)
 		integer e = _batch_ident(ctx, name)
@@ -654,16 +558,6 @@ functions:
 			return 0
 		return _batch_binop(ctx, "!=", l, r)
 
-	// Multiply: ident * int_lit
-	integer mul_ident_int(integer ctx, string ident_name, integer int_val)
-		integer l = _batch_ident(ctx, ident_name)
-		if l == 0
-			return 0
-		integer r = _batch_intLit(ctx, int_val, 0)
-		if r == 0
-			return 0
-		return _batch_binop(ctx, "*", l, r)
-
 	// Add: expr + expr (both already built handles)
 	integer add_exprs(integer ctx, integer lhs_h, integer rhs_h)
 		return _batch_binop(ctx, "+", lhs_h, rhs_h)
@@ -683,223 +577,23 @@ functions:
 			return 0
 		return arr
 
-	// Build a two-stmt body array
-	integer body2(integer ctx, integer s1, integer s2)
-		integer arr = _batch_arrayNew(ctx)
-		if arr == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, arr, s1)
-		if p1 != 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, arr, s2)
-		if p2 != 0
-			return 0
-		return arr
-
-	// stmtAssign: target = call-expression (no-arg call)
-	integer assign_call0(integer ctx, string target, string callee)
-		integer call_e = call0(ctx, callee)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
-	// stmtAssign: target = call1_ident(callee, arg)
-	integer assign_call1_ident(integer ctx, string target, string callee, string arg)
-		integer call_e = call1_ident(ctx, callee, arg)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
-	// stmtAssign: target = call2_ident_str(callee, ident, str)
-	integer assign_call2_ident_str(integer ctx, string target, string callee, string ident_name, string str_val)
-		integer call_e = call2_ident_str(ctx, callee, ident_name, str_val)
-		if call_e == 0
-			return 0
-		return _batch_stmtAssign(ctx, target, call_e)
-
 // ============================================================================
-// PER-HELPER FACTORY FUNCTIONS (18 factories)
+// PER-HELPER FACTORY FUNCTIONS
 // ============================================================================
 
 functions:
 	// 1. session_create(userId: integer, claims: string) -> string
-	// Equivalent to v1 session_create body.
+	// Stores {"userId":..,"claims":..} under a new random session id. The
+	// blob has no expiry: timeoutMinutes is an inactivity timeout (AUTH-S008)
+	// that the host session store enforces from the last request that used
+	// the session, not from creation.
 	integer build_session_create(integer ctx)
-		integer params = two_params(ctx, "userId", "integer", "claims", "string")
-		if params == 0
-			return 0
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// string sessionId = _crypto_random_hex(32)
-		integer rnd_e = call1_int(ctx, "_crypto_random_hex", 32)
-		if rnd_e == 0
-			return 0
-		integer s1 = _batch_stmtVarDecl(ctx, "sessionId", "string", rnd_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// integer expiry = _time_now() + (__session_timeout * 60)
-		integer tn_e = call0(ctx, "_time_now")
-		if tn_e == 0
-			return 0
-		integer mul_e = mul_ident_int(ctx, "__session_timeout", 60)
-		if mul_e == 0
-			return 0
-		integer add_e = add_exprs(ctx, tn_e, mul_e)
-		if add_e == 0
-			return 0
-		integer s2 = _batch_stmtVarDecl(ctx, "expiry", "integer", add_e)
-		if s2 == 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
-		if p2 != 0
-			return 0
-
-		// string sessionData = "{\"userId\":" + userId.toString() + ...}
-		// v3 does not build this string via concatenation — it uses a typed call
-		// to a bridge helper. In v3 the session data encoding is handled by
-		// _session_store accepting structured args. However _session_store in the
-		// bridge contract takes (sessionId, key, data_str, ttl, flags). The data
-		// string was built by concatenation in v1. In v3 we delegate to a
-		// pre-existing bridge that accepts the structured form, or we accept that
-		// the sessionData variable is a compile-time-known template.
-		// The correct v3 approach: use _batch_stmtCall with a _build_session_json
-		// bridge that produces the data from its typed args. No such bridge exists.
-		// The only available path is to keep the JSON assembly out of the plugin
-		// and move it to the server runtime. But _session_store takes a string.
-		// Resolution: emit a call to a plugin-private helper function
-		// build_session_json(userId, claims, expiry) that is itself in the batch,
-		// deferring the string concat into a generated Clean function where it is
-		// a safe operation (the concat happens at WASM runtime, not emit time).
-		// This is the correct approach — add build_session_json as helper #19.
-		// For now emit a placeholder stmtCall to build_session_json:
-		integer bsj_e = _batch_ident(ctx, "userId")
-		if bsj_e == 0
-			return 0
-		integer claims_e = _batch_ident(ctx, "claims")
-		if claims_e == 0
-			return 0
-		integer expiry_e = _batch_ident(ctx, "expiry")
-		if expiry_e == 0
-			return 0
-		integer bsj_args = _batch_arrayNew(ctx)
-		if bsj_args == 0
-			return 0
-		integer bp1 = _batch_arrayPush(ctx, bsj_args, bsj_e)
-		if bp1 != 0
-			return 0
-		integer bp2 = _batch_arrayPush(ctx, bsj_args, claims_e)
-		if bp2 != 0
-			return 0
-		integer bp3 = _batch_arrayPush(ctx, bsj_args, expiry_e)
-		if bp3 != 0
-			return 0
-		integer build_json_call = _batch_call(ctx, "__auth_build_session_json", bsj_args)
-		if build_json_call == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "sessionData", "string", build_json_call)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// _session_store(sessionId, "", sessionData, 0, 0)
-		integer store_e = call_session_store(ctx, "sessionId", "", "sessionData")
-		if store_e == 0
-			return 0
-		integer s4 = _batch_stmtCall(ctx, "_session_store", 0)
-		// _batch_stmtCall consumed args; we built store_e as a _batch_call expression.
-		// Use _batch_stmtAssign with a discard target is wrong. The correct approach:
-		// call_session_store returns a _batch_call expression handle.
-		// We need to wrap it in a statement. stmtReturn would return it.
-		// stmtAssign would assign it to a dummy. The batch builder has stmtCall
-		// which takes callee + args separately.
-		// Rebuild properly using stmtCall with fresh args:
-		// (call_session_store already consumed the handles above, can't reuse)
-		// We need to rebuild the args. This is the single-consumption constraint.
-		// Rebuild all 5 args fresh:
-		integer e_sid2 = _batch_ident(ctx, "sessionId")
-		if e_sid2 == 0
-			return 0
-		integer e_key2 = _batch_stringLit(ctx, "")
-		if e_key2 == 0
-			return 0
-		integer e_data2 = _batch_ident(ctx, "sessionData")
-		if e_data2 == 0
-			return 0
-		integer e_z1 = _batch_intLit(ctx, 0, 0)
-		if e_z1 == 0
-			return 0
-		integer e_z2 = _batch_intLit(ctx, 0, 0)
-		if e_z2 == 0
-			return 0
-		integer store_args2 = _batch_arrayNew(ctx)
-		if store_args2 == 0
-			return 0
-		integer sp1 = _batch_arrayPush(ctx, store_args2, e_sid2)
-		if sp1 != 0
-			return 0
-		integer sp2 = _batch_arrayPush(ctx, store_args2, e_key2)
-		if sp2 != 0
-			return 0
-		integer sp3 = _batch_arrayPush(ctx, store_args2, e_data2)
-		if sp3 != 0
-			return 0
-		integer sp4 = _batch_arrayPush(ctx, store_args2, e_z1)
-		if sp4 != 0
-			return 0
-		integer sp5 = _batch_arrayPush(ctx, store_args2, e_z2)
-		if sp5 != 0
-			return 0
-		integer store_stmt = _batch_stmtCall(ctx, "_session_store", store_args2)
-		if store_stmt == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, store_stmt)
-		if p4 != 0
-			return 0
-
-		// if __csrf_enabled { _session_set_csrf(_crypto_random_hex(32)) }
-		integer csrf_cond = _batch_ident(ctx, "__csrf_enabled")
-		if csrf_cond == 0
-			return 0
-		integer rnd32_e = call1_int(ctx, "_crypto_random_hex", 32)
-		if rnd32_e == 0
-			return 0
-		integer csrf_args = _batch_arrayNew(ctx)
-		if csrf_args == 0
-			return 0
-		integer csrf_push = _batch_arrayPush(ctx, csrf_args, rnd32_e)
-		if csrf_push != 0
-			return 0
-		integer csrf_call_stmt = _batch_stmtCall(ctx, "_session_set_csrf", csrf_args)
-		if csrf_call_stmt == 0
-			return 0
-		integer csrf_then = body1(ctx, csrf_call_stmt)
-		if csrf_then == 0
-			return 0
-		integer csrf_if = if_no_else(ctx, csrf_cond, csrf_then)
-		if csrf_if == 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, body_arr, csrf_if)
-		if p5 != 0
-			return 0
-
-		// return sessionId
-		integer ret_s = ret_ident(ctx, "sessionId")
-		if ret_s == 0
-			return 0
-		integer p6 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p6 != 0
-			return 0
-
-		return _batch_func(ctx, "session_create", params, "string", body_arr)
+		string src = "string sessionId = _crypto_random_hex(32)\n"
+		src = src + "string sessionData = __auth_build_session_json(userId, claims)\n"
+		src = src + "_session_store(sessionId, \"\", sessionData, 0, 0)\n"
+		src = src + "if __csrf_enabled\n\t_session_set_csrf(_crypto_random_hex(32))\n"
+		src = src + "return sessionId\n"
+		return source_helper(ctx, "session_create", "userId:integer,claims:string", "string", src)
 
 	// 2. session_setCookie(sessionId: string, response: string) -> string
 	integer build_session_set_cookie(integer ctx)
@@ -925,9 +619,6 @@ functions:
 			return 0
 
 		// _http_set_header("Set-Cookie", cookie)
-		integer hdr_e = call2_ident_str(ctx, "_http_set_header", "cookie", "Set-Cookie")
-		// call2_ident_str puts (ident, str) but _http_set_header wants (name, value):
-		// rebuild with correct order: first arg = "Set-Cookie", second = cookie ident
 		integer hdr_name = _batch_stringLit(ctx, "Set-Cookie")
 		if hdr_name == 0
 			return 0
@@ -960,121 +651,12 @@ functions:
 
 		return _batch_func(ctx, "session_setCookie", params, "string", body_arr)
 
-	// 3. session_get() -> string
+	// 3. session_get() -> string — the current session's data, "" without
+	// one. The host resolves the session (one created earlier in this
+	// request, or the request cookie) and drops sessions idle for longer
+	// than timeoutMinutes.
 	integer build_session_get(integer ctx)
-		integer params = no_params(ctx)
-		if params == 0
-			return 0
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// The host resolves the current session itself — from a session
-		// established earlier in this request (auth.setSession /
-		// session_create) or from the request cookie — so no cookie
-		// pre-check here: it would hide a session created in this request.
-		// string data = _session_get()
-		integer sg_e = call0(ctx, "_session_get")
-		if sg_e == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "data", "string", sg_e)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// if data == "" { return "" }
-		integer cond2 = eq_ident_str(ctx, "data", "")
-		if cond2 == 0
-			return 0
-		integer ret_es2 = ret_empty_str(ctx)
-		if ret_es2 == 0
-			return 0
-		integer then2 = body1(ctx, ret_es2)
-		if then2 == 0
-			return 0
-		integer if2 = if_no_else(ctx, cond2, then2)
-		if if2 == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, if2)
-		if p4 != 0
-			return 0
-
-		// Expiry check: string expiry_str = _json_get(data, "expiry")
-		integer jg_e = call2_ident_str(ctx, "_json_get", "data", "expiry")
-		if jg_e == 0
-			return 0
-		integer s5 = _batch_stmtVarDecl(ctx, "expiry_str", "string", jg_e)
-		if s5 == 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, body_arr, s5)
-		if p5 != 0
-			return 0
-
-		// if expiry_str != "" { integer expiry = expiry_str.toInteger(); if _time_now() > expiry { _session_delete(); return "" } }
-		integer cond3 = ne_ident_str(ctx, "expiry_str", "")
-		if cond3 == 0
-			return 0
-
-		integer expiry_e = _batch_methodCall(ctx, _batch_ident(ctx, "expiry_str"), "toInteger", 0)
-		if expiry_e == 0
-			return 0
-		integer s_expiry = _batch_stmtVarDecl(ctx, "expiry", "integer", expiry_e)
-		if s_expiry == 0
-			return 0
-
-		integer tn_e = call0(ctx, "_time_now")
-		if tn_e == 0
-			return 0
-		integer exp_ident = _batch_ident(ctx, "expiry")
-		if exp_ident == 0
-			return 0
-		integer expired_cond = _batch_binop(ctx, ">", tn_e, exp_ident)
-		if expired_cond == 0
-			return 0
-		integer del_args = _batch_arrayNew(ctx)
-		if del_args == 0
-			return 0
-		integer del_stmt = _batch_stmtCall(ctx, "_session_delete", del_args)
-		if del_stmt == 0
-			return 0
-		integer ret_es3 = ret_empty_str(ctx)
-		if ret_es3 == 0
-			return 0
-		integer inner_then = body2(ctx, del_stmt, ret_es3)
-		if inner_then == 0
-			return 0
-		integer inner_if = if_no_else(ctx, expired_cond, inner_then)
-		if inner_if == 0
-			return 0
-
-		integer outer_then_arr = _batch_arrayNew(ctx)
-		if outer_then_arr == 0
-			return 0
-		integer op1 = _batch_arrayPush(ctx, outer_then_arr, s_expiry)
-		if op1 != 0
-			return 0
-		integer op2 = _batch_arrayPush(ctx, outer_then_arr, inner_if)
-		if op2 != 0
-			return 0
-		integer outer_if = if_no_else(ctx, cond3, outer_then_arr)
-		if outer_if == 0
-			return 0
-		integer p6 = _batch_arrayPush(ctx, body_arr, outer_if)
-		if p6 != 0
-			return 0
-
-		// return data
-		integer ret_s = ret_ident(ctx, "data")
-		if ret_s == 0
-			return 0
-		integer p7 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p7 != 0
-			return 0
-
-		return _batch_func(ctx, "session_get", params, "string", body_arr)
+		return source_helper(ctx, "session_get", "", "string", "return _session_get()\n")
 
 	// 4. session_destroy() -> boolean
 	integer build_session_destroy(integer ctx)
@@ -1161,250 +743,95 @@ functions:
 
 		return _batch_func(ctx, "session_destroy", params, "boolean", body_arr)
 
+	// JWT helpers (5–7). Every token carries a `typ` claim: "access" for the
+	// tokens auth.jwt.sign issues, "refresh" for refresh tokens. A refresh
+	// token is accepted only by auth.jwt.refresh, which consumes it
+	// (single-use rotation, AUTH-J007 / AUTH-J009) and answers with a new
+	// access token signed for ttlMinutes; the rotated refresh token goes to
+	// the HttpOnly `frame.refresh` cookie (AUTH-J005 / AUTH-J006). jti is a
+	// per-token unique id (16 random bytes -> 32 hex chars) the rotation
+	// bridge needs for replay detection. With `jwt: enabled = false` the
+	// helpers issue and accept nothing.
+
 	// 5. jwt_sign(claims: string) -> string
-	// Emits: iat/exp/jti + payload built by __auth_build_jwt_payload helper (see #19).
-	// jti is a per-token unique id required by _jwt_refresh_and_rotate for replay
-	// detection (AUTH-J009). 16 random bytes -> 32-char hex string (128 bits entropy).
 	integer build_jwt_sign(integer ctx)
-		integer params = one_param(ctx, "claims", "string")
-		if params == 0
-			return 0
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "return __auth_jwt_issue(claims, \"access\", __jwt_ttl)\n"
+		return source_helper(ctx, "jwt_sign", "claims:string", "string", src)
 
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// integer iat = _time_now()
-		integer iat_e = call0(ctx, "_time_now")
-		if iat_e == 0
-			return 0
-		integer s1 = _batch_stmtVarDecl(ctx, "iat", "integer", iat_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// integer exp = iat + (__jwt_ttl * 60)
-		integer iat_ident = _batch_ident(ctx, "iat")
-		if iat_ident == 0
-			return 0
-		integer mul_e = mul_ident_int(ctx, "__jwt_ttl", 60)
-		if mul_e == 0
-			return 0
-		integer add_e = add_exprs(ctx, iat_ident, mul_e)
-		if add_e == 0
-			return 0
-		integer s2 = _batch_stmtVarDecl(ctx, "exp", "integer", add_e)
-		if s2 == 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
-		if p2 != 0
-			return 0
-
-		// string jti = _crypto_random_hex(16)   // 128 bits -> 32 hex chars
-		integer jti_call = call1_int(ctx, "_crypto_random_hex", 16)
-		if jti_call == 0
-			return 0
-		integer s_jti = _batch_stmtVarDecl(ctx, "jti", "string", jti_call)
-		if s_jti == 0
-			return 0
-		integer p_jti = _batch_arrayPush(ctx, body_arr, s_jti)
-		if p_jti != 0
-			return 0
-
-		// string payload = __auth_build_jwt_payload(iat, exp, jti, claims)
-		integer bpld_e_iat = _batch_ident(ctx, "iat")
-		if bpld_e_iat == 0
-			return 0
-		integer bpld_e_exp = _batch_ident(ctx, "exp")
-		if bpld_e_exp == 0
-			return 0
-		integer bpld_e_jti = _batch_ident(ctx, "jti")
-		if bpld_e_jti == 0
-			return 0
-		integer bpld_e_claims = _batch_ident(ctx, "claims")
-		if bpld_e_claims == 0
-			return 0
-		integer bpld_args = _batch_arrayNew(ctx)
-		if bpld_args == 0
-			return 0
-		integer bpa1 = _batch_arrayPush(ctx, bpld_args, bpld_e_iat)
-		if bpa1 != 0
-			return 0
-		integer bpa2 = _batch_arrayPush(ctx, bpld_args, bpld_e_exp)
-		if bpa2 != 0
-			return 0
-		integer bpa_jti = _batch_arrayPush(ctx, bpld_args, bpld_e_jti)
-		if bpa_jti != 0
-			return 0
-		integer bpa3 = _batch_arrayPush(ctx, bpld_args, bpld_e_claims)
-		if bpa3 != 0
-			return 0
-		integer bpld_call = _batch_call(ctx, "__auth_build_jwt_payload", bpld_args)
-		if bpld_call == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "payload", "string", bpld_call)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// return _jwt_sign(payload, __jwt_secret, __jwt_alg)
-		integer jp_e = _batch_ident(ctx, "payload")
-		if jp_e == 0
-			return 0
-		integer js_e = _batch_ident(ctx, "__jwt_secret")
-		if js_e == 0
-			return 0
-		integer ja_e = _batch_ident(ctx, "__jwt_alg")
-		if ja_e == 0
-			return 0
-		integer jsa = _batch_arrayNew(ctx)
-		if jsa == 0
-			return 0
-		integer jsp1 = _batch_arrayPush(ctx, jsa, jp_e)
-		if jsp1 != 0
-			return 0
-		integer jsp2 = _batch_arrayPush(ctx, jsa, js_e)
-		if jsp2 != 0
-			return 0
-		integer jsp3 = _batch_arrayPush(ctx, jsa, ja_e)
-		if jsp3 != 0
-			return 0
-		integer sign_call = _batch_call(ctx, "_jwt_sign", jsa)
-		if sign_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, sign_call)
-		if ret_s == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p4 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_sign", params, "string", body_arr)
-
-	// 6. jwt_verify(token: string) -> string
+	// 6. jwt_verify(token: string) -> string — the payload of a valid access
+	// token, "" otherwise. A refresh token is not an access token.
 	integer build_jwt_verify(integer ctx)
-		integer params = one_param(ctx, "token", "string")
-		if params == 0
-			return 0
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "string payload = _jwt_verify(token, __jwt_secret, __jwt_alg)\n"
+		src = src + "if payload == \"\"\n\treturn \"\"\n"
+		src = src + "string typ = json.get(json.textToData(payload), \"typ\")\n"
+		src = src + "if typ == \"refresh\"\n\treturn \"\"\n"
+		src = src + "return payload\n"
+		return source_helper(ctx, "jwt_verify", "token:string", "string", src)
 
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// return _jwt_verify(token, __jwt_secret, __jwt_alg)
-		integer t_e = _batch_ident(ctx, "token")
-		if t_e == 0
-			return 0
-		integer s_e = _batch_ident(ctx, "__jwt_secret")
-		if s_e == 0
-			return 0
-		integer a_e = _batch_ident(ctx, "__jwt_alg")
-		if a_e == 0
-			return 0
-		integer jva = _batch_arrayNew(ctx)
-		if jva == 0
-			return 0
-		integer jvp1 = _batch_arrayPush(ctx, jva, t_e)
-		if jvp1 != 0
-			return 0
-		integer jvp2 = _batch_arrayPush(ctx, jva, s_e)
-		if jvp2 != 0
-			return 0
-		integer jvp3 = _batch_arrayPush(ctx, jva, a_e)
-		if jvp3 != 0
-			return 0
-		integer verify_call = _batch_call(ctx, "_jwt_verify", jva)
-		if verify_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, verify_call)
-		if ret_s == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p1 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_verify", params, "string", body_arr)
-
-	// 7. jwt_refresh(refreshToken: string) -> string
-	//
-	// AUTH-J007 / AUTH-J009 (foundation/spec/plugins/frame-auth-semantics.md):
-	// refresh MUST detect replay of a consumed refresh token. Verify+re-sign in
-	// pure Clean cannot do this atomically. Delegated to server bridge:
-	//
-	//   _jwt_refresh_and_rotate(token, secret, algorithm, new_ttl_seconds) -> string
-	//
-	// Semantics (clean-server 1.9.70+): atomically verifies signature+expiry,
-	// extracts jti, marks it consumed under the SessionStore write lock, signs a
-	// new token preserving original claims but with fresh jti / iat / exp.
-	// Replay of a consumed jti or missing-jti token returns empty string.
-	//
-	// Because the rotate bridge also does verify, the plugin no longer needs the
-	// early verify+guard pattern.
+	// 7. jwt_refresh(refreshToken: string) -> string — a new access token, or
+	// "" when the token is not a valid, unused refresh token (AUTH-J007).
+	// _jwt_refresh_and_rotate verifies the token, consumes its jti under the
+	// session store lock and re-signs it with a fresh jti / iat / exp; a
+	// replayed token yields "".
 	integer build_jwt_refresh(integer ctx)
-		integer params = one_param(ctx, "refreshToken", "string")
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "string payload = _jwt_verify(refreshToken, __jwt_secret, __jwt_alg)\n"
+		src = src + "if payload == \"\"\n\treturn \"\"\n"
+		src = src + "any data = json.textToData(payload)\n"
+		src = src + "string typ = json.get(data, \"typ\")\n"
+		src = src + "if typ != \"refresh\"\n\treturn \"\"\n"
+		src = src + "string rotated = _jwt_refresh_and_rotate(refreshToken, __jwt_secret, __jwt_alg, __jwt_refresh_ttl * 60)\n"
+		src = src + "if rotated == \"\"\n\treturn \"\"\n"
+		src = src + "_http_set_header(\"Set-Cookie\", __auth_build_refresh_cookie_header(rotated))\n"
+		src = src + "return __auth_jwt_issue(json.dataToText(json.get(data, \"claims\")), \"access\", __jwt_ttl)\n"
+		return source_helper(ctx, "jwt_refresh", "refreshToken:string", "string", src)
+
+	// __auth_jwt_issue(claims, typ, ttlMinutes) -> string — a token of type
+	// typ that expires ttlMinutes from now.
+	integer build_jwt_issue_helper(integer ctx)
+		string src = "integer iat = _time_now()\n"
+		src = src + "string payload = __auth_build_jwt_payload(iat, iat + ttlMinutes * 60, _crypto_random_hex(16), typ, claims)\n"
+		src = src + "return _jwt_sign(payload, __jwt_secret, __jwt_alg)\n"
+		return source_helper(ctx, "__auth_jwt_issue", "claims:string,typ:string,ttlMinutes:integer", "string", src)
+
+	// __auth_build_refresh_cookie_header(token) -> string — the Set-Cookie
+	// value carrying a refresh token: HttpOnly, with the session cookie's
+	// path, SameSite, Domain and Secure settings, for refreshTtlMinutes.
+	integer build_refresh_cookie_header_helper(integer ctx)
+		string src = "string cookie = \"frame.refresh=\" + token + \"; Path=\" + __session_path + \"; SameSite=\" + __session_same_site\n"
+		src = src + "if __session_domain != \"\"\n\tcookie = cookie + \"; Domain=\" + __session_domain\n"
+		src = src + "if __session_secure\n\tcookie = cookie + \"; Secure\"\n"
+		src = src + "return cookie + \"; HttpOnly; Max-Age=\" + (__jwt_refresh_ttl * 60).toString()\n"
+		return source_helper(ctx, "__auth_build_refresh_cookie_header", "token:string", "string", src)
+
+	// A helper whose body is Clean source (Amendment 11 §3.11, via
+	// batch.func2's from-source path). params_spec is "name:type,..." or "".
+	integer source_helper(integer ctx, string name, string params_spec, string return_type, string src)
+		integer params = _batch_arrayNew(ctx)
 		if params == 0
 			return 0
+		integer pos = 0
+		while pos < params_spec.length()
+			integer stop = params_spec.indexOf(",", pos)
+			if stop == -1
+				stop = params_spec.length()
+			string param = params_spec.substring(pos, stop)
+			integer colon = param.indexOf(":")
+			if _batch_arrayPush(ctx, params, _batch_param(ctx, param.substring(0, colon), param.substring(colon + 1, param.length()))) != 0
+				return 0
+			pos = stop + 1
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if body_h == 0 or _ctx_had_error(ctx) != 0
+			return 0
+		return _batch_func2(ctx, name, params, return_type, 0, body_h)
 
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// return _jwt_refresh_and_rotate(refreshToken, __jwt_secret, __jwt_alg, __jwt_refresh_ttl * 60)
-		integer rt_e = _batch_ident(ctx, "refreshToken")
-		if rt_e == 0
-			return 0
-		integer s_e = _batch_ident(ctx, "__jwt_secret")
-		if s_e == 0
-			return 0
-		integer a_e = _batch_ident(ctx, "__jwt_alg")
-		if a_e == 0
-			return 0
-		integer new_ttl_e = mul_ident_int(ctx, "__jwt_refresh_ttl", 60)
-		if new_ttl_e == 0
-			return 0
-
-		integer rr_args = _batch_arrayNew(ctx)
-		if rr_args == 0
-			return 0
-		integer rp1 = _batch_arrayPush(ctx, rr_args, rt_e)
-		if rp1 != 0
-			return 0
-		integer rp2 = _batch_arrayPush(ctx, rr_args, s_e)
-		if rp2 != 0
-			return 0
-		integer rp3 = _batch_arrayPush(ctx, rr_args, a_e)
-		if rp3 != 0
-			return 0
-		integer rp4 = _batch_arrayPush(ctx, rr_args, new_ttl_e)
-		if rp4 != 0
-			return 0
-		integer rotate_call = _batch_call(ctx, "_jwt_refresh_and_rotate", rr_args)
-		if rotate_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, rotate_call)
-		if ret_s == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p1 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_refresh", params, "string", body_arr)
-
-	// __auth_build_session_json(userId, claims, expiry) -> string
-	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + ",\"expiry\":" + expiry.toString() + "}"
+	// __auth_build_session_json(userId, claims) -> string
+	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + "}"
 	integer build_session_json_helper(integer ctx)
-		integer params = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "userId", "integer"))
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "claims", "string"))
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "expiry", "integer"))
-		integer ret_h = _emit_stmt_from_source(ctx, "return \"{\\\"userId\\\":\" + userId.toString() + \",\\\"claims\\\":\" + claims + \",\\\"expiry\\\":\" + expiry.toString() + \"}\"", 0)
-		if ret_h == 0 or _ctx_had_error(ctx) != 0
-			return 0
-		return _batch_func2(ctx, "__auth_build_session_json", params, "string", 0, ret_h)
+		string src = "return \"{\\\"userId\\\":\" + userId.toString() + \",\\\"claims\\\":\" + claims + \"}\"\n"
+		return source_helper(ctx, "__auth_build_session_json", "userId:integer,claims:string", "string", src)
 
 	// __auth_build_cookie_header(sessionId) -> string — the Set-Cookie value
 	// for a new session, built from the auth: session configuration.
@@ -1412,9 +839,9 @@ functions:
 		integer params = _batch_arrayNew(ctx)
 		_batch_arrayPush(ctx, params, _batch_param(ctx, "sessionId", "string"))
 		string src = "string cookie = __session_cookie + \"=\" + sessionId + \"; Path=\" + __session_path + \"; SameSite=\" + __session_same_site\n"
+		src = src + "if __session_domain != \"\"\n\tcookie = cookie + \"; Domain=\" + __session_domain\n"
 		src = src + "if __session_secure\n\tcookie = cookie + \"; Secure\"\n"
-		src = src + "if __session_http_only\n\tcookie = cookie + \"; HttpOnly\"\n"
-		src = src + "return cookie + \"; Max-Age=\" + (__session_timeout * 60).toString()\n"
+		src = src + "return cookie + \"; HttpOnly; Max-Age=\" + (__session_timeout * 60).toString()\n"
 		integer body_h = _emit_stmt_from_source(ctx, src, 0)
 		if body_h == 0 or _ctx_had_error(ctx) != 0
 			return 0
@@ -1425,67 +852,21 @@ functions:
 	integer build_expire_cookie_header_helper(integer ctx)
 		integer params = _batch_arrayNew(ctx)
 		string src = "string expireCookie = __session_cookie + \"=; Path=\" + __session_path + \"; SameSite=\" + __session_same_site + \"; Max-Age=0\"\n"
+		src = src + "if __session_domain != \"\"\n\texpireCookie = expireCookie + \"; Domain=\" + __session_domain\n"
 		src = src + "if __session_secure\n\texpireCookie = expireCookie + \"; Secure\"\n"
-		src = src + "if __session_http_only\n\texpireCookie = expireCookie + \"; HttpOnly\"\n"
-		src = src + "return expireCookie\n"
+		src = src + "return expireCookie + \"; HttpOnly\"\n"
 		integer body_h = _emit_stmt_from_source(ctx, src, 0)
 		if body_h == 0 or _ctx_had_error(ctx) != 0
 			return 0
 		return _batch_func2(ctx, "__auth_build_expire_cookie_header", params, "string", 0, body_h)
 
-	// 7b. __auth_build_jwt_payload(iat, exp, jti, claims) -> string
-	//
-	// Emits the Clean helper that assembles the JWT payload JSON. The four inputs
-	// are already validated by callers (jwt_sign) — `iat`/`exp` are integers,
-	// `jti` is 32 hex chars from _crypto_random_hex(16), `claims` is caller-supplied
-	// JSON. `claims` is NOT re-escaped: callers pass a well-formed JSON object.
-	//
-	// Emitted as: (composed via _emit_stmt_from_source so the runtime `+` /
-	// `.toString()` machinery is used — the batch expression builder has no
-	// method-call variant).
-	//
-	//   string __auth_build_jwt_payload(integer iat, integer exp, string jti, string claims)
-	//       return "{\"iat\":" + iat.toString() + ",\"exp\":" + exp.toString()
-	//              + ",\"jti\":\"" + jti + "\",\"claims\":" + claims + "}"
+	// __auth_build_jwt_payload(iat, exp, jti, typ, claims) -> string — the
+	// JWT payload JSON. iat/exp are integers, jti is 32 hex chars, typ is
+	// "access" or "refresh", claims is the caller's JSON object (not
+	// re-escaped).
 	integer build_jwt_build_payload_helper(integer ctx)
-		integer params = _batch_arrayNew(ctx)
-		if params == 0
-			return 0
-		integer p_iat = _batch_param(ctx, "iat", "integer")
-		if p_iat == 0
-			return 0
-		integer pp1 = _batch_arrayPush(ctx, params, p_iat)
-		if pp1 != 0
-			return 0
-		integer p_exp = _batch_param(ctx, "exp", "integer")
-		if p_exp == 0
-			return 0
-		integer pp2 = _batch_arrayPush(ctx, params, p_exp)
-		if pp2 != 0
-			return 0
-		integer p_jti = _batch_param(ctx, "jti", "string")
-		if p_jti == 0
-			return 0
-		integer pp3 = _batch_arrayPush(ctx, params, p_jti)
-		if pp3 != 0
-			return 0
-		integer p_claims = _batch_param(ctx, "claims", "string")
-		if p_claims == 0
-			return 0
-		integer pp4 = _batch_arrayPush(ctx, params, p_claims)
-		if pp4 != 0
-			return 0
-
-		// Emit the return via source so `+` and `.toString()` resolve via runtime.
-		// _emit_stmt_from_source returns a plain arena stmt handle (no BATCH_TAG),
-		// which cannot be pushed into a batch stmt array. Use batch.func2's
-		// from_source_handle path instead of batch.func + arrayPush (which
-		// triggers PLUGIN013 batch/arena handle-kind mismatch, fp f81afcc2).
-		integer ret_h = _emit_stmt_from_source(ctx, "return \"{\\\"iat\\\":\" + iat.toString() + \",\\\"exp\\\":\" + exp.toString() + \",\\\"jti\\\":\\\"\" + jti + \"\\\",\\\"claims\\\":\" + claims + \"}\"", 0)
-		if ret_h == 0
-			return 0
-
-		return _batch_func2(ctx, "__auth_build_jwt_payload", params, "string", 0, ret_h)
+		string src = "return \"{\\\"iat\\\":\" + iat.toString() + \",\\\"exp\\\":\" + exp.toString() + \",\\\"jti\\\":\\\"\" + jti + \"\\\",\\\"typ\\\":\\\"\" + typ + \"\\\",\\\"claims\\\":\" + claims + \"}\"\n"
+		return source_helper(ctx, "__auth_build_jwt_payload", "iat:integer,exp:integer,jti:string,typ:string,claims:string", "string", src)
 
 	// 8. hashPassword(password: string) -> string
 	integer build_hash_password(integer ctx)
@@ -1858,6 +1239,15 @@ functions:
 
 		return _batch_func(ctx, "csrf_validate", params, "boolean", body_arr)
 
+	// __auth_csrf_enabled() -> boolean — the csrf: enabled setting. The host
+	// calls it once at startup: while it is true, a POST / PUT / PATCH /
+	// DELETE request authenticated by the session cookie must carry the
+	// session's CSRF token in the X-CSRF-Token header or the _csrf form field
+	// (AUTH-S006 / AUTH-S007), or the host answers 403 CSRF_FAIL before the
+	// handler runs.
+	integer build_csrf_enabled_helper(integer ctx)
+		return source_helper(ctx, "__auth_csrf_enabled", "", "boolean", "return __csrf_enabled\n")
+
 	// 16. tenant_getId() -> string
 	integer build_tenant_get_id(integer ctx)
 		integer params = no_params(ctx)
@@ -1893,8 +1283,15 @@ functions:
 		if p2 != 0
 			return 0
 
-		// return _json_get(session, "claims.tenantId")
-		integer jg_e = call2_ident_str(ctx, "_json_get", "session", "claims.tenantId")
+		// return _json_get(session, "claims." + __tenant_field)
+		// (tenant: field = ... names the claim; default tenantId)
+		integer path_e = add_exprs(ctx, _batch_stringLit(ctx, "claims."), _batch_ident(ctx, "__tenant_field"))
+		integer jg_args = _batch_arrayNew(ctx)
+		if path_e == 0 or jg_args == 0
+			return 0
+		if _batch_arrayPush(ctx, jg_args, _batch_ident(ctx, "session")) != 0 or _batch_arrayPush(ctx, jg_args, path_e) != 0
+			return 0
+		integer jg_e = _batch_call(ctx, "_json_get", jg_args)
 		if jg_e == 0
 			return 0
 		integer ret_s = _batch_stmtReturn(ctx, jg_e)
@@ -2075,131 +1472,117 @@ functions:
 		return 0
 
 // ============================================================================
-// LOGIN BLOCK EXPANSION (TYPED)
+// LOGIN BLOCK
 // ============================================================================
-// The login: block generates a handleLogin function body. The body is entirely
-// synthetic (no user-authored handler body in the login: DSL). Delegates
-// string-building for claims JSON to __auth_build_login_claims (helper #20,
-// added to the batch alongside the 18 core helpers).
+// frame-auth.ebnf login_block is not implemented in this version. The block
+// is still claimed (so it is not mistaken for user code) and fails the build
+// with a clear message instead of expanding to nothing.
 
 functions:
+	string login_not_supported_message()
+		return "login: is not supported in this version of frame.auth — write the login endpoint in an endpoints: block with auth.verifyPassword(password, hash), auth.session.create(userId, claims) and auth.session.setCookie(session, response)"
+
 	integer expand_login_typed(integer ctx, string attrs_json, string body)
-		string model = get_attr(attrs_json, "model", "User")
-		string email_field = get_attr(attrs_json, "emailField", "email")
-		string password_field = get_attr(attrs_json, "passwordField", "password_hash")
-		string redirect_to = get_attr(attrs_json, "redirectTo", "/dashboard")
-
-		// Build handleLogin(email: string, password: string) -> string function
-		integer params = two_params(ctx, "email", "string", "password", "string")
-		if params == 0
-			return plugin_error(ctx, "FRAME-AUTH-E004", "expand_login_typed: two_params failed")
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E004", "expand_login_typed: arrayNew for body failed")
-
-		// Model?.first lookup: Model? user = Model.first(where email_field == email)
-		// This requires emitting a data-query expression — use typed call to model find.
-		// string user = <model>.findByEmail(email) — delegate to a bridge or typed call.
-		// In v1 this was emitted as: "Model? user = Model.first:\n\twhere:\n\t\t..."
-		// The typed equivalent: emit a call to model.first with a where clause.
-		// This is ORM-territory handled by frame.data, not frame.auth. The login: block
-		// emits a function body that references the model by name — it is a synthesised
-		// function, not a pass-through of user-authored code. The query sub-expression
-		// cannot be expressed purely through batch_expr builders without ORM support.
-		// v3 LOGIN APPROACH: emit the handleLogin body using _emit_stmt_from_source
-		// with a PLUGIN-BUILT source string, which would violate Amendment 4.
-		// CORRECT APPROACH: login: block body is too complex for pure batch builder
-		// composition because it requires a data-query sub-expression (frame.data ORM).
-		// Resolution: scope the login: block as a known limitation in v3 — emit it
-		// via the _emit_helpers_batch JSON path (Amendment 3, not builders). The
-		// JSON spec for handleLogin is a plugin-authored template (no user fragments).
-		// Build the JSON spec string for handleLogin and call _emit_helpers_batch with LP.
-
-		// Since we cannot build a LP-string pointer from within Clean and pass it
-		// to _emit_helpers_batch (that bridge expects an LP pointer at a WASM memory
-		// address, not a Clean string value), the login: block requires a different path.
-		// The proper resolution for login: in v3 is to emit it as a batch function
-		// with typed nodes where possible, and use a dedicated bridge for the ORM query.
-		// For attempt 4, scope the login: block as a no-op emit with a documented
-		// limitation, matching the v1 behavior of returning the body unchanged when
-		// no login DSL parser is fully implemented.
-
-		// Emit a FRAME-AUTH-W001 warning (not error) documenting the scope boundary.
-		_emit_error(ctx, 1, "FRAME-AUTH-W001", "login: block typed emission deferred — ORM query expression in handleLogin requires frame.data bridge integration (tracked: FRAME-AUTH-LOGIN-TYPED-TODO)", "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
-
-		// Return 0 (success with warning) — the login: block emits nothing in v3 attempt 4.
-		// This matches the v1 behavior where the login: block's generated handleLogin
-		// references session_create and verifyPassword which are emitted by the auth: block.
-		// Users who rely on the login: DSL block should use the auth: block's helpers directly
-		// until frame.data typed ORM bridge integration is complete.
-		return 0
+		return plugin_error(ctx, "FRAME-AUTH-E004", login_not_supported_message())
 
 // ============================================================================
-// UTILITY FUNCTIONS (DSL parsing — unchanged from v1)
+// UTILITY FUNCTIONS (DSL parsing)
 // ============================================================================
+// The auth: body is read line by line. A section (`session:`, `jwt:`, `csrf:`,
+// `roles:`, `tenant:`) is the run of lines indented under its header; each
+// setting is one `key = value` line (frame-auth.ebnf session_field,
+// jwt_field, csrf_field), with any spacing around `=` and an optional
+// trailing `//` comment.
 
 functions:
+	// Number of leading spaces and tabs of a line.
+	integer indent_width(string line)
+		integer i = 0
+		while i < line.length()
+			string ch = line.substring(i, i + 1)
+			if ch != " " and ch != "\t"
+				return i
+			i = i + 1
+		return i
+
+	// The line without its `//` comment (a `//` inside a string literal is
+	// part of the value).
+	string strip_comment(string line)
+		boolean in_string = false
+		integer i = 0
+		while i < line.length()
+			string ch = line.substring(i, i + 1)
+			if ch == "\\" and in_string
+				i = i + 1
+			else if ch == "\""
+				in_string = not in_string
+			else if ch == "/" and not in_string and i + 1 < line.length()
+				if line.substring(i + 1, i + 2) == "/"
+					return line.substring(0, i)
+			i = i + 1
+		return line
+
+	// The lines of the `<block_name>` section (block_name includes the
+	// colon, e.g. "session:"), trimmed, without comments or blank lines,
+	// joined with "\n". "" when the section is absent or empty.
 	string extract_subblock(string body, string block_name)
-		integer start_pos = body.indexOf(block_name)
-		if start_pos == -1
-			return ""
+		string out = ""
+		integer header_indent = -1
+		integer pos = 0
+		while pos < body.length()
+			integer eol = body.indexOf("\n", pos)
+			if eol == -1
+				eol = body.length()
+			string line = body.substring(pos, eol)
+			pos = eol + 1
+			string text = strip_comment(line).trim()
+			if text.length() == 0
+				continue
+			integer indent = indent_width(line)
+			if header_indent == -1
+				if text == block_name
+					header_indent = indent
+			else if indent <= header_indent
+				return out
+			else if out.length() == 0
+				out = text
+			else
+				out = out + "\n" + text
+		return out
 
-		integer content_start = start_pos + block_name.length()
-		integer end_pos = body.length()
-		integer search_pos = content_start
+	// The raw text after `=` on the `key = value` line of a section, or
+	// "\n" (which no value can contain) when the key is not set.
+	string raw_config_value(string config, string key)
+		integer pos = 0
+		while pos < config.length()
+			integer eol = config.indexOf("\n", pos)
+			if eol == -1
+				eol = config.length()
+			string line = config.substring(pos, eol).trim()
+			pos = eol + 1
+			if line.startsWith(key)
+				string rest = line.substring(key.length(), line.length()).trim()
+				// `domain? = null` (frame-auth.ebnf session_domain_field)
+				if rest.startsWith("?")
+					rest = rest.substring(1, rest.length()).trim()
+				if rest.startsWith("=")
+					return rest.substring(1, rest.length()).trim()
+		return "\n"
 
-		while search_pos < body.length()
-			if body.substring(search_pos, search_pos + 1) == "\n"
-				string after_newline = body.substring(search_pos + 1, body.length()).trim()
-				if after_newline.startsWith("session:") or after_newline.startsWith("jwt:") or after_newline.startsWith("roles:") or after_newline.startsWith("tenant:")
-					end_pos = search_pos
-					break
-			search_pos = search_pos + 1
+	boolean has_config_value(string config, string key)
+		return raw_config_value(config, key) != "\n"
 
-		return body.substring(content_start, end_pos).trim()
-
+	// A setting's value: string literals are unquoted, env.get("X") gives the
+	// variable name X; default_val when the key is not set.
 	string get_config_value(string config, string key, string default_val)
-		string pattern = key + " = "
-		integer pos = config.indexOf(pattern)
-		if pos == -1
+		string value = raw_config_value(config, key)
+		if value == "\n"
 			return default_val
-
-		integer value_start = pos + pattern.length()
-		integer value_end = config.indexOf("\n", value_start)
-		if value_end == -1
-			value_end = config.length()
-
-		string value = config.substring(value_start, value_end).trim()
-
-		if value.startsWith("\"") and value.endsWith("\"")
-			value = value.substring(1, value.length() - 1)
-
-		if value.startsWith("env.get(\"")
-			integer env_start = 9
-			integer env_end = value.indexOf("\")")
-			return value.substring(env_start, env_end)
-
+		if value.startsWith("env.get(\"") and value.endsWith("\")")
+			return value.substring(9, value.length() - 2)
+		if value.length() >= 2 and value.startsWith("\"") and value.endsWith("\"")
+			return value.substring(1, value.length() - 1)
 		return value
-
-	string get_attr(string attrs, string key, string default_val)
-		string pattern = "\"" + key + "\""
-		integer pos = attrs.indexOf(pattern)
-		if pos == -1
-			return default_val
-		return extract_value(attrs, pos)
-
-	string extract_value(string json, integer key_pos)
-		integer colon_pos = json.indexOf(":", key_pos)
-		if colon_pos == -1
-			return ""
-		integer quote_start = json.indexOf("\"", colon_pos + 1)
-		if quote_start == -1
-			return ""
-		integer quote_end = json.indexOf("\"", quote_start + 1)
-		if quote_end == -1
-			return ""
-		return json.substring(quote_start + 1, quote_end)
 
 	string escape_string_literal(string s)
 		string out = ""
@@ -2216,31 +1599,145 @@ functions:
 		return out
 
 // ============================================================================
-// VALIDATION (unchanged from v1)
+// VALIDATION
 // ============================================================================
+// Every line of the auth: body must be understood: a misspelled key, a
+// `key: value` line or an unsupported setting is an error rather than a
+// setting that silently keeps its default.
 
 functions:
 	string validate_auth_config(string body)
-		if body.indexOf("jwt:") != -1
-			string jwt_block = extract_subblock(body, "jwt:")
-			if jwt_block.indexOf("enabled = false") == -1
-				if jwt_block.indexOf("secret") == -1
-					return "auth.jwt: secret is required when JWT is enabled"
+		string layout = check_auth_layout(body)
+		if layout != ""
+			return layout
 
-				// get_config_value unwraps env.get("X") to X, so the env.get()
-				// form is detected on the raw `secret = ...` line instead.
-				string raw_secret = get_config_value(jwt_block, "secret", "")
-				if raw_secret.length() > 0
-					boolean is_env_call = jwt_block.indexOf("secret = env.get(") != -1
-					if not is_env_call
-						return "auth.jwt: secret must reference an environment variable (use env.get(\"JWT_SECRET\")), not a hardcoded string"
+		string session_block = extract_subblock(body, "session:")
+		string err = check_section_keys("session", session_block, ",cookie,sameSite,secure,httpOnly,domain,path,timeoutMinutes,store,")
+		if err != ""
+			return err
+		err = check_boolean(session_block, "session", "secure")
+		if err == ""
+			err = check_boolean(session_block, "session", "httpOnly")
+		if err == ""
+			err = check_integer(session_block, "session", "timeoutMinutes")
+		if err != ""
+			return err
+		if has_config_value(session_block, "store")
+			return "auth.session: store is not supported in this version — sessions are kept in the server's in-memory store; remove the store setting"
+		// AUTH-S005: the session cookie is always HttpOnly.
+		if get_config_value(session_block, "httpOnly", "true") == "false"
+			return "auth.session: httpOnly = false is not allowed — the session cookie is always HttpOnly (AUTH-S005); remove the setting"
+		string same_site_val = get_config_value(session_block, "sameSite", "Lax")
+		if same_site_val != "Lax" and same_site_val != "Strict" and same_site_val != "None"
+			return "auth.session: sameSite must be \"Lax\", \"Strict\" or \"None\""
+		// AUTH-C005: sameSite = "None" needs an explicit secure = true.
+		if same_site_val == "None" and get_config_value(session_block, "secure", "") != "true"
+			return "auth.session: sameSite=\"None\" requires secure=true (required by browser spec)"
 
-		if body.indexOf("session:") != -1
-			string session_block = extract_subblock(body, "session:")
-			string same_site_val = get_config_value(session_block, "sameSite", "")
-			if same_site_val == "None"
-				string secure_val = get_config_value(session_block, "secure", "")
-				if secure_val != "true"
-					return "auth.session: sameSite=\"None\" requires secure=true (required by browser spec)"
+		string jwt_block = extract_subblock(body, "jwt:")
+		err = check_section_keys("jwt", jwt_block, ",enabled,secret,alg,ttlMinutes,refreshTtlMinutes,")
+		if err == ""
+			err = check_boolean(jwt_block, "jwt", "enabled")
+		if err == ""
+			err = check_integer(jwt_block, "jwt", "ttlMinutes")
+		if err == ""
+			err = check_integer(jwt_block, "jwt", "refreshTtlMinutes")
+		if err != ""
+			return err
+		if section_present(body, "jwt:") and get_config_value(jwt_block, "enabled", "true") == "true"
+			if not has_config_value(jwt_block, "secret")
+				return "auth.jwt: secret is required when JWT is enabled"
+		if has_config_value(jwt_block, "secret")
+			string raw_secret = raw_config_value(jwt_block, "secret")
+			if not (raw_secret.startsWith("env.get(\"") and raw_secret.endsWith("\")"))
+				return "auth.jwt: secret must reference an environment variable (use env.get(\"JWT_SECRET\")), not a hardcoded string"
 
+		string csrf_block = extract_subblock(body, "csrf:")
+		err = check_section_keys("csrf", csrf_block, ",enabled,")
+		if err == ""
+			err = check_boolean(csrf_block, "csrf", "enabled")
+		if err != ""
+			return err
+
+		string tenant_block = extract_subblock(body, "tenant:")
+		if has_config_value(tenant_block, "header")
+			return "auth.tenant: header is not supported — the tenant id comes from the session claims, never from a request header (AUTH-I003); remove the header setting"
+		err = check_section_keys("tenant", tenant_block, ",field,")
+		if err != ""
+			return err
+		return ""
+
+	// True when the body has a `<header>` section line.
+	boolean section_present(string body, string header)
+		integer pos = 0
+		while pos < body.length()
+			integer eol = body.indexOf("\n", pos)
+			if eol == -1
+				eol = body.length()
+			if strip_comment(body.substring(pos, eol)).trim() == header
+				return true
+			pos = eol + 1
+		return false
+
+	// The top level of the auth: body holds section headers only.
+	string check_auth_layout(string body)
+		integer top_indent = -1
+		integer pos = 0
+		while pos < body.length()
+			integer eol = body.indexOf("\n", pos)
+			if eol == -1
+				eol = body.length()
+			string line = body.substring(pos, eol)
+			pos = eol + 1
+			string text = strip_comment(line).trim()
+			if text.length() == 0
+				continue
+			integer indent = indent_width(line)
+			if top_indent == -1 or indent < top_indent
+				top_indent = indent
+			if indent == top_indent
+				if text != "session:" and text != "jwt:" and text != "csrf:" and text != "roles:" and text != "tenant:"
+					return "auth: unexpected line `" + text + "` — the auth: block holds the sections session:, jwt:, csrf:, roles: and tenant:"
+		return ""
+
+	// Every line of a section is `key = value` with a key from `allowed`
+	// (a comma-separated list with leading and trailing commas).
+	string check_section_keys(string section, string config, string allowed)
+		integer pos = 0
+		while pos < config.length()
+			integer eol = config.indexOf("\n", pos)
+			if eol == -1
+				eol = config.length()
+			string line = config.substring(pos, eol)
+			pos = eol + 1
+			integer eq = line.indexOf("=")
+			if eq <= 0
+				return "auth." + section + ": `" + line + "` is not a setting — write `key = value`"
+			string key = line.substring(0, eq).trim()
+			if key.endsWith("?")
+				key = key.substring(0, key.length() - 1).trim()
+			if allowed.indexOf("," + key + ",") == -1
+				return "auth." + section + ": unknown setting `" + key + "` (allowed: " + allowed.substring(1, allowed.length() - 1).replace(",", ", ") + ")"
+		return ""
+
+	string check_boolean(string config, string section, string key)
+		if not has_config_value(config, key)
+			return ""
+		string v = raw_config_value(config, key)
+		if v != "true" and v != "false"
+			return "auth." + section + ": " + key + " must be true or false"
+		return ""
+
+	string check_integer(string config, string section, string key)
+		if not has_config_value(config, key)
+			return ""
+		string v = raw_config_value(config, key)
+		if v.length() == 0
+			return "auth." + section + ": " + key + " must be a whole number of minutes"
+		integer i = 0
+		while i < v.length()
+			string ch = v.substring(i, i + 1)
+			if "0123456789".indexOf(ch) == -1
+				return "auth." + section + ": " + key + " must be a whole number of minutes"
+			i = i + 1
 		return ""
