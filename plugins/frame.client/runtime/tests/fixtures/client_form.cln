@@ -1,0 +1,21 @@
+// Fixture for client-runtime.test.mjs — a form: block. `note`'s default
+// holds "~", "|" and the word "required"; the success callback name starts
+// with "clear". created() writes what the callback sees to #out.
+
+plugins:
+	frame.ui
+	frame.client
+
+form: post "/api/tasks"
+	title required
+	note default="a~b|c (not required)"
+	on success: emit "clearCache"
+	on error: show
+
+start:
+	title = "Say \"hi\" \\ bye"
+	submit()
+
+functions:
+	void clearCache()
+		integer s = ui.updateElement("#out", "ok=" + formSuccess + " submitting=" + submitting.toString() + " title=[" + title + "] note=[" + note + "]")

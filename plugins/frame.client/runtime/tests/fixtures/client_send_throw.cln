@@ -1,0 +1,23 @@
+// Fixture for client-runtime.test.mjs — a success callback that fails after
+// recording its run in #out. It must run once, not again as an error.
+
+plugins:
+	frame.ui
+	frame.client
+
+start:
+	ping()
+
+send: ping post "/api/ping"
+	on success: emit "pinged"
+	on error: emit "pingFailed"
+
+functions:
+	void pinged()
+		string before = ui.getText("#out")
+		integer s = ui.updateElement("#out", before + "pinged;")
+		error("callback-failed")
+
+	void pingFailed()
+		string before = ui.getText("#out")
+		integer s = ui.updateElement("#out", before + "failed;")

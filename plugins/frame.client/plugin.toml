@@ -60,6 +60,10 @@ get_keywords = "get_keywords"
 # the host bridge layer.
 [bridge]
 functions = [
+  # Percent-encoding for {placeholder} values in load:/send: URLs (registry
+  # entry http_encode_url; same declaration as frame.server's).
+  { name = "http_encode_url", params = ["string"], returns = "string", description = "Percent-encode a string for safe use in a URL", expand_strings = true, hosts = ["all"] },
+
   # ========== API: HTTP Requests ==========
   { name = "_api_get", params = ["string", "string"], returns = "integer", description = "GET request: url, response handler name (exported function)", expand_strings = true, hosts = ["browser"] },
   { name = "_api_post", params = ["string", "string", "string"], returns = "integer", description = "POST request: url, body, response handler name", expand_strings = true, hosts = ["browser"] },

@@ -31,7 +31,6 @@
 //     _expr_bool_lit           — build a boolean literal expression
 //   Type constructors:
 //     _type_string             — string type handle
-//     _type_integer            — integer type handle
 //     _type_boolean            — boolean type handle
 //     _type_void               — void type handle
 //     _type_class_ref          — named type handle (used for "any")
@@ -70,6 +69,9 @@ external:
 	// fixed `later __res = api.<method>(...)` request statement (see
 	// build_later_request); the op set has no later_assignment constructor.
 	integer _emit_stmt_from_source(integer ctx, string source, integer origin_offset)
+	// §3.16 — parse a Clean expression into an expr handle. Used only for the
+	// fixed literal `null` (the initial value of a load: variable).
+	integer _emit_expr_from_source(integer ctx, string source, integer origin_offset)
 	integer _expr_field(integer ctx, integer receiver_handle, string field_name)
 	// _expr_binop is the LP-string variant in the compiler; _expr_binop_op is
 	// the numeric-op-code sibling. We use the numeric variant since callers
@@ -79,7 +81,6 @@ external:
 	integer _expr_bool_lit(integer ctx, integer value)
 	// Type constructors
 	integer _type_string(integer ctx)
-	integer _type_integer(integer ctx)
 	integer _type_boolean(integer ctx)
 	integer _type_void(integer ctx)
 	integer _type_class_ref(integer ctx, string name)
@@ -141,7 +142,17 @@ functions:
 // ============================================================================
 
 functions:
-	// Extract field N (0-based) from a tilde-separated record.
+	// Records are "~"-separated fields and record lists are "|"-separated.
+	// Every field value goes through rec_enc, so a "~" or "|" in user text
+	// (a default value, a URL, an at path) cannot split a record; get_field
+	// decodes it again.
+	string rec_enc(string value)
+		return value.replace("%", "%25").replace("~", "%7E").replace("|", "%7C")
+
+	string rec_dec(string value)
+		return value.replace("%7C", "|").replace("%7E", "~").replace("%25", "%")
+
+	// Field N (0-based) of a record, decoded.
 	// get_field("name~url~at~err", 0) -> "name"
 	// get_field("name~url~at~err", 2) -> "at"
 	string get_field(string record, integer index)
@@ -155,8 +166,71 @@ functions:
 			i = i + 1
 		integer tilde = remaining.indexOf("~")
 		if tilde == -1
-			return remaining
-		return remaining.substring(0, tilde)
+			return rec_dec(remaining)
+		return rec_dec(remaining.substring(0, tilde))
+
+	// True for a Clean identifier (letters, digits, _; not starting with a
+	// digit). Names from the DSL become state variables and functions.
+	boolean is_identifier(string s)
+		if s.length() == 0
+			return false
+		string letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+		string digits = "0123456789"
+		if letters.indexOf(s.substring(0, 1)) == -1
+			return false
+		integer i = 1
+		while i < s.length()
+			string c = s.substring(i, i + 1)
+			if letters.indexOf(c) == -1 and digits.indexOf(c) == -1
+				return false
+			i = i + 1
+		return true
+
+	// `text` with every "double-quoted" part removed, so words inside a
+	// quoted value are not read as keywords.
+	string without_quoted(string text)
+		string result = ""
+		string rem = text
+		while rem.length() > 0
+			integer q1 = rem.indexOf("\"")
+			if q1 == -1
+				result = result + rem
+				rem = ""
+			else
+				result = result + rem.substring(0, q1) + " "
+				integer q2 = rem.indexOf("\"", q1 + 1)
+				if q2 == -1
+					rem = ""
+				else
+					rem = rem.substring(q2 + 1, rem.length())
+		return result
+
+	// The first field name of a "|"-separated record list that is not an
+	// identifier, "" when all are.
+	string first_bad_name(string records)
+		string rem = records
+		while rem.length() > 0
+			integer pipe = rem.indexOf("|")
+			string entry = rem
+			if pipe != -1
+				entry = rem.substring(0, pipe)
+				rem = rem.substring(pipe + 1, rem.length())
+			else
+				rem = ""
+			string field_name = get_field(entry, 0)
+			if is_identifier(field_name) == false
+				return field_name
+		return ""
+
+	// True when `word` appears in `text` as a whole space-separated word.
+	boolean has_word(string text, string word)
+		list<string> parts = text.split(" ")
+		integer i = 0
+		while i < parts.length()
+			if parts[i].trim() == word
+				return true
+			i = i + 1
+		return false
 
 	// Parse one declaration line into a tilde-separated record: name~url~at~onerror
 	// Input: "users from \"/api/users\" at \"data\" on error: \"handleErr\""
@@ -191,7 +265,7 @@ functions:
 			if eq2 != -1
 				on_err = line.substring(eq1, eq2)
 
-		return var_name + "~" + url + "~" + at_path + "~" + on_err
+		return rec_enc(var_name) + "~" + rec_enc(url) + "~" + rec_enc(at_path) + "~" + rec_enc(on_err)
 
 	// Parse the HTTP method from form attributes string.
 	// Returns lowercase method (post, put, patch, get, delete) or "" if not found.
@@ -241,10 +315,9 @@ functions:
 			field_name = trimmed.substring(0, sp)
 			rest = trimmed.substring(sp + 1, trimmed.length()).trim()
 
-		boolean is_required = false
-		if rest.indexOf("required") != -1
-			is_required = true
-
+		// Modifiers (frame-client.ebnf form_field_modifier): `required`,
+		// `optional`, `default="value"`. Only a whole `required` word outside
+		// the default's quotes marks the field required.
 		string default_val = ""
 		integer dpos = rest.indexOf("default=\"")
 		if dpos != -1
@@ -254,10 +327,10 @@ functions:
 				default_val = rest.substring(dq1, dq2)
 
 		string req_str = "false"
-		if is_required
+		if has_word(without_quoted(rest), "required")
 			req_str = "true"
 
-		return field_name + "~" + req_str + "~" + default_val
+		return rec_enc(field_name) + "~" + req_str + "~" + rec_enc(default_val)
 
 	// Parse the function name from send: attributes (first word).
 	string parse_send_name(string attributes)
@@ -409,13 +482,16 @@ functions:
 			if seg.startsWith("static:")
 				string text = seg.substring(7, seg.length())
 				seg_expr = _expr_string_lit(ctx, text)
+			// A placeholder value is percent-encoded (http_encode_url) so a
+			// `/`, `?`, `#` or `..` in it stays inside its path segment.
 			if seg.startsWith("query:")
 				string field = seg.substring(6, seg.length())
 				integer query_ident = _expr_ident(ctx, "query")
-				seg_expr = _expr_field(ctx, query_ident, field)
+				seg_expr = url_encoded(ctx, _expr_field(ctx, query_ident, field))
 			if seg.startsWith("var:")
 				string var_name = seg.substring(4, seg.length())
-				seg_expr = _expr_ident(ctx, var_name)
+				if is_identifier(var_name)
+					seg_expr = url_encoded(ctx, _expr_ident(ctx, var_name))
 
 			if seg_expr == 0
 				return 0
@@ -429,6 +505,16 @@ functions:
 					return 0
 
 		return result_expr
+
+	// http_encode_url(value.toString()) — `value` may be any scalar state
+	// variable (an integer id, a string slug). Returns 0 on bridge failure.
+	integer url_encoded(integer ctx, integer value_expr)
+		if value_expr == 0
+			return 0
+		integer as_text = _expr_method_call(ctx, value_expr, "toString", "[]")
+		if as_text == 0
+			return 0
+		return _expr_call(ctx, "http_encode_url", json_array1(as_text))
 
 	// Build a _stmt_block handle from a JSON array of stmt handles encoded as
 	// a bracket-enclosed comma-separated integer list.
@@ -475,20 +561,15 @@ functions:
 	string json_array2(integer a, integer b)
 		return "[" + a.toString() + "," + b.toString() + "]"
 
-	// Encode three integers into a JSON array string "[A,B,C]".
-	string json_array3(integer a, integer b, integer c)
-		return "[" + a.toString() + "," + b.toString() + "," + c.toString() + "]"
-
-	// Encode four integers into a JSON array string "[A,B,C,D]".
-	string json_array4(integer a, integer b, integer c, integer d)
-		return "[" + a.toString() + "," + b.toString() + "," + c.toString() + "," + d.toString() + "]"
-
 // ============================================================================
 // LOAD: BLOCK — V3 TYPED EXPANSION
 // ============================================================================
 // Emits:
 //   state: { loading: boolean = true, loadError: string = "", <varN>: any = null, ... }
-//   start: { later __res_N = api.get(url); if __res_N.ok { varN = ... } else { loadError = ... } ...; loading = false }
+//   functions: { void __load_<varN>() { __url = ...; later __res = api.get(__url);
+//                  if __res.ok { varN = __res.json(at) } else { loadError = ...; [onerror()] }
+//                  __load_<varN+1>() — or loading = false after the last one } }
+//   start: { __load_<var1>() }
 
 functions:
 	integer expand_load_typed(integer ctx, string body)
@@ -554,7 +635,8 @@ functions:
 				if any_t == 0
 					_emit_error(ctx, 2, "FRAME-CLIENT-E006", "failed to build any type handle for " + var_name, "{\"source\":\"plugin\"}")
 					return 1
-				integer null_expr = _expr_ident(ctx, "null")
+				// `null` is a literal, not a name: parse the fixed fragment.
+				integer null_expr = _emit_expr_from_source(ctx, "null", 0)
 				if null_expr == 0
 					_emit_error(ctx, 2, "FRAME-CLIENT-E007", "failed to build null ident for " + var_name, "{\"source\":\"plugin\"}")
 					return 1
@@ -572,15 +654,19 @@ functions:
 			_emit_error(ctx, 2, "FRAME-CLIENT-E008", "failed to emit state block for load:", "{\"source\":\"plugin\"}")
 			return 1
 
-		// ---- Emit start: statements ----
-		// For each declaration, emit:
-		//   later __res_N = api.get(url_expr)  [_stmt_assign with _expr_call]
-		//   if __res_N.ok { N = __res_N.json(...) } else { loadError = "Failed to load N"; [onerror()] }
-		// Finally: loading = false
-
+		// ---- Emit one loader function per declaration ----
+		// Each declaration gets `void __load_<var>()`:
+		//   string __url = <url>
+		//   later __res = api.get(__url)
+		//   -- continuation (runs when the response arrives): --
+		//   if __res.ok { <var> = __res.json(<at>) } else { loadError = "Failed to load <var>"; [onerror()] }
+		//   __load_<next>()        (the next declaration; the last one sets loading = false)
+		// and start: calls the first one, so the sources load in order and
+		// `loading` stays true until the last response has arrived.
+		list<string> load_vars = []
+		list<string> load_entries = []
 		string rem2 = decls
-		integer idx2 = 0
-		while idx2 < 100
+		while rem2.length() > 0
 			integer pipe2 = rem2.indexOf("|")
 			string entry2 = rem2
 			if pipe2 != -1
@@ -588,136 +674,77 @@ functions:
 				rem2 = rem2.substring(pipe2 + 1, rem2.length())
 			else
 				rem2 = ""
+			if get_field(entry2, 0).length() > 0 and get_field(entry2, 1).length() > 0
+				load_vars.add(get_field(entry2, 0))
+				load_entries.add(entry2)
 
-			string vn = get_field(entry2, 0)
-			string url = get_field(entry2, 1)
-			string at_path = get_field(entry2, 2)
-			string on_err = get_field(entry2, 3)
+		integer li = 0
+		while li < load_entries.length()
+			string entry_l = load_entries[li]
+			string vn = get_field(entry_l, 0)
+			string url = get_field(entry_l, 1)
+			string at_path = get_field(entry_l, 2)
+			string on_err = get_field(entry_l, 3)
+			if is_identifier(vn) == false
+				_emit_error(ctx, 2, "FRAME-CLIENT-E009", "load: '" + vn + "' is not a valid variable name", "{\"source\":\"plugin\"}")
+				return 1
 
-			if vn.length() > 0 and url.length() > 0
-				string res_var = "__res_" + vn
+			integer url_expr = build_url_expr(ctx, compile_url_segments(url))
+			if url_expr == 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E010", "failed to build URL expression for " + vn, "{\"source\":\"plugin\"}")
+				return 1
+			integer url_decl = _stmt_var_decl(ctx, "__url", "string", url_expr)
+			integer req = build_later_request(ctx, "get")
+			if url_decl == 0 or req == 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E011", "failed to build the request for " + vn, "{\"source\":\"plugin\"}")
+				return 1
 
-				// Build url expression
-				string url_segs = compile_url_segments(url)
-				integer url_expr = build_url_expr(ctx, url_segs)
-				if url_expr == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E009", "failed to build URL expression for " + vn, "{\"source\":\"plugin\"}")
+			// if __res.ok { vn = __res.json(at) } else { loadError = ...; [on_err()] }
+			integer ok_expr = _expr_field(ctx, _expr_ident(ctx, "__res"), "ok")
+			integer then_call = _expr_method_call(ctx, _expr_ident(ctx, "__res"), "json", json_array1(_expr_string_lit(ctx, at_path)))
+			integer then_assign = _stmt_assign(ctx, vn, then_call)
+			integer then_block = make_block(ctx, json_array1(then_assign))
+			integer load_err_assign = _stmt_assign(ctx, "loadError", _expr_string_lit(ctx, "Failed to load " + vn))
+			string else_stmts = json_array1(load_err_assign)
+			if on_err.length() > 0
+				if is_identifier(on_err) == false
+					_emit_error(ctx, 2, "FRAME-CLIENT-E022", "load: on error: '" + on_err + "' is not a function name", "{\"source\":\"plugin\"}")
 					return 1
+				else_stmts = json_array2(load_err_assign, _stmt_call(ctx, on_err, "[]"))
+			integer else_block = make_block(ctx, else_stmts)
+			integer if_stmt = _stmt_if(ctx, ok_expr, then_block, else_block)
+			if if_stmt == 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E024", "failed to build the response check for " + vn, "{\"source\":\"plugin\"}")
+				return 1
 
-				// Build: __res_N = api.get(url_expr)
-				// api.get is a bridge alias; emit as _expr_call("api.get", [url_expr])
-				integer get_call = _expr_call(ctx, "api.get", json_array1(url_expr))
-				if get_call == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E010", "failed to build api.get call for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				// __res_<var> is a first-introduction of a handler-scope local —
-				// use _stmt_var_decl (real let-declaration) so SEM007 doesn't fire
-				// on the identifier. See prompt #f7183604 / #cc970925.
-				integer assign_stmt = _stmt_var_decl(ctx, res_var, "any", get_call)
-				if assign_stmt == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E011", "failed to build var-decl stmt for " + res_var, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer emit_assign = _emit_statement_into_start(ctx, assign_stmt)
-				if emit_assign != 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E012", "failed to emit assign for " + res_var, "{\"source\":\"plugin\"}")
-					return 1
-
-				// Build: if __res_N.ok { vn = __res_N.json(...) } else { loadError = "Failed to load vn" }
-				// Condition: __res_N.ok (field access)
-				integer res_ident_cond = _expr_ident(ctx, res_var)
-				if res_ident_cond == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E013", "failed to build ident for " + res_var, "{\"source\":\"plugin\"}")
-					return 1
-				integer ok_expr = _expr_field(ctx, res_ident_cond, "ok")
-				if ok_expr == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E014", "failed to build .ok field for " + res_var, "{\"source\":\"plugin\"}")
-					return 1
-
-				// Then branch: vn = __res_N.json(at_path) or __res_N.json()
-				integer then_call = 0
-				integer res_ident_then = _expr_ident(ctx, res_var)
-				if res_ident_then == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E015", "failed to build then ident for " + res_var, "{\"source\":\"plugin\"}")
-					return 1
-
-				if at_path.length() > 0
-					integer path_lit = _expr_string_lit(ctx, at_path)
-					if path_lit == 0
-						_emit_error(ctx, 2, "FRAME-CLIENT-E016", "failed to build at_path literal for " + vn, "{\"source\":\"plugin\"}")
-						return 1
-					// __res_N.json(at_path)
-					then_call = _expr_call(ctx, res_var + ".json", json_array1(path_lit))
-				else
-					// __res_N.json()
-					then_call = _expr_call(ctx, res_var + ".json", "[]")
-
-				if then_call == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E017", "failed to build .json() call for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer then_assign = _stmt_assign(ctx, vn, then_call)
-				if then_assign == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E018", "failed to build then assign for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer then_block = make_block(ctx, json_array1(then_assign))
-				if then_block == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E019", "failed to build then block for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				// Else branch: loadError = "Failed to load N" [+ optional on_err() call]
-				integer fail_msg_lit = _expr_string_lit(ctx, "Failed to load " + vn)
-				if fail_msg_lit == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E020", "failed to build error message literal for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-				integer load_err_assign = _stmt_assign(ctx, "loadError", fail_msg_lit)
-				if load_err_assign == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E021", "failed to build loadError assign for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer else_block = 0
-				if on_err.length() > 0
-					integer err_call = _stmt_call(ctx, on_err, "[]")
-					if err_call == 0
-						_emit_error(ctx, 2, "FRAME-CLIENT-E022", "failed to build on_err call for " + on_err, "{\"source\":\"plugin\"}")
-						return 1
-					else_block = make_block(ctx, json_array2(load_err_assign, err_call))
-				else
-					else_block = make_block(ctx, json_array1(load_err_assign))
-
-				if else_block == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E023", "failed to build else block for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer if_stmt = _stmt_if(ctx, ok_expr, then_block, else_block)
-				if if_stmt == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E024", "failed to build if stmt for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-				integer emit_if = _emit_statement_into_start(ctx, if_stmt)
-				if emit_if != 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E025", "failed to emit if stmt for " + vn, "{\"source\":\"plugin\"}")
-					return 1
-
-			if pipe2 == -1
-				idx2 = 100
+			integer next_stmt = 0
+			if li + 1 < load_entries.length()
+				next_stmt = _stmt_call(ctx, "__load_" + load_vars[li + 1], "[]")
 			else
-				idx2 = idx2 + 1
+				next_stmt = _stmt_assign(ctx, "loading", _expr_bool_lit(ctx, 0))
+			if next_stmt == 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E026", "failed to build the step after " + vn, "{\"source\":\"plugin\"}")
+				return 1
 
-		// Emit: loading = false
-		integer false_expr = _expr_bool_lit(ctx, 0)
-		if false_expr == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E026", "failed to build false literal", "{\"source\":\"plugin\"}")
+			string fn_stmts = "[" + url_decl.toString() + "," + req.toString() + "," + if_stmt.toString() + "," + next_stmt.toString() + "]"
+			integer fn_body = make_block(ctx, fn_stmts)
+			integer void_t = _type_void(ctx)
+			if fn_body == 0 or void_t == 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E027", "failed to build the loader of " + vn, "{\"source\":\"plugin\"}")
+				return 1
+			// flags = 3: exported (the response continuation calls back into
+			// it) + BFS root.
+			if _emit_function(ctx, "__load_" + vn, "[]", void_t, fn_body, 3) != 0
+				_emit_error(ctx, 2, "FRAME-CLIENT-E012", "failed to emit the loader of " + vn, "{\"source\":\"plugin\"}")
+				return 1
+			li = li + 1
+
+		if load_entries.length() == 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E001", "load: block had no valid declarations", "{\"source\":\"plugin\"}")
 			return 1
-		integer loading_done = _stmt_assign(ctx, "loading", false_expr)
-		if loading_done == 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E027", "failed to build loading=false stmt", "{\"source\":\"plugin\"}")
-			return 1
-		integer emit_done = _emit_statement_into_start(ctx, loading_done)
-		if emit_done != 0
-			_emit_error(ctx, 2, "FRAME-CLIENT-E028", "failed to emit loading=false", "{\"source\":\"plugin\"}")
+		integer first_call = _stmt_call(ctx, "__load_" + load_vars[0], "[]")
+		if first_call == 0 or _emit_statement_into_start(ctx, first_call) != 0
+			_emit_error(ctx, 2, "FRAME-CLIENT-E028", "failed to start loading in start:", "{\"source\":\"plugin\"}")
 			return 1
 
 		return 0
@@ -731,9 +758,9 @@ functions:
 //   functions: { void submit() { guard; guards; submitting=true; formError=""; formSuccess="";
 //                  __url = ...; [__body = ...;] later __res = api.<method>(__url[, __body]);
 //                  -- continuation (runs when the response arrives): --
+//                  submitting=false
 //                  if __res.ok { [clears;] formSuccess="Saved"; [emit()] }
-//                  else { formError=__res.json("error"); if formError=="" formError="Request failed" }
-//                  submitting=false } }
+//                  else { formError=__res.json("error"); if formError=="" formError="Request failed" } } }
 
 functions:
 	integer expand_form_typed(integer ctx, string attributes, string body)
@@ -796,7 +823,9 @@ functions:
 					integer succ_pos = line.indexOf("on success:")
 					if succ_pos != -1
 						string succ_val = line.substring(succ_pos + 11, line.length()).trim()
-						if succ_val.indexOf("clear") != -1
+						// `clear` is an action word; a callback name written in
+						// quotes (emit "clearCache") is not.
+						if has_word(without_quoted(succ_val), "clear")
 							clear_on_success = true
 						integer emit_pos = succ_val.indexOf("emit \"")
 						if emit_pos != -1
@@ -825,6 +854,13 @@ functions:
 		integer bool_t = _type_boolean(ctx)
 		if bool_t == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E033", "failed to build boolean type for form state", "{\"source\":\"plugin\"}")
+			return 1
+		string bad_field = first_bad_name(fields)
+		if bad_field != ""
+			_emit_error(ctx, 2, "FRAME-CLIENT-E094", "form: field '" + bad_field + "' is not a valid variable name", "{\"source\":\"plugin\"}")
+			return 1
+		if emit_on_success != "" and is_identifier(emit_on_success) == false
+			_emit_error(ctx, 2, "FRAME-CLIENT-E095", "form: emit \"" + emit_on_success + "\" does not name a function", "{\"source\":\"plugin\"}")
 			return 1
 
 		string state_fields = "["
@@ -1195,9 +1231,8 @@ functions:
 		if res_ok_if == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E087", "failed to build __res.ok if", "{\"source\":\"plugin\"}")
 			return 1
-		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_ok_if.toString() + "]"
 
-		// submitting = false
+		// submitting = false — before the response branch
 		integer false_sub = _expr_bool_lit(ctx, 0)
 		if false_sub == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E088", "failed to build false for submitting=false", "{\"source\":\"plugin\"}")
@@ -1207,6 +1242,9 @@ functions:
 			_emit_error(ctx, 2, "FRAME-CLIENT-E089", "failed to build submitting=false assign", "{\"source\":\"plugin\"}")
 			return 1
 		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + sub_false_assign.toString() + "]"
+		// The response branch runs after submitting is cleared, so a success /
+		// error callback sees the request as finished (and may start another).
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_ok_if.toString() + "]"
 
 		// Build submit() function body block
 		integer submit_body = make_block(ctx, body_stmts)
@@ -1227,15 +1265,16 @@ functions:
 
 		return 0
 
-	// Build a typed AST expression for the JSON body string assembled at runtime.
-	// Returns an expression handle for the concatenation chain: "{" + "\"f1\":\"" + f1 + "\",..." + "}"
-	// This is runtime concatenation (in emitted code), not compile-time string building — no §1 bug.
+	// The JSON request body of form: / send: as a typed expression:
+	// "{\"f1\":" + json.encode(f1) + ",\"f2\":" + json.encode(f2) + "}".
+	// json.encode writes each value as JSON — a string quoted and escaped, a
+	// number or boolean as itself — so a field holding `"` or `\` cannot
+	// change the body's structure. Returns 0 on bridge failure or when a
+	// field name is not an identifier.
 	integer build_form_json_body_expr(integer ctx, string fields)
 		integer result_expr = 0
 		string rem = fields
-		integer idx = 0
-		boolean first = true
-		while idx < 100
+		while rem.length() > 0
 			integer pipe = rem.indexOf("|")
 			string entry = rem
 			if pipe != -1
@@ -1243,60 +1282,27 @@ functions:
 				rem = rem.substring(pipe + 1, rem.length())
 			else
 				rem = ""
-
 			string field_name = get_field(entry, 0)
 			if field_name.length() > 0
-				// Build prefix: "{\"field\":\"" or ",\"field\":\""
-				string prefix_text = ""
-				if first
-					prefix_text = "{\"" + field_name + "\":\""
-					first = false
-				else
-					prefix_text = ",\"" + field_name + "\":\""
-
-				integer prefix_lit = _expr_string_lit(ctx, prefix_text)
-				if prefix_lit == 0
+				if is_identifier(field_name) == false
 					return 0
-
-				integer field_ident = _expr_ident(ctx, field_name)
-				if field_ident == 0
-					return 0
-
-				// suffix: "\""
-				integer suffix_lit = _expr_string_lit(ctx, "\"")
-				if suffix_lit == 0
-					return 0
-
-				// concat: prefix + field + suffix
-				// op_code 0 = "+"
-				integer part1 = _expr_binop_op(ctx, 0, prefix_lit, field_ident)
-				if part1 == 0
-					return 0
-				integer part2 = _expr_binop_op(ctx, 0, part1, suffix_lit)
-				if part2 == 0
-					return 0
-
+				string key_text = ",\"" + field_name + "\":"
 				if result_expr == 0
-					result_expr = part2
+					key_text = "\{\"" + field_name + "\":"
+				integer key_lit = _expr_string_lit(ctx, key_text)
+				integer value_json = _expr_call(ctx, "json.encode", json_array1(_expr_ident(ctx, field_name)))
+				if key_lit == 0 or value_json == 0
+					return 0
+				integer part = _expr_binop_op(ctx, 0, key_lit, value_json)
+				if result_expr == 0
+					result_expr = part
 				else
-					result_expr = _expr_binop_op(ctx, 0, result_expr, part2)
-					if result_expr == 0
-						return 0
-
-			if pipe == -1
-				idx = 100
-			else
-				idx = idx + 1
-
+					result_expr = _expr_binop_op(ctx, 0, result_expr, part)
+				if result_expr == 0
+					return 0
 		if result_expr == 0
 			return 0
-
-		// Close: result + "}"
-		integer close_lit = _expr_string_lit(ctx, "}")
-		if close_lit == 0
-			return 0
-		integer full_expr = _expr_binop_op(ctx, 0, result_expr, close_lit)
-		return full_expr
+		return _expr_binop_op(ctx, 0, result_expr, _expr_string_lit(ctx, "\}"))
 
 // ============================================================================
 // SEND: BLOCK — V3 TYPED EXPANSION
@@ -1308,9 +1314,9 @@ functions:
 //                  <name>Pending = true; <name>Success = false; <name>Error = "";
 //                  __url = ...; [__body = ...;] later __res = api.<method>(__url[, __body]);
 //                  -- continuation (runs when the response arrives): --
+//                  <name>Pending = false
 //                  if __res.ok { <name>Success = true; [emit_success()] }
-//                  else { <name>Error = __res.json("error"); if <name>Error=="" <name>Error="Request failed"; [emit_error()] }
-//                  <name>Pending = false } }
+//                  else { <name>Error = __res.json("error"); if <name>Error=="" <name>Error="Request failed"; [emit_error()] } } }
 
 functions:
 	integer expand_send_typed(integer ctx, string attributes, string body)
@@ -1387,8 +1393,19 @@ functions:
 						if field_w.length() > 0
 							if with_fields.length() > 0
 								with_fields = with_fields + "|"
-							with_fields = with_fields + field_w + "~false~"
+							with_fields = with_fields + rec_enc(field_w) + "~false~"
 			ls = nl + 1
+
+		if is_identifier(name) == false
+			_emit_error(ctx, 2, "FRAME-CLIENT-E150", "send: '" + name + "' is not a valid function name", "{\"source\":\"plugin\"}")
+			return 1
+		string bad_with = first_bad_name(with_fields)
+		if bad_with != ""
+			_emit_error(ctx, 2, "FRAME-CLIENT-E151", "send: with: '" + bad_with + "' is not a valid variable name", "{\"source\":\"plugin\"}")
+			return 1
+		if (emit_success != "" and is_identifier(emit_success) == false) or (emit_error_cb != "" and is_identifier(emit_error_cb) == false)
+			_emit_error(ctx, 2, "FRAME-CLIENT-E152", "send: an emit callback does not name a function", "{\"source\":\"plugin\"}")
+			return 1
 
 		string pending_var = name + "Pending"
 		string success_var = name + "Success"
@@ -1620,9 +1637,8 @@ functions:
 		if res_if_s == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E143", "failed to build __res.ok if for send:", "{\"source\":\"plugin\"}")
 			return 1
-		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_if_s.toString() + "]"
 
-		// <name>Pending = false
+		// <name>Pending = false — before the response branch
 		integer false_pend2 = _expr_bool_lit(ctx, 0)
 		if false_pend2 == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E144", "failed to build false for pending=false", "{\"source\":\"plugin\"}")
@@ -1632,6 +1648,9 @@ functions:
 			_emit_error(ctx, 2, "FRAME-CLIENT-E145", "failed to build pending=false assign", "{\"source\":\"plugin\"}")
 			return 1
 		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + pend_false_assign.toString() + "]"
+		// The response branch runs after <name>Pending is cleared, so a success /
+		// error callback sees the request as finished (and may start another).
+		body_stmts = body_stmts.substring(0, body_stmts.length() - 1) + "," + res_if_s.toString() + "]"
 
 		// Build action function body block and emit
 		integer action_body = make_block(ctx, body_stmts)

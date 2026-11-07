@@ -1,0 +1,27 @@
+// Fixture for client-runtime.test.mjs — a send: block whose URL takes a
+// state value with "/", "?" and ".." in it, and whose with: field holds a
+// quote. The callbacks write the state they see.
+
+plugins:
+	frame.ui
+	frame.client
+
+start:
+	rename()
+	rename()
+
+state:
+	string id = "../admin?x=1"
+	string name = "N\"q"
+
+send: rename patch "/api/users/{id}"
+	with: name
+	on success: emit "done"
+	on error: emit "failed"
+
+functions:
+	void done()
+		integer s = ui.updateElement("#out", "done pending=" + renamePending.toString() + " ok=" + renameSuccess.toString())
+
+	void failed()
+		integer s = ui.updateElement("#out", "failed pending=" + renamePending.toString() + " err=" + renameError)

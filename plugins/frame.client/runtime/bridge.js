@@ -22,15 +22,22 @@
 	let currentResponseBody = null;
 	let currentResponseHeaders = null;
 
+	// Run the handler export once. A failure inside it is reported here and
+	// never reaches the caller's promise chain (where it would be taken for
+	// a failed request and run the handler a second time).
 	function callExport(handlerName, context) {
 		const fn = rt.getInstance().exports[handlerName];
-		if (fn) {
-			fn();
-		} else {
+		if (!fn) {
 			console.error(
 				'[frame.client] ' + context + ' handler export "' + handlerName +
 				'" not found. Declare it as a top-level function in your Clean source.'
 			);
+			return;
+		}
+		try {
+			fn();
+		} catch (err) {
+			console.error('[frame.client] ' + context + ' handler "' + handlerName + '" failed: ' + (err && err.message ? err.message : String(err)));
 		}
 	}
 
@@ -73,7 +80,9 @@
 		const options = { method, headers };
 		if (body && method !== 'GET' && method !== 'HEAD') {
 			options.body = body;
-			if (!headers['Content-Type']) {
+			// A FormData body (files) carries its own multipart content type.
+			const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+			if (!isFormData && !headers['Content-Type']) {
 				headers['Content-Type'] = 'application/json';
 			}
 		}
@@ -90,11 +99,15 @@
 		return options;
 	}
 
+	// The response handler runs exactly once: the request / body-read
+	// failure path is the second argument of then(), so it never sees an
+	// exception from the handler itself.
 	function doFetch(url, method, body, handlerName) {
 		const options = buildOptions(method, body);
 		fetch(url, options)
-			.then(async (resp) => dispatchResponse(resp, await resp.text(), handlerName))
-			.catch((err) => dispatchError(err, handlerName));
+			.then((resp) => resp.text().then((text) => ({ resp, text })))
+			.then(({ resp, text }) => dispatchResponse(resp, text, handlerName),
+				(err) => dispatchError(err, handlerName));
 		return 0;
 	}
 
@@ -120,10 +133,6 @@
 	// ========== Register All Bridge Functions ==========
 
 	rt.registerEnv({
-
-		int64_to_string: (value) => {
-			return rt.writeString((typeof value === 'bigint' ? value : BigInt(value)).toString());
-		},
 
 		// ========== API: HTTP Requests ==========
 
@@ -177,12 +186,26 @@
 				dispatchError(new Error('Form not found'), handlerName);
 				return -1;
 			}
+			// Fields go as JSON; a field repeated in the form (checkbox
+			// groups, multi-selects) becomes an array of its values. A form
+			// with a chosen file is sent as multipart FormData instead, since
+			// file contents cannot travel in JSON.
+			const formData = new FormData(form);
 			const data = {};
-			new FormData(form).forEach((v, k) => { data[k] = v; });
+			let hasFile = false;
+			formData.forEach((v, k) => {
+				if (typeof File !== 'undefined' && v instanceof File) hasFile = true;
+				if (Object.prototype.hasOwnProperty.call(data, k)) {
+					if (!Array.isArray(data[k])) data[k] = [data[k]];
+					data[k].push(v);
+				} else {
+					data[k] = v;
+				}
+			});
 			return doFetch(
 				rt.readString(urlPtr, urlLen),
 				rt.readString(methodPtr, methodLen).toUpperCase(),
-				JSON.stringify(data),
+				hasFile ? formData : JSON.stringify(data),
 				handlerName
 			);
 		},

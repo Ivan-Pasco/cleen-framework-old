@@ -1,0 +1,11 @@
+// Fixture for client-runtime.test.mjs — api.submit sends a form: repeated
+// fields as an array, a chosen file as multipart form data.
+
+plugins:
+	frame.ui
+	frame.client
+
+functions:
+	void sendForm()
+		later r = api.submit("#f", "/api/submit", "POST")
+		integer s = ui.updateElement("#out", "status=" + r.status.toString())

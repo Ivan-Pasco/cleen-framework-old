@@ -3,7 +3,8 @@
 // src/main.cln and runs it, so the functions below call the plugin's own
 // string-level helpers directly; a failed assert() stops the run. The typed
 // emitters (expand_*_typed) need the compiler's emission context and are
-// covered by tests/framework/unit/plugins/client/.
+// covered by tests/framework/unit/plugins/client/ and the browser runtime
+// test (runtime/tests/client-runtime.test.mjs).
 
 start:
 	// ---- parse_load_decl ----
@@ -13,6 +14,7 @@ start:
 	test_parse_decl_missing_from()
 	// ---- get_field ----
 	test_get_field()
+	test_record_separators_in_values()
 	// ---- compile_url_segments ----
 	test_compile_url_segments_static()
 	test_compile_url_segments_interpolated()
@@ -30,6 +32,8 @@ start:
 	test_parse_form_field_optional()
 	test_parse_form_field_default()
 	test_parse_form_field_on_line_skipped()
+	test_parse_form_field_required_word_only()
+	test_success_actions()
 	// ---- parse_send_name ----
 	test_parse_send_name()
 	// ---- parse_send_method ----
@@ -74,6 +78,17 @@ functions:
 		assert(get_field(record, 3) == "handler")
 		// Out of bounds returns ""
 		assert(get_field(record, 4) == "")
+
+	// A "~" or "|" in a value (a default, a URL) does not split the record.
+	void test_record_separators_in_values()
+		string rec = parse_form_field("note default=\"a~b|c%7E\"")
+		assert(get_field(rec, 0) == "note")
+		assert(get_field(rec, 1) == "false")
+		assert(get_field(rec, 2) == "a~b|c%7E")
+		string decl = parse_load_decl("x from \"/api/a~b|c\" at \"d~e\"")
+		assert(get_field(decl, 1) == "/api/a~b|c")
+		assert(get_field(decl, 2) == "d~e")
+		assert(decl.indexOf("|") == -1)
 
 	// ======== compile_url_segments tests ========
 	// compile_url_segments returns "static:TEXT" or "static:A|query:FIELD|static:B" etc.
@@ -157,6 +172,19 @@ functions:
 		// Lines starting with "on " are not fields
 		string rec = parse_form_field("on success: clear")
 		assert(rec == "")
+
+	// `required` inside the default's text does not make the field required.
+	void test_parse_form_field_required_word_only()
+		assert(get_field(parse_form_field("note default=\"not required\""), 1) == "false")
+		assert(get_field(parse_form_field("note default=\"x\" required"), 1) == "true")
+		assert(get_field(parse_form_field("requiredness"), 1) == "false")
+
+	// on success: `clear` is a word of its own; an emit callback named
+	// clearCache is not the clear action.
+	void test_success_actions()
+		assert(has_word(without_quoted("clear emit \"created\""), "clear"))
+		assert(has_word(without_quoted("emit \"clearCache\""), "clear") == false)
+		assert(has_word(without_quoted("emit \"clear\""), "clear") == false)
 
 	// ======== parse_send_name tests ========
 
