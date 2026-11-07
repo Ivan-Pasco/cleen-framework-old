@@ -5,10 +5,8 @@
 // Regression: the rollback handler covered db.begin() and db.commit() as
 // well as the body, so their failures were reported as "transaction failed"
 // and rolled back a transaction that was not open.
-// Not asserted: that the failed body's writes are gone — clean-server
-// 1.9.117 runs db.query/db.execute outside the open transaction (its
-// _db_begin opens a buffered transaction that those calls never join), so
-// db.rollback() has nothing to undo. That is a clean-server bug.
+// That the failed body's writes are gone is checked by
+// transaction-rollback-undoes-writes-test.cln.
 
 plugins:
 	frame.server

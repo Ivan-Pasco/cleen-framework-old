@@ -1,0 +1,57 @@
+// Test: frame.data — an error in a transaction: body rolls its writes back.
+// Spec: DAT-T001 (transaction: block), DAT-T002 (an error inside rolls the
+// transaction back).
+// Regression (clean-server): db.query / db.execute ran outside the
+// transaction db.begin() opened, so db.rollback() undid nothing and the
+// writes of a failed body stayed in the table. Needs a clean-server whose
+// statements join the open transaction.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Entry:
+	fields:
+		integer id primary generated
+		string label required
+
+start:
+	printl("[boot] data-transaction-rollback-undoes-writes server ready")
+
+functions:
+	integer failing()
+		transaction:
+			Entry e = Entry()
+			e.label = "rolled-back"
+			Database.save(e)
+			error("body failure")
+		return 1
+
+	integer counted(string wanted)
+		integer n = Entry.count:
+			where:
+				label == wanted
+		return n
+
+endpoints:
+	GET "/test":
+		Entry.migrate()
+		integer r = failing() onError -1
+		boolean ok_raised = r == -1
+		boolean ok_gone = counted("rolled-back") == 0
+
+		// A committed transaction keeps its write.
+		transaction:
+			Entry kept = Entry()
+			kept.label = "kept"
+			Database.save(kept)
+		boolean ok_kept = counted("kept") == 1
+
+		if ok_raised and ok_gone and ok_kept
+			printl("PASS: data-transaction-rollback-undoes-writes")
+		else
+			printl("FAIL: data-transaction-rollback-undoes-writes raised=" + ok_raised.toString() + " gone=" + ok_gone.toString() + " kept=" + ok_kept.toString())
+		return json({ok: true})
