@@ -82,6 +82,9 @@ functions:
 		assert(get_config_value(block, "timeoutMinutes", "60") == "480")
 		// A key does not match a longer key that starts with it.
 		assert(get_config_value("secureCookie = false", "secure", "true") == "true")
+		// domain? = null (frame-auth.ebnf session_domain_field)
+		assert(get_config_value("domain? = null", "domain", "") == "null")
+		assert(get_config_value("domain = \"example.com\"", "domain", "") == "example.com")
 
 	void test_sections_end_at_any_sibling()
 		string cfg = "\tsession:\n\t\tcookie = \"app.sid\"\n\tcsrf:\n\t\tenabled = false\n\tjwt:\n\t\tsecret = env.get(\"S\")\n\t\tenabled = false\n"
@@ -94,6 +97,9 @@ functions:
 		assert(get_config_value(sess, "enabled", "none") == "none")
 
 	void test_settings_are_checked()
+		// AUTH-S005: httpOnly cannot be turned off.
+		assert(validate_block("auth", "{}", "\tsession:\n\t\thttpOnly = false\n").contains("httpOnly = false is not allowed"))
+		assert(validate_block("auth", "{}", "\tsession:\n\t\thttpOnly = true\n\t\tdomain = \"example.com\"\n") == "")
 		// `key: value` is not the setting syntax.
 		assert(validate_block("auth", "{}", "\tsession:\n\t\tcookie: \"x\"\n").contains("write `key = value`"))
 		assert(validate_block("auth", "{}", "\tsession:\n\t\tcokie = \"x\"\n").contains("unknown setting `cokie`"))

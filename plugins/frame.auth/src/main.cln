@@ -99,13 +99,16 @@ functions:
 	integer expand_auth_config_typed(integer ctx, string body)
 		// ── Session config defaults ──
 		// validate_block (validate_auth_config) has already rejected
-		// malformed lines and unknown keys.
+		// malformed lines, unknown keys and httpOnly = false (AUTH-S005).
 		string session_config = extract_subblock(body, "session:")
 		string cookie_name = get_config_value(session_config, "cookie", "frame.sid")
 		string same_site = get_config_value(session_config, "sameSite", "Lax")
 		boolean sess_secure = get_config_value(session_config, "secure", "true") == "true"
-		boolean sess_http_only = get_config_value(session_config, "httpOnly", "true") == "true"
 		string session_path = get_config_value(session_config, "path", "/")
+		// AUTH-S010: no domain (null) scopes the cookie to the exact host.
+		string session_domain = get_config_value(session_config, "domain", "")
+		if session_domain == "null"
+			session_domain = ""
 		integer timeout_mins = get_config_value(session_config, "timeoutMinutes", "60").toInteger()
 
 		// ── JWT config defaults ──
@@ -126,8 +129,8 @@ functions:
 		string fields = string_var_field(ctx, "__session_cookie", cookie_name)
 		fields = fields + "," + string_var_field(ctx, "__session_same_site", same_site)
 		fields = fields + "," + bool_var_field(ctx, "__session_secure", sess_secure)
-		fields = fields + "," + bool_var_field(ctx, "__session_http_only", sess_http_only)
 		fields = fields + "," + string_var_field(ctx, "__session_path", session_path)
+		fields = fields + "," + string_var_field(ctx, "__session_domain", session_domain)
 		fields = fields + "," + int_var_field(ctx, "__session_timeout", timeout_mins)
 		fields = fields + "," + bool_var_field(ctx, "__jwt_enabled", jwt_enabled)
 		fields = fields + "," + env_var_field(ctx, "__jwt_secret", secret_env)
@@ -1237,9 +1240,9 @@ functions:
 		integer params = _batch_arrayNew(ctx)
 		_batch_arrayPush(ctx, params, _batch_param(ctx, "sessionId", "string"))
 		string src = "string cookie = __session_cookie + \"=\" + sessionId + \"; Path=\" + __session_path + \"; SameSite=\" + __session_same_site\n"
+		src = src + "if __session_domain != \"\"\n\tcookie = cookie + \"; Domain=\" + __session_domain\n"
 		src = src + "if __session_secure\n\tcookie = cookie + \"; Secure\"\n"
-		src = src + "if __session_http_only\n\tcookie = cookie + \"; HttpOnly\"\n"
-		src = src + "return cookie + \"; Max-Age=\" + (__session_timeout * 60).toString()\n"
+		src = src + "return cookie + \"; HttpOnly; Max-Age=\" + (__session_timeout * 60).toString()\n"
 		integer body_h = _emit_stmt_from_source(ctx, src, 0)
 		if body_h == 0 or _ctx_had_error(ctx) != 0
 			return 0
@@ -1250,9 +1253,9 @@ functions:
 	integer build_expire_cookie_header_helper(integer ctx)
 		integer params = _batch_arrayNew(ctx)
 		string src = "string expireCookie = __session_cookie + \"=; Path=\" + __session_path + \"; SameSite=\" + __session_same_site + \"; Max-Age=0\"\n"
+		src = src + "if __session_domain != \"\"\n\texpireCookie = expireCookie + \"; Domain=\" + __session_domain\n"
 		src = src + "if __session_secure\n\texpireCookie = expireCookie + \"; Secure\"\n"
-		src = src + "if __session_http_only\n\texpireCookie = expireCookie + \"; HttpOnly\"\n"
-		src = src + "return expireCookie\n"
+		src = src + "return expireCookie + \"; HttpOnly\"\n"
 		integer body_h = _emit_stmt_from_source(ctx, src, 0)
 		if body_h == 0 or _ctx_had_error(ctx) != 0
 			return 0
@@ -2044,6 +2047,9 @@ functions:
 			pos = eol + 1
 			if line.startsWith(key)
 				string rest = line.substring(key.length(), line.length()).trim()
+				// `domain? = null` (frame-auth.ebnf session_domain_field)
+				if rest.startsWith("?")
+					rest = rest.substring(1, rest.length()).trim()
 				if rest.startsWith("=")
 					return rest.substring(1, rest.length()).trim()
 		return "\n"
@@ -2110,7 +2116,7 @@ functions:
 			return layout
 
 		string session_block = extract_subblock(body, "session:")
-		string err = check_section_keys("session", session_block, ",cookie,sameSite,secure,httpOnly,path,timeoutMinutes,store,")
+		string err = check_section_keys("session", session_block, ",cookie,sameSite,secure,httpOnly,domain,path,timeoutMinutes,store,")
 		if err != ""
 			return err
 		err = check_boolean(session_block, "session", "secure")
@@ -2122,6 +2128,9 @@ functions:
 			return err
 		if has_config_value(session_block, "store")
 			return "auth.session: store is not supported in this version — sessions are kept in the server's in-memory store; remove the store setting"
+		// AUTH-S005: the session cookie is always HttpOnly.
+		if get_config_value(session_block, "httpOnly", "true") == "false"
+			return "auth.session: httpOnly = false is not allowed — the session cookie is always HttpOnly (AUTH-S005); remove the setting"
 		string same_site_val = get_config_value(session_block, "sameSite", "Lax")
 		if same_site_val != "Lax" and same_site_val != "Strict" and same_site_val != "None"
 			return "auth.session: sameSite must be \"Lax\", \"Strict\" or \"None\""
@@ -2209,6 +2218,8 @@ functions:
 			if eq <= 0
 				return "auth." + section + ": `" + line + "` is not a setting — write `key = value`"
 			string key = line.substring(0, eq).trim()
+			if key.endsWith("?")
+				key = key.substring(0, key.length() - 1).trim()
 			if allowed.indexOf("," + key + ",") == -1
 				return "auth." + section + ": unknown setting `" + key + "` (allowed: " + allowed.substring(1, allowed.length() - 1).replace(",", ", ") + ")"
 		return ""
