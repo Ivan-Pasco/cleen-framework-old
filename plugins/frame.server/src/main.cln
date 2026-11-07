@@ -1142,10 +1142,53 @@ functions:
 	// HTTP response itself (status, headers, body).
 	boolean contains_response_call(string code)
 		list<string> helpers = "jsonResponse(,jsonResponseStatus(,htmlResponse(,redirect(,redirectTo(,redirectToStatus(,notFound(,notFoundMsg(,badRequest(,unauthorized(,forbidden(,httpStatus(,httpError(,httpHeader(,status(,json(,html(,error(,render(,renderWith(,resDownload(,__route_default_body(,_http_respond(,_http_redirect(,_http_set_header(,http.respond(,http.redirect(,http.setHeader(,_res_json(,_res_body(,_res_redirect(,_res_status(,_res_set_header(,_res_download(".split(",")
+		string text = blank_string_literals(code)
 		iterate i in 0 to helpers.length() - 1
-			if code.indexOf(helpers[i]) >= 0
+			if has_call_to(text, helpers[i])
 				return true
 		return false
+
+	// True when `text` calls `callee(` (e.g. "json(" or "http.respond(") as
+	// a whole name: not part of a longer identifier (`parse_json(`) nor a
+	// method on some other value (`obj.render(`).
+	boolean has_call_to(string text, string callee)
+		integer at = text.indexOf(callee)
+		while at != -1
+			if at == 0
+				return true
+			string before = text.substring(at - 1, at)
+			boolean ident = (before >= "a" and before <= "z") or (before >= "A" and before <= "Z") or (before >= "0" and before <= "9") or before == "_" or before == "."
+			if not ident
+				return true
+			at = text.indexOf(callee, at + 1)
+		return false
+
+	// `code` with the contents of every double-quoted string literal
+	// replaced by spaces (escapes honoured), so text inside strings is not
+	// read as code.
+	string blank_string_literals(string code)
+		string out = ""
+		boolean in_str = false
+		integer i = 0
+		while i < code.length()
+			string ch = code.substring(i, i + 1)
+			if in_str
+				if ch == "\\" and i + 1 < code.length()
+					out = out + "  "
+					i = i + 2
+				else
+					if ch == "\""
+						in_str = false
+						out = out + ch
+					else
+						out = out + " "
+					i = i + 1
+			else
+				if ch == "\""
+					in_str = true
+				out = out + ch
+				i = i + 1
+		return out
 
 	// True when the handler drives a stream (FEED / LIVE): it has no single
 	// response body to wrap.
