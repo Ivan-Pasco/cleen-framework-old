@@ -3962,15 +3962,36 @@ functions:
 			line_start = line_end + 1
 		return false
 
+	// `s` with every non-blank line indented one tab deeper.
+	string indent_lines(string s)
+		string out = ""
+		integer pos = 0
+		while pos <= s.length()
+			integer e = s.indexOf("\n", pos)
+			if e == -1
+				e = s.length()
+			string ln = s.substring(pos, e)
+			if ln.trim().length() > 0
+				out = out + "\t" + ln + "\n"
+			pos = e + 1
+		return out
+
+	// DAT-T002: an error in the body rolls the transaction back. A
+	// standalone `onError:` covers the statements of its own block, so the
+	// body sits in a block of its own: an error from db.begin() (nothing to
+	// roll back) or from db.commit() (the host has already ended the
+	// transaction) is not routed through the rollback handler and keeps its
+	// own message.
 	string build_transaction_src(string body)
 		string result = "if not db.begin()\n"
 		result = result + "\terror(\"transaction could not begin\")\n"
-		result = result + dedent_block_body(body) + "\n"
+		result = result + "if true\n"
+		result = result + indent_lines(dedent_block_body(body))
+		result = result + "\tonError:\n"
+		result = result + "\t\tdb.rollback()\n"
+		result = result + "\t\terror(\"transaction failed\")\n"
 		result = result + "if not db.commit()\n"
 		result = result + "\terror(\"transaction could not commit\")\n"
-		result = result + "onError:\n"
-		result = result + "\tdb.rollback()\n"
-		result = result + "\terror(\"transaction failed\")\n"
 		return result
 
 	integer expand_transaction(integer ctx, string body)

@@ -1,0 +1,60 @@
+// Test: frame.data — an error in a transaction: body ends the transaction
+// and reaches the caller; the next transaction starts and commits.
+// Spec: DAT-T001 (transaction: block), DAT-T002 (an error inside rolls the
+// transaction back), 14-error-handling.md (onError).
+// Regression: the rollback handler covered db.begin() and db.commit() as
+// well as the body, so their failures were reported as "transaction failed"
+// and rolled back a transaction that was not open.
+// Not asserted: that the failed body's writes are gone — clean-server
+// 1.9.117 runs db.query/db.execute outside the open transaction (its
+// _db_begin opens a buffered transaction that those calls never join), so
+// db.rollback() has nothing to undo. That is a clean-server bug.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Entry:
+	fields:
+		integer id primary generated
+		string label required
+
+start:
+	printl("[boot] data-transaction-error-scope server ready")
+
+functions:
+	integer failing()
+		transaction:
+			Entry e = Entry()
+			e.label = "failed"
+			Database.save(e)
+			error("body failure")
+		return 1
+
+	integer working()
+		transaction:
+			Entry e = Entry()
+			e.label = "kept"
+			Database.save(e)
+		return 2
+
+endpoints:
+	GET "/test":
+		Entry.migrate()
+		integer r1 = failing() onError -1
+		boolean ok_raised = r1 == -1
+		integer r2 = working() onError -1
+		boolean ok_next = r2 == 2
+		integer kept = Entry.count:
+			where:
+				label == "kept"
+		boolean ok_kept = kept == 1
+
+		if ok_raised and ok_next and ok_kept
+			printl("PASS: data-transaction-error-scope")
+		else
+			printl("FAIL: data-transaction-error-scope raised=" + ok_raised.toString() + " next=" + ok_next.toString() + " kept=" + ok_kept.toString())
+		return json({ok: true})
