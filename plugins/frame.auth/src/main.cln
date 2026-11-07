@@ -89,6 +89,8 @@ functions:
 	string validate_block(string block_name, string attributes, string body)
 		if block_name == "auth"
 			return validate_auth_config(body)
+		if block_name == "login"
+			return login_not_supported_message()
 		return ""
 
 // ============================================================================
@@ -1910,65 +1912,18 @@ functions:
 		return 0
 
 // ============================================================================
-// LOGIN BLOCK EXPANSION (TYPED)
+// LOGIN BLOCK
 // ============================================================================
-// The login: block generates a handleLogin function body. The body is entirely
-// synthetic (no user-authored handler body in the login: DSL). Delegates
-// string-building for claims JSON to __auth_build_login_claims (helper #20,
-// added to the batch alongside the 18 core helpers).
+// frame-auth.ebnf login_block is not implemented in this version. The block
+// is still claimed (so it is not mistaken for user code) and fails the build
+// with a clear message instead of expanding to nothing.
 
 functions:
+	string login_not_supported_message()
+		return "login: is not supported in this version of frame.auth — write the login endpoint in an endpoints: block with auth.verifyPassword(password, hash), auth.session.create(userId, claims) and auth.session.setCookie(session, response)"
+
 	integer expand_login_typed(integer ctx, string attrs_json, string body)
-		string model = get_attr(attrs_json, "model", "User")
-		string email_field = get_attr(attrs_json, "emailField", "email")
-		string password_field = get_attr(attrs_json, "passwordField", "password_hash")
-		string redirect_to = get_attr(attrs_json, "redirectTo", "/dashboard")
-
-		// Build handleLogin(email: string, password: string) -> string function
-		integer params = two_params(ctx, "email", "string", "password", "string")
-		if params == 0
-			return plugin_error(ctx, "FRAME-AUTH-E004", "expand_login_typed: two_params failed")
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return plugin_error(ctx, "FRAME-AUTH-E004", "expand_login_typed: arrayNew for body failed")
-
-		// Model?.first lookup: Model? user = Model.first(where email_field == email)
-		// This requires emitting a data-query expression — use typed call to model find.
-		// string user = <model>.findByEmail(email) — delegate to a bridge or typed call.
-		// In v1 this was emitted as: "Model? user = Model.first:\n\twhere:\n\t\t..."
-		// The typed equivalent: emit a call to model.first with a where clause.
-		// This is ORM-territory handled by frame.data, not frame.auth. The login: block
-		// emits a function body that references the model by name — it is a synthesised
-		// function, not a pass-through of user-authored code. The query sub-expression
-		// cannot be expressed purely through batch_expr builders without ORM support.
-		// v3 LOGIN APPROACH: emit the handleLogin body using _emit_stmt_from_source
-		// with a PLUGIN-BUILT source string, which would violate Amendment 4.
-		// CORRECT APPROACH: login: block body is too complex for pure batch builder
-		// composition because it requires a data-query sub-expression (frame.data ORM).
-		// Resolution: scope the login: block as a known limitation in v3 — emit it
-		// via the _emit_helpers_batch JSON path (Amendment 3, not builders). The
-		// JSON spec for handleLogin is a plugin-authored template (no user fragments).
-		// Build the JSON spec string for handleLogin and call _emit_helpers_batch with LP.
-
-		// Since we cannot build a LP-string pointer from within Clean and pass it
-		// to _emit_helpers_batch (that bridge expects an LP pointer at a WASM memory
-		// address, not a Clean string value), the login: block requires a different path.
-		// The proper resolution for login: in v3 is to emit it as a batch function
-		// with typed nodes where possible, and use a dedicated bridge for the ORM query.
-		// For attempt 4, scope the login: block as a no-op emit with a documented
-		// limitation, matching the v1 behavior of returning the body unchanged when
-		// no login DSL parser is fully implemented.
-
-		// Emit a FRAME-AUTH-W001 warning (not error) documenting the scope boundary.
-		_emit_error(ctx, 1, "FRAME-AUTH-W001", "login: block typed emission deferred — ORM query expression in handleLogin requires frame.data bridge integration (tracked: FRAME-AUTH-LOGIN-TYPED-TODO)", "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
-
-		// Return 0 (success with warning) — the login: block emits nothing in v3 attempt 4.
-		// This matches the v1 behavior where the login: block's generated handleLogin
-		// references session_create and verifyPassword which are emitted by the auth: block.
-		// Users who rely on the login: DSL block should use the auth: block's helpers directly
-		// until frame.data typed ORM bridge integration is complete.
-		return 0
+		return plugin_error(ctx, "FRAME-AUTH-E004", login_not_supported_message())
 
 // ============================================================================
 // UTILITY FUNCTIONS (DSL parsing)
@@ -2068,25 +2023,6 @@ functions:
 		if value.length() >= 2 and value.startsWith("\"") and value.endsWith("\"")
 			return value.substring(1, value.length() - 1)
 		return value
-
-	string get_attr(string attrs, string key, string default_val)
-		string pattern = "\"" + key + "\""
-		integer pos = attrs.indexOf(pattern)
-		if pos == -1
-			return default_val
-		return extract_value(attrs, pos)
-
-	string extract_value(string json, integer key_pos)
-		integer colon_pos = json.indexOf(":", key_pos)
-		if colon_pos == -1
-			return ""
-		integer quote_start = json.indexOf("\"", colon_pos + 1)
-		if quote_start == -1
-			return ""
-		integer quote_end = json.indexOf("\"", quote_start + 1)
-		if quote_end == -1
-			return ""
-		return json.substring(quote_start + 1, quote_end)
 
 	string escape_string_literal(string s)
 		string out = ""

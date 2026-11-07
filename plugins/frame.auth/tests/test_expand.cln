@@ -4,13 +4,13 @@
 // (expand_block_typed) calls compiler-provided typed-emission bridges and is
 // exercised end to end by tests/framework/unit/plugins/auth/.
 // Grammar: frame-auth.ebnf auth_session_block, auth_jwt_block,
-//          jwt_secret_field (secret = env.get(...)), login_block attributes
+//          jwt_secret_field (secret = env.get(...)), login_block
 
 start:
 	test_keywords()
 	test_subblock_extraction()
 	test_config_values()
-	test_login_attributes()
+	test_login_block_is_rejected()
 	test_string_escaping()
 	test_jwt_validation()
 	test_session_validation()
@@ -47,10 +47,10 @@ functions:
 		assert(get_config_value(jwt, "secret", "") == "JWT_SECRET")
 		assert(get_config_value(jwt, "alg", "HS256") == "HS512")
 
-	void test_login_attributes()
-		assert(get_attr("{\"model\": \"User\", \"email\": \"mail\"}", "email", "email") == "mail")
-		assert(get_attr("{\"model\": \"User\"}", "model", "") == "User")
-		assert(get_attr("{\"model\": \"User\"}", "password", "password_hash") == "password_hash")
+	void test_login_block_is_rejected()
+		// login: is not implemented in this version: it fails the build
+		// instead of expanding to nothing.
+		assert(validate_block("login", "{\"model\": \"User\"}", "\temailField = \"email\"\n").contains("login: is not supported in this version"))
 
 	void test_string_escaping()
 		assert(escape_string_literal("a\"b\\c") == "a\\\"b\\\\c")
