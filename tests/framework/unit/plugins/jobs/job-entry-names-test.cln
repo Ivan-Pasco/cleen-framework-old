@@ -1,0 +1,389 @@
+// Test: frame.jobs — every job is registered, with its whole body.
+// Spec: frame-jobs.ebnf §2 (job_handler = identifier ":" ...; the identifier
+// is the job name used in queue.enqueue), §2.1 (retry config keys).
+// Regression: a job whose name started with retry, queue, delay, timeout,
+// backoff or maxAttempts was skipped, so queue.enqueue reported it unknown;
+// a job body longer than 300 lines was cut off silently.
+
+plugins:
+	frame.jobs
+	frame.server
+
+server:
+	port: 3400
+
+start:
+	printl("[boot] jobs-entry-names server ready")
+
+state:
+	integer counter = 0
+
+jobs:
+	retryPayments:
+		job.succeed("{}")
+
+	queueCleanup:
+		queue: "maintenance"
+		job.succeed("{}")
+
+	delayedMail:
+		job.succeed("{}")
+
+	timeoutWatch:
+		timeout: 5
+		job.succeed("{}")
+
+	backoffReport:
+		retry:
+			maxAttempts: 2
+			backoff: exponential
+			delay: 1
+		job.succeed("{}")
+
+	maxAttemptsProbe:
+		job.succeed("{}")
+
+	longBody:
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+		counter = counter + 1
+
+endpoints:
+	GET "/test":
+		list<string> names = ["retryPayments", "queueCleanup", "delayedMail", "timeoutWatch", "backoffReport", "maxAttemptsProbe", "longBody"]
+		integer registered = 0
+		iterate n in names
+			string jid = queue.enqueue(n, "{}")
+			if jid.length() > 0
+				registered = registered + 1
+			else
+				printl("not registered: " + n)
+		boolean ok_names = registered == 7
+
+		// The handler runs all 320 statements of its body.
+		counter = 0
+		__job_handler_longBody()
+		boolean ok_body = counter == 320
+
+		if ok_names and ok_body
+			printl("PASS: jobs-entry-names")
+		else
+			printl("FAIL: jobs-entry-names registered=" + registered.toString() + " body=" + counter.toString())
+		return json({ok: true})

@@ -130,11 +130,10 @@ functions:
 functions:
 	integer expand_jobs_typed(integer ctx, string body)
 		string remaining = body
-		integer safety = 0
 
-		while safety < 200 and remaining.length() > 0
-			safety = safety + 1
-
+		// Every pass consumes at least one line, so the loop ends with the
+		// input.
+		while remaining.length() > 0
 			// Skip blank lines
 			integer nl = remaining.indexOf("\n")
 			string line = ""
@@ -146,7 +145,7 @@ functions:
 				remaining = remaining.substring(nl + 1, remaining.length())
 
 			string trimmed = line.trim()
-			if trimmed.length() == 0
+			if trimmed.length() == 0 or trimmed.startsWith("//")
 				continue
 
 			// Detect "schedule JobName "cron":" entry
@@ -157,17 +156,20 @@ functions:
 
 				integer space_in_after = after_schedule.indexOf(" ")
 				if space_in_after == -1
-					continue
+					return jobs_error(ctx, "FRAME-JOBS-E002", "`" + trimmed + "` — a scheduled job is `schedule <name> \"<cron expression>\":` (frame-jobs.ebnf §3)")
 				sched_name = after_schedule.substring(0, space_in_after).trim()
 				string rest_sched = after_schedule.substring(space_in_after + 1, after_schedule.length()).trim()
+				if not is_valid_identifier(sched_name)
+					return jobs_error(ctx, "FRAME-JOBS-E002", "schedule `" + sched_name + "`: the name must be an identifier (frame-jobs.ebnf §3)")
 
+				integer cron_close = -1
 				if rest_sched.startsWith("\"")
-					integer cron_close = rest_sched.indexOf("\"", 1)
-					if cron_close == -1
-						continue
-					cron_expr = rest_sched.substring(1, cron_close)
-				else
-					continue
+					cron_close = rest_sched.indexOf("\"", 1)
+				if cron_close == -1 or not rest_sched.substring(cron_close + 1, rest_sched.length()).trim().startsWith(":")
+					return jobs_error(ctx, "FRAME-JOBS-E002", "schedule " + sched_name + ": the cron expression must be a quoted string followed by `:` — `schedule " + sched_name + " \"0 8 * * *\":` (frame-jobs.ebnf §3)")
+				cron_expr = rest_sched.substring(1, cron_close)
+				if cron_field_count(cron_expr) != 5
+					return jobs_error(ctx, "FRAME-JOBS-E002", "schedule " + sched_name + ": \"" + cron_expr + "\" is not a 5-field cron expression (min hour dom mon dow)")
 
 				string handler_body = collect_handler_body(remaining)
 				remaining = skip_handler_body(remaining)
@@ -191,91 +193,103 @@ functions:
 					return reg_err
 				continue
 
-			// Detect named job handler: identifier followed by optional ":"
-			boolean is_job_name = is_valid_identifier(trimmed.replace(":", "").trim())
-			if is_job_name and not trimmed.startsWith("retry") and not trimmed.startsWith("maxAttempts") and not trimmed.startsWith("backoff") and not trimmed.startsWith("delay") and not trimmed.startsWith("timeout") and not trimmed.startsWith("queue")
-				string job_name = trimmed
-				if job_name.endsWith(":")
-					job_name = job_name.substring(0, job_name.length() - 1).trim()
+			// A named job handler: `<identifier>:` (frame-jobs.ebnf §2). The
+			// configuration keys belong inside a job, not at this level.
+			string head_name = trimmed
+			if head_name.endsWith(":")
+				head_name = head_name.substring(0, head_name.length() - 1).trim()
+			if not trimmed.endsWith(":") or not is_valid_identifier(head_name)
+				return jobs_error(ctx, "FRAME-JOBS-E004", "`" + trimmed + "` — a jobs: entry is `<jobName>:` or `schedule <name> \"<cron>\":` (frame-jobs.ebnf §1)")
+			if is_job_config_key(head_name)
+				return jobs_error(ctx, "FRAME-JOBS-E004", "`" + trimmed + "` configures a job: indent it under a `<jobName>:` entry (frame-jobs.ebnf §2)")
+			string job_name = head_name
 
-				string job_section = collect_handler_body(remaining)
-				remaining = skip_handler_body(remaining)
+			string job_section = collect_handler_body(remaining)
+			remaining = skip_handler_body(remaining)
 
-				integer max_attempts = 3
-				string backoff = "fixed"
-				integer delay_secs = 1
-				integer timeout_secs = 0
-				string queue_name = "default"
-				string handler_lines = ""
+			integer max_attempts = 3
+			string backoff = "fixed"
+			integer delay_secs = 1
+			integer timeout_secs = 0
+			string queue_name = "default"
+			string handler_lines = ""
 
-				string section_rem = job_section
-				boolean in_retry = false
-				integer retry_indent = 0
-				integer sec_safety = 0
+			string section_rem = job_section
+			boolean in_retry = false
+			integer retry_indent = 0
 
-				while sec_safety < 300 and section_rem.length() > 0
-					sec_safety = sec_safety + 1
-					integer sec_nl = section_rem.indexOf("\n")
-					string sec_line = ""
-					if sec_nl == -1
-						sec_line = section_rem
-						section_rem = ""
+			while section_rem.length() > 0
+				integer sec_nl = section_rem.indexOf("\n")
+				string sec_line = ""
+				if sec_nl == -1
+					sec_line = section_rem
+					section_rem = ""
+				else
+					sec_line = section_rem.substring(0, sec_nl)
+					section_rem = section_rem.substring(sec_nl + 1, section_rem.length())
+
+				string sec_trimmed = sec_line.trim()
+				if sec_trimmed.length() == 0
+					continue
+
+				if sec_trimmed == "retry:"
+					in_retry = true
+					retry_indent = sec_line.indexOf("retry:")
+					continue
+
+				// retry: settings are the lines indented deeper than `retry:`
+				// itself; the first line back at its level ends the section.
+				if in_retry
+					if sec_line.indexOf(sec_trimmed) > retry_indent
+						if sec_trimmed.startsWith("maxAttempts:")
+							string val = sec_trimmed.substring(12, sec_trimmed.length()).trim()
+							if not is_digits(val) or val.toInteger() < 1
+								return jobs_error(ctx, "FRAME-JOBS-E007", job_name + ": retry maxAttempts must be a positive integer, got `" + val + "`")
+							max_attempts = val.toInteger()
+						else if sec_trimmed.startsWith("backoff:")
+							backoff = sec_trimmed.substring(8, sec_trimmed.length()).trim()
+							if backoff != "fixed" and backoff != "exponential"
+								return jobs_error(ctx, "FRAME-JOBS-E007", job_name + ": retry backoff must be `fixed` or `exponential`, got `" + backoff + "`")
+						else if sec_trimmed.startsWith("delay:")
+							string val = sec_trimmed.substring(6, sec_trimmed.length()).trim()
+							if not is_digits(val)
+								return jobs_error(ctx, "FRAME-JOBS-E007", job_name + ": retry delay must be a whole number of seconds, got `" + val + "`")
+							delay_secs = val.toInteger()
+						else
+							return jobs_error(ctx, "FRAME-JOBS-E007", job_name + ": unknown retry: setting `" + sec_trimmed + "` — expected maxAttempts:, backoff: or delay:")
+						continue
 					else
-						sec_line = section_rem.substring(0, sec_nl)
-						section_rem = section_rem.substring(sec_nl + 1, section_rem.length())
+						in_retry = false
 
-					string sec_trimmed = sec_line.trim()
-					if sec_trimmed.length() == 0
-						continue
+				if sec_trimmed.startsWith("timeout:")
+					string val = sec_trimmed.substring(8, sec_trimmed.length()).trim()
+					if not is_digits(val)
+						return jobs_error(ctx, "FRAME-JOBS-E007", job_name + ": timeout must be a whole number of seconds, got `" + val + "`")
+					timeout_secs = val.toInteger()
+					continue
 
-					if sec_trimmed == "retry:"
-						in_retry = true
-						retry_indent = sec_line.indexOf("retry:")
-						continue
+				if sec_trimmed.startsWith("queue:")
+					string val = sec_trimmed.substring(6, sec_trimmed.length()).trim()
+					if val.startsWith("\"") and val.endsWith("\"")
+						queue_name = val.substring(1, val.length() - 1)
+					else
+						queue_name = val
+					continue
 
-					// retry: settings are the lines indented deeper than `retry:`
-					// itself; the first line back at its level ends the section.
-					if in_retry
-						if sec_line.indexOf(sec_trimmed) > retry_indent
-							if sec_trimmed.startsWith("maxAttempts:")
-								string val = sec_trimmed.substring(12, sec_trimmed.length()).trim()
-								max_attempts = val.toInteger()
-							if sec_trimmed.startsWith("backoff:")
-								backoff = sec_trimmed.substring(8, sec_trimmed.length()).trim()
-							if sec_trimmed.startsWith("delay:")
-								string val = sec_trimmed.substring(6, sec_trimmed.length()).trim()
-								delay_secs = val.toInteger()
-							continue
-						else
-							in_retry = false
+				handler_lines = handler_lines + sec_line + "\n"
 
-					if sec_trimmed.startsWith("timeout:")
-						string val = sec_trimmed.substring(8, sec_trimmed.length()).trim()
-						timeout_secs = val.toInteger()
-						continue
+			string body_code = reindent_job_body(handler_lines)
+			string handler_name = "__job_handler_" + job_name
 
-					if sec_trimmed.startsWith("queue:")
-						string val = sec_trimmed.substring(6, sec_trimmed.length()).trim()
-						if val.startsWith("\"") and val.endsWith("\"")
-							queue_name = val.substring(1, val.length() - 1)
-						else
-							queue_name = val
-						continue
+			// Emit user body wrapped as a top-level function (§3.1 + §3.11).
+			integer emit_fn_err = emit_handler_function(ctx, handler_name, body_code, job_name, false)
+			if emit_fn_err != 0
+				return emit_fn_err
 
-					handler_lines = handler_lines + sec_line + "\n"
-
-				string body_code = reindent_job_body(handler_lines)
-				string handler_name = "__job_handler_" + job_name
-
-				// Emit user body wrapped as a top-level function (§3.1 + §3.11).
-				integer emit_fn_err = emit_handler_function(ctx, handler_name, body_code, job_name, false)
-				if emit_fn_err != 0
-					return emit_fn_err
-
-				// _job_register(job_name, "__job_handler_<job_name>", max_attempts, backoff, delay_secs, timeout_secs, queue_name)
-				integer reg_err = emit_job_register(ctx, job_name, handler_name, max_attempts, backoff, delay_secs, timeout_secs, queue_name)
-				if reg_err != 0
-					return reg_err
+			// _job_register(job_name, "__job_handler_<job_name>", max_attempts, backoff, delay_secs, timeout_secs, queue_name)
+			integer reg_err = emit_job_register(ctx, job_name, handler_name, max_attempts, backoff, delay_secs, timeout_secs, queue_name)
+			if reg_err != 0
+				return reg_err
 
 		return 0
 
@@ -387,9 +401,7 @@ functions:
 	string collect_handler_body(string text)
 		string result = ""
 		string rem = text
-		integer safety = 0
-		while safety < 300 and rem.length() > 0
-			safety = safety + 1
+		while rem.length() > 0
 			integer nl = rem.indexOf("\n")
 			string line = ""
 			if nl == -1
@@ -407,9 +419,7 @@ functions:
 	// Advance past the handler body lines in text (mirror of collect_handler_body).
 	string skip_handler_body(string text)
 		string rem = text
-		integer safety = 0
-		while safety < 300 and rem.length() > 0
-			safety = safety + 1
+		while rem.length() > 0
 			integer nl = rem.indexOf("\n")
 			string line = ""
 			if nl == -1
@@ -428,9 +438,7 @@ functions:
 	string reindent_job_body(string section)
 		integer min_tabs = 99
 		string scan = section
-		integer scan_safety = 0
-		while scan_safety < 300 and scan.length() > 0
-			scan_safety = scan_safety + 1
+		while scan.length() > 0
 			integer snl = scan.indexOf("\n")
 			string sline = ""
 			if snl == -1
@@ -449,9 +457,7 @@ functions:
 			min_tabs = 0
 		string result = ""
 		string rem = section
-		integer safety = 0
-		while safety < 300 and rem.length() > 0
-			safety = safety + 1
+		while rem.length() > 0
 			integer nl = rem.indexOf("\n")
 			string line = ""
 			if nl == -1
@@ -473,6 +479,42 @@ functions:
 					d = d + 1
 				result = result + indent + trimmed + "\n"
 		return result
+
+	// Emit a frame.jobs diagnostic (severity 2 = error); returns the failure code.
+	integer jobs_error(integer ctx, string code, string message)
+		_emit_error(ctx, 2, code, message, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+		return 1
+
+	// The keys of a job's configuration (frame-jobs.ebnf §2).
+	boolean is_job_config_key(string name)
+		return name == "retry" or name == "maxAttempts" or name == "backoff" or name == "delay" or name == "timeout" or name == "queue"
+
+	// True when `s` is a non-empty run of decimal digits.
+	boolean is_digits(string s)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch < "0" or ch > "9"
+				return false
+			i = i + 1
+		return true
+
+	// Number of whitespace-separated fields of a cron expression.
+	integer cron_field_count(string expr)
+		integer count = 0
+		boolean in_field = false
+		integer i = 0
+		while i < expr.length()
+			string ch = expr.substring(i, i + 1)
+			if ch == " " or ch == "\t"
+				in_field = false
+			else if not in_field
+				in_field = true
+				count = count + 1
+			i = i + 1
+		return count
 
 	// Returns true if the string looks like a valid Clean Language identifier.
 	boolean is_valid_identifier(string s)
