@@ -75,6 +75,18 @@ content_type    = "text/css"
 # component) per compiler/src/plugin_artifacts.rs::emit_manifest_bytes.
 # This is the structured surface clean-server consumes to power the
 # `component_tag_render` callback declared on _ui_render_page (SRV001).
+# The browser runtime, next to the module, for pages that load it with
+# <script src="loader.js" data-wasm="app.wasm"> (static browser builds).
+# clean-server also serves it at /loader.js.
+[[artifacts]]
+name            = "loader.js"
+purpose         = "static_asset"
+static_path     = "runtime/loader.js"
+output_relative = "{output_dir}/loader.js"
+required_when   = "always"
+public          = true
+content_type    = "application/javascript"
+
 [[artifacts]]
 name            = "components.json"
 purpose         = "manifest"
