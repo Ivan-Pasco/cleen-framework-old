@@ -1,27 +1,42 @@
 // Pattern: crud-form
 // Use when: a component creates or updates a record via an API call with form data
-// Anti-pattern: calling fetch() directly, passing a handler name to api.post, or manually
-//               serializing form fields — api.submit() collects the form as JSON automatically
+// Anti-pattern: calling fetch() / XMLHttpRequest directly, passing a handler name to
+//               api.post, or reading each field and building the JSON by hand —
+//               api.submit(formSelector, url, method) collects the form as JSON
+//               automatically (repeated fields as arrays, files as multipart).
+// Target: browser (compile with --target browser).
 
-component CreateUserForm
-	state:
-		string error = ""
-		boolean saved = false
+plugins:
+	frame.ui
+	frame.client
 
-	events:
-		onSave:
-			later result = api.submit("#user-form", "/api/users", "POST")
-			if result.ok
-				state.saved = true
-				state.error = ""
-			else
-				state.error = result.json("message") default "Save failed"
+start:
+	integer s = ui.updateElement("#user-form-host", renderForm())
 
-	render:
-		<form id="user-form">
-			<input name="name" type="text" placeholder="Name" />
-			<input name="email" type="email" placeholder="Email" />
-			<div cl-if="state.error != ''" class="error">{state.error}</div>
-			<div cl-if="state.saved" class="success">Saved!</div>
-			<button cl-if="!state.saved" onclick="onSave">Save</button>
-		</form>
+functions:
+	// The form markup. onsubmit.prevent stops the browser's own submit and
+	// calls the Clean function saveUser instead — no JavaScript.
+	string renderForm()
+		html:
+			<form id="user-form" onsubmit.prevent="saveUser">
+				<input name="name" type="text" placeholder="Name">
+				<input name="email" type="email" placeholder="Email">
+				<button type="submit">Save</button>
+				<p id="user-form-status"></p>
+			</form>
+
+	// api.submit sends every field of #user-form as a JSON body. `later`
+	// awaits the response; the statements after it run when it arrives.
+	void saveUser()
+		showStatus("Saving...")
+		later res = api.submit("#user-form", "/api/users", "POST")
+		if res.ok
+			showStatus("Saved")
+		else
+			string message = res.json("message")
+			if message == ""
+				message = "Save failed (" + res.status.toString() + ")"
+			showStatus(message)
+
+	void showStatus(string text)
+		integer s = ui.updateElement("#user-form-status", text)

@@ -1,201 +1,76 @@
 // Pattern: css-and-theming
-// Use when: styling any Frame app — this is the canonical rule for where CSS
-//   lives, how it is loaded, and how theme values are declared.
-// Anti-pattern: writing inline <style> tags or style="..." attributes in HTML
-//   pages or component html: blocks, putting CSS files anywhere other than
-//   public/css/, or trying to declare theme values inside .cln files.
-
-// ─── HOW IT WORKS ───────────────────────────────────────────────────────────
+// Use when: styling any app — where CSS files live, where theme values are
+//   declared (public/css/theme.css) and how they are consumed; read this before
+//   writing any .css or adding class names to an html: block.
+// Anti-pattern: <style> tags or style="..." attributes in pages or html: blocks,
+//   theme values declared in .cln files, colors and spacing hard-coded in
+//   stylesheets instead of declared once on :root in public/css/theme.css, CSS
+//   files outside public/css/, or <style> elements injected at runtime.
+// Target: browser (compile with --target browser) for the runtime part below.
 //
-// Frame has exactly ONE place for CSS authoring and ONE place for theme values:
+// ─── FILES ────────────────────────────────────────────────────────────────────
+//   public/css/theme.css   theme values only: CSS custom properties on :root
+//   public/css/app.css     layout, utilities and component styles, via var(--...)
+//   ./public is served at /public/, so a page shell links both in its <head>:
+//     <link rel="stylesheet" href="/public/css/theme.css">
+//     <link rel="stylesheet" href="/public/css/app.css">
 //
-//   1. public/css/*.css
-//      Plain .css files served directly by frame.server. No preprocessing,
-//      no scoping, no build step. Three roles:
+//   /* public/css/theme.css */
+//   :root {
+//       --color-primary: #2563eb;  --color-text: #0f172a;  --color-bg: #ffffff;
+//       --color-error: #dc2626;    --color-success: #16a34a;
+//       --space-sm: 0.5rem;        --space-md: 1rem;        --radius: 4px;
+//   }
 //
-//        - public/css/theme.css     → theme values (colors, spacing, radii)
-//        - public/css/app.css       → global utilities, layout, base styles
-//        - public/css/components/<tag>.css → per-component styles
+//   /* public/css/app.css: consume theme values, never repeat them */
+//   body { background: var(--color-bg); color: var(--color-text); }
+//   .alert-banner { padding: var(--space-md); border-radius: var(--radius); }
+//   .alert-banner.alert-error   { background: var(--color-error); }
+//   .alert-banner.alert-success { background: var(--color-success); }
+//   .progress-fill { background: var(--color-primary); height: var(--space-sm); }
 //
-//   2. public/css/theme.css
-//      Theme values live as standard CSS custom properties on :root.
-//      Every other stylesheet consumes them with var(--color-primary),
-//      var(--spacing-md), etc. There is no Clean-language theme block —
-//      theme.css is the single source of truth.
-//
-// Auto-linking by frame.ui:
-//   - public/css/theme.css is auto-linked into the page <head> if it exists.
-//   - public/css/components/<tag>.css is auto-linked the first time a
-//     component with that tag renders. Multiple instances of the same
-//     component still produce exactly one <link> tag (dedup is automatic).
-//   - public/css/app.css is linked manually from your page layout with
-//     <link rel="stylesheet" href="/css/app.css">.
-//
-// That's it. No inline styles. No <style> blocks. No CSS-in-Clean string
-// concatenation. No ui: theme: block in main.cln.
-//
-// ─── HARD RULES ──────────────────────────────────────────────────────────────
-//
-//   - All CSS files live in public/css/ — nowhere else.
-//   - Never write <style> ... </style> in pages or component html: blocks.
-//   - Never write style="..." attributes in pages or component html: blocks.
-//   - All theme values (colors, spacing, radii, shadows, font sizes) live in
-//     public/css/theme.css as CSS custom properties on :root. Never declare
-//     them in .cln files. Never hard-code them in other .css files —
-//     consume them via var(--color-name), var(--spacing-md), etc.
-//   - Class names on elements in html: blocks are styled by .css files
-//     in public/css/. Prefix component class names with the component tag
-//     (e.g. .task-card .title, not .title) to avoid cross-component
-//     collisions, since frame.ui does not use Shadow DOM.
-//   - Inline styles are only acceptable as a RUNTIME operation via
-//     ui.setStyle(selector, property, value) when an element's style must
-//     change dynamically from a component event handler — never as an
-//     authoring shortcut for static CSS.
-//   - To change theme values at runtime (e.g. dark mode), use
-//     ui.setCssVar(name, value) or ui.applyCssVars(tokensJson) — never
-//     swap stylesheets or write new <style> elements.
+// Prefix class names with the component tag (.alert-banner .title, not .title):
+// frame.ui has no Shadow DOM, so unprefixed classes collide across components.
 
 plugins:
 	frame.ui
-	frame.server
 
-// ─── THEME VALUES (public/css/theme.css) ─────────────────────────────────────
-// Plain CSS file. Declare every shared visual value once on :root, then
-// reference it from any other stylesheet via var(--name).
-//
-// /* public/css/theme.css */
-// :root {
-//     --color-primary:    #2563eb;
-//     --color-secondary:  #64748b;
-//     --color-background: #ffffff;
-//     --color-text:       #0f172a;
-//     --color-error:      #dc2626;
-//     --color-success:    #16a34a;
-//
-//     --spacing-xs: 0.25rem;
-//     --spacing-sm: 0.5rem;
-//     --spacing-md: 1rem;
-//     --spacing-lg: 2rem;
-//     --spacing-xl: 4rem;
-// }
+start:
+	integer s = ui.updateElement("#app", renderDashboard())
+	setProgress(40)
 
-// ─── GLOBAL STYLESHEET (public/css/app.css) ──────────────────────────────────
-// Plain CSS. Consumes theme values via var(--color-*) and var(--spacing-*).
-// Never hard-code values that theme.css already declares.
-//
-// /* public/css/app.css */
-// body {
-//     margin: 0;
-//     font-family: system-ui, sans-serif;
-//     background: var(--color-background);
-//     color: var(--color-text);
-// }
-//
-// .btn-primary {
-//     background: var(--color-primary);
-//     color: white;
-//     padding: var(--spacing-sm) var(--spacing-md);
-//     border: none;
-//     border-radius: 4px;
-//     cursor: pointer;
-// }
-//
-// .btn-primary:hover {
-//     opacity: 0.9;
-// }
-//
-// .alert-error {
-//     background: var(--color-error);
-//     color: white;
-//     padding: var(--spacing-md);
-// }
+state:
+	boolean dark = false
 
-// ─── PAGE HTML (app/ui/web/pages/index.html) ─────────────────────────────────
-// Link app.css from your page layout. theme.css is auto-linked by frame.ui.
-// Style elements with class="..." — never with inline style="..." and
-// never with embedded <style> blocks.
-//
-// <!DOCTYPE html>
-// <html>
-// <head>
-//     <meta charset="UTF-8">
-//     <title>Home</title>
-//     <link rel="stylesheet" href="/css/app.css">
-// </head>
-// <body>
-//     <main>
-//         <h1>Welcome</h1>
-//         <button class="btn-primary">Get Started</button>
-//     </main>
-// </body>
-// </html>
+// Markup carries class names only — every visual value comes from the stylesheets.
+functions:
+	string alertBanner(string message, string severity)
+		html:
+			<div class="alert-banner alert-{severity}">
+				<p class="alert-banner-text">{message}</p>
+			</div>
 
-// ─── COMPONENT (app/ui/web/components/alert-banner.cln) ──────────────────────
-// Use class names on elements in html: blocks. Styles live in
-// public/css/components/alert-banner.css — auto-linked by frame.ui the first
-// time the component renders. Never put <style> tags or style="..." attributes
-// inside an html: block.
+	string renderDashboard()
+		string banner = alertBanner("Settings saved", "success")
+		html:
+			<main class="dashboard">
+				{!banner}
+				<div class="progress-track"><div class="progress-fill"></div></div>
+				<button class="btn-primary" onclick="toggleTheme">Toggle theme</button>
+			</main>
 
-component: tag="alert-banner"
-	inputs:
-		string message
-		string severity        // "error" | "success"
+	// Runtime theme change: overwrite the custom properties on :root.
+	// Never swap stylesheets or inject a <style> element.
+	void toggleTheme()
+		dark = not dark
+		if dark
+			ui.setCssVar("--color-bg", "#0f172a")
+			ui.setCssVar("--color-text", "#f1f5f9")
+		else
+			ui.setCssVar("--color-bg", "#ffffff")
+			ui.setCssVar("--color-text", "#0f172a")
 
-	html:
-		<div class="alert-banner alert-{inputs.severity}">
-			<p>{inputs.message}</p>
-		</div>
-
-// /* public/css/components/alert-banner.css — auto-linked when <alert-banner> renders */
-// .alert-banner {
-//     padding: var(--spacing-md);
-//     border-radius: 4px;
-//     color: white;
-// }
-//
-// .alert-banner.alert-error   { background: var(--color-error); }
-// .alert-banner.alert-success { background: var(--color-success); }
-
-// ─── RUNTIME STYLE CHANGES (when an element must change dynamically) ─────────
-// ui.setStyle is the ONLY acceptable form of inline style — and only from
-// an event handler at runtime, never as an authoring shortcut for static CSS.
-
-component: tag="progress-bar"
-	inputs:
-		integer percent
-
-	state:
-		integer current = 0
-
-	events:
-		void onMount()
-			state.current = inputs.percent
-			ui.setStyle(".progress-fill", "width", state.current.toString() + "%")
-
-	html:
-		<div class="progress-track">
-			<div class="progress-fill"></div>
-		</div>
-
-// ─── RUNTIME THEME SWITCHING (e.g. dark mode toggle) ─────────────────────────
-// Use ui.setCssVar / ui.applyCssVars to change theme values at runtime. Never
-// write a second <style> block or swap stylesheets.
-
-component: tag="theme-toggle"
-	state:
-		boolean dark = false
-
-	events:
-		void toggle()
-			state.dark = not state.dark
-			if state.dark
-				ui.setCssVar("--color-background", "#0f172a")
-				ui.setCssVar("--color-text", "#f1f5f9")
-			else
-				ui.setCssVar("--color-background", "#ffffff")
-				ui.setCssVar("--color-text", "#0f172a")
-
-	html:
-		<button class="theme-toggle" onclick="toggle">
-			Toggle theme
-		</button>
+	// The only acceptable inline style: a value that changes at runtime, set
+	// from Clean with ui.setStyle — never written into the markup.
+	void setProgress(integer percent)
+		integer s = ui.setStyle(".progress-fill", "width", percent.toString() + "%")

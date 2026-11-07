@@ -1,55 +1,56 @@
 // Pattern: api-error-handling
-// Use when: any component that makes API calls and must show user-facing error messages
-//           or gracefully handle network failures
-// Anti-pattern: ignoring result.ok and assuming success, showing the raw result.body as an
-//               error string, or not handling result.status == 0 (network error / offline)
+// Use when: any component that makes API calls and must show user-facing error
+//           messages or handle network failures
+// Anti-pattern: ignoring res.ok and assuming success, showing the raw res.body as
+//               an error message, or crashing when res.status == 0 (network error /
+//               offline) — always check res.ok first, then branch on res.status.
+// Target: browser (compile with --target browser).
 
-component UserList
-	state:
-		list<any> users = []
-		string error = ""
-		boolean loading = false
+plugins:
+	frame.ui
+	frame.client
 
-	events:
-		onMount:
-			state.loading = true
-			state.error = ""
-			later result = api.get("/api/users")
-			state.loading = false
+start:
+	loadUsers()
 
-			if result.ok
-				state.users = result.json("data")
-			else if result.status == 0
-				// Network error — device offline or server unreachable
-				state.error = "Network error — please check your connection"
-			else if result.status == 401
-				// Not authenticated — redirect to login
-				ui.navigate("/login")
-			else if result.status == 403
-				state.error = "You do not have permission to view this"
-			else if result.status == 500
-				state.error = "Server error — please try again later"
-			else
-				// Use server message if available, fall back to generic
-				state.error = result.json("message") default "Failed to load users"
+functions:
+	void loadUsers()
+		showMessage("Loading...")
+		later res = api.get("/api/users")
+		if res.ok
+			integer s = ui.updateElement("#user-list", renderUsers(res.body))
+			showMessage("")
+		else if res.status == 0
+			// No response at all: offline, DNS failure, server down, timeout.
+			showError("Network error. Check your connection.")
+		else if res.status == 401
+			ui.navigate("/login")
+		else if res.status == 403
+			showError("You do not have permission to view this.")
+		else if res.status >= 500
+			showError("Server error. Please try again later.")
+		else
+			// A 4xx with a JSON error body: show its message field, never the raw body.
+			string message = res.json("message")
+			if message == ""
+				message = "Could not load users (" + res.status.toString() + ")"
+			showError(message)
 
-		onRetry:
-			onMount()
-
-	render:
-		<div class="user-list">
-			<p cl-if="state.loading">Loading...</p>
-
-			<div cl-if="state.error != ''" class="error">
-				<p>{state.error}</p>
-				<button onclick="onRetry">Retry</button>
-			</div>
-
-			<ul cl-if="!state.loading and state.error == ''">
-				<li cl-iterate="user in state.users">{user.name}</li>
+	// body is the JSON response, e.g. {"data":[{"name":"Ann"}]}.
+	string renderUsers(string body)
+		list<any> users = json.textToData(body).data
+		html:
+			<ul>
+				<li cl-iterate="user in users">{user.name}</li>
+				<li cl-if="users.length() == 0">No users found.</li>
 			</ul>
 
-			<p cl-if="!state.loading and state.error == '' and state.users.length() == 0">
-				No users found.
-			</p>
-		</div>
+	void showMessage(string text)
+		integer s = ui.updateElement("#user-status", text)
+
+	// The Retry button calls loadUsers again — a plain event attribute.
+	void showError(string text)
+		html: var="markup"
+			<p class="error">{text}</p>
+			<button onclick="loadUsers">Retry</button>
+		integer s = ui.updateElement("#user-status", markup)

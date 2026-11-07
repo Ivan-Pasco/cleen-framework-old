@@ -1,48 +1,64 @@
 // Pattern: send-mutation
-// Use when: a button triggers a single API mutation — delete, archive, publish, toggle —
-//   and you need pending/success/error state without writing a full handler.
-// Anti-pattern: DON'T call api.delete() manually for every button. The boilerplate
-//   (pending flag, double-click guard, ok check, error string) is identical every time.
-//   Use send: in a .client.cln companion file — it generates the state and function for you.
-//
-// With body fields (archive reason, publish note, etc.):
-//   Use with: to list module-level variables to serialize into the request body.
-//   send: archiveTask patch "/api/tasks/{taskId}/archive"
-//       with: archiveReason
-//   This generates {"archiveReason":"<current value>"} as the body.
-//
-// URL placeholders:
-//   {varName} in the URL resolves a module-level variable at call time.
-//   Set taskId before calling deleteTask().
+// Use when: a button triggers a single API mutation — delete, archive, publish,
+//           toggle — and you need pending/success/error state without a manual handler
+// Anti-pattern: writing a manual void deleteTask() handler for every button — the
+//               pending flag, double-click guard, ok check and error string are the
+//               same every time. Declare a send: block in the page's .client.cln
+//               companion file instead; with: serializes body fields, {varName} in
+//               the URL fills a path parameter.
+// File: app/ui/web/pages/task-detail.client.cln   Target: browser (--target browser).
 
-// app/ui/web/pages/task-detail.client.cln
-string taskId = ""
-string archiveReason = ""
+plugins:
+	frame.ui
+	frame.client
 
+start:
+	// The server-rendered page carries the record id: <article id="task" data-id="42">
+	taskId = ui.getAttr("#task", "data-id")
+	integer s = ui.updateElement("#task-actions", renderActions())
+
+state:
+	string taskId = ""
+	string archiveReason = ""
+
+// Each send: block generates <name>Pending, <name>Success, <name>Error and a
+// void <name>() that guards double clicks, sends the request and runs the callback.
 send: deleteTask delete "/api/tasks/{taskId}"
 	on success: emit "taskRemoved"
+	on error: emit "actionFailed"
 
+// with: archiveReason sends {"archiveReason":"<current value>"} as the body.
 send: archiveTask patch "/api/tasks/{taskId}/archive"
 	with: archiveReason
 	on success: emit "taskArchived"
+	on error: emit "actionFailed"
 
-// Generated state (one set per send: block):
-//   boolean deleteTaskPending = false
-//   boolean deleteTaskSuccess = false
-//   string  deleteTaskError   = ""
-//   void    deleteTask()      — guards double-clicks, calls api.delete, sets state
-//
-//   boolean archiveTaskPending = false
-//   boolean archiveTaskSuccess = false
-//   string  archiveTaskError   = ""
-//   void    archiveTask()
+functions:
+	// The buttons call the generated functions directly.
+	string renderActions()
+		html:
+			<div class="task-actions">
+				<button onclick="deleteTask">Delete</button>
+				<input id="archive-reason" placeholder="Reason" onchange="reasonChanged">
+				<button onclick="archiveTask">Archive</button>
+				<p id="task-status"></p>
+			</div>
 
-// Template usage:
-// <button cl-on:click="deleteTask" cl-if="!deleteTaskPending">Delete</button>
-// <button disabled cl-if="deleteTaskPending">Deleting…</button>
-// <p cl-if="deleteTaskError != ''" class="error">{deleteTaskError}</p>
-//
-// <input cl-bind="archiveReason" placeholder="Reason…" />
-// <button cl-on:click="archiveTask" cl-if="!archiveTaskPending">Archive</button>
-// <button disabled cl-if="archiveTaskPending">Archiving…</button>
-// <p cl-if="archiveTaskError != ''" class="error">{archiveTaskError}</p>
+	void reasonChanged()
+		archiveReason = ui.eventValue()
+
+	void taskRemoved()
+		ui.navigate("/tasks")
+
+	void taskArchived()
+		showStatus("Archived")
+
+	// The generated <name>Error strings hold the failure message.
+	void actionFailed()
+		string message = deleteTaskError
+		if message == ""
+			message = archiveTaskError
+		showStatus(message)
+
+	void showStatus(string text)
+		integer s = ui.updateElement("#task-status", text)

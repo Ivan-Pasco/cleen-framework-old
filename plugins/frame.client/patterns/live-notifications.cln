@@ -1,46 +1,61 @@
 // Pattern: live-notifications
-// Use when: the app needs real-time server-to-client push: chat, presence, live counters,
-//           or collaborative editing
-// Anti-pattern: writing new WebSocket(...) in a <script> tag, polling with repeated api.get()
-//               calls, or storing the connection object in JS — use live.open() with named
-//               handler functions and store the connId in state so it can be closed on unmount
+// Use when: the app needs real-time server-to-client push: chat, presence, live
+//           counters, or collaborative editing
+// Anti-pattern: writing new WebSocket(...) in a <script> tag, polling with repeated
+//               api.get() calls, or keeping the connection object in JS — call
+//               live.open() with the names of exported Clean handler functions and
+//               keep the returned connId in state so the connection can be closed.
+// Target: browser (compile with --target browser).
 
-component NotificationBell
-	state:
-		integer count = 0
-		integer conn = 0
-		boolean connected = false
+plugins:
+	frame.ui
+	frame.client
 
-	events:
-		onMount:
-			integer c = live.open("wss://example.com/ws/notifications", "onMessage", "onClose", "onError")
-			state.conn = c
-			state.connected = true
+start:
+	integer s = ui.updateElement("#bell-host", renderBell())
+	connect()
 
-		onMessage:
-			string msg = live.message()
-			state.count = state.count + 1
+state:
+	integer conn = 0
+	integer unread = 0
 
-		onClose:
-			state.connected = false
-			state.conn = 0
+functions:
+	string renderBell()
+		html:
+			<div class="notification-bell">
+				<button onclick="clearAll">Notifications <span id="bell-count">0</span></button>
+				<span id="bell-state" class="offline">offline</span>
+				<button onclick="disconnect">Pause</button>
+			</div>
 
-		onError:
-			state.connected = false
-			state.conn = 0
+	// Handlers are passed by name; live.open returns the connection id.
+	void connect()
+		conn = live.open("/ws/notifications", "onNotify", "onLiveClose", "onLiveError")
+		integer s = ui.updateElement("#bell-state", "live")
 
-		onUnmount:
-			if state.conn > 0
-				live.close(state.conn)
+	// live.message() is the text of the message being handled.
+	void onNotify()
+		string msg = live.message()
+		unread = unread + 1
+		integer s = ui.updateElement("#bell-count", unread.toString())
+		s = ui.updateAttr("#bell-count", "title", msg)
 
-		onClearAll:
-			state.count = 0
+	void onLiveClose()
+		conn = 0
+		integer s = ui.updateElement("#bell-state", "offline (" + live.closeCode().toString() + ")")
 
-	render:
-		<div class="notification-bell">
-			<button onclick="onClearAll">
-				<span class="icon">🔔</span>
-				<span cl-if="state.count > 0" class="badge">{state.count}</span>
-			</button>
-			<span cl-if="!state.connected" class="offline-dot"></span>
-		</div>
+	void onLiveError()
+		integer s = ui.updateElement("#bell-state", "error: " + live.error())
+
+	// Sending on the same connection: tell the server everything was read.
+	void clearAll()
+		unread = 0
+		integer s = ui.updateElement("#bell-count", "0")
+		if conn > 0
+			integer sent = live.send(conn, "{\"type\":\"read-all\"}")
+
+	// Close explicitly through the stored id (Pause button, or before navigating away).
+	void disconnect()
+		if conn > 0
+			integer closed = live.close(conn)
+			conn = 0

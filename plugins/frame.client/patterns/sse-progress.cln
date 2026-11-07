@@ -1,67 +1,60 @@
 // Pattern: sse-progress
 // Use when: a component tracks progress of a long-running server operation:
-//           file import, batch job, report generation, or any multi-step task
+//           file import, batch job, report generation
 // Anti-pattern: polling with repeated api.get() calls every N seconds, or writing
-//               new EventSource(...) in a <script> tag — feed.open() handles reconnection
-//               and named events automatically; polling wastes server resources and
-//               produces choppy progress updates
+//               new EventSource(...) in a <script> tag — feed.open() handles
+//               reconnection, and feed.on() routes named events to Clean handlers.
+// Target: browser (compile with --target browser).
 
-component ImportProgress
-	state:
-		integer percent = 0
-		string status = "idle"
-		string message = ""
-		integer conn = 0
+plugins:
+	frame.ui
+	frame.client
 
-	events:
-		onStart:
-			state.status = "starting"
-			later result = api.post("/api/import/start", "{}")
-			if result.ok
-				string jobId = result.json("jobId")
-				integer c = feed.open("/api/import/progress?job=" + jobId, "onProgress", "onFeedError")
-				feed.on(c, "complete", "onComplete")
-				state.conn = c
-				state.status = "running"
-			else
-				state.status = "error"
-				state.message = result.json("message") default "Failed to start import"
+start:
+	integer s = ui.updateElement("#import-host", renderImport())
 
-		onProgress:
-			string data = feed.data()
-			state.percent = data.toInteger()
-			state.message = state.percent.toString() + "% complete"
+state:
+	integer feedId = 0
 
-		onComplete:
-			state.percent = 100
-			state.status = "done"
-			state.message = "Import complete"
-			if state.conn > 0
-				feed.close(state.conn)
-				state.conn = 0
-
-		onFeedError:
-			state.status = "error"
-			state.message = "Connection lost"
-			state.conn = 0
-
-	render:
-		<div class="import-progress">
-			<button cl-if="state.status == 'idle'" onclick="onStart">Start Import</button>
-
-			<div cl-if="state.status == 'running' or state.status == 'starting'">
-				<div class="progress-bar">
-					<div class="progress-fill" style="width: {state.percent}%"></div>
-				</div>
-				<p>{state.message}</p>
+functions:
+	string renderImport()
+		html:
+			<div class="import-progress">
+				<button id="import-start" onclick="startImport">Start import</button>
+				<div class="progress-track"><div class="progress-fill"></div></div>
+				<p id="import-message"></p>
 			</div>
 
-			<div cl-if="state.status == 'done'" class="success">
-				<p>{state.message}</p>
-			</div>
+	// One POST starts the job; progress then arrives as server-sent events.
+	void startImport()
+		showMessage("Starting...")
+		later res = api.post("/api/import/start", "{}")
+		if res.ok
+			string jobId = res.json("jobId")
+			// Unnamed "message" events go to onProgress; named events get feed.on.
+			feedId = feed.open("/api/import/progress?job=" + jobId, "onProgress", "onFeedError")
+			integer h = feed.on(feedId, "complete", "onComplete")
+		else
+			showMessage("Could not start the import (" + res.status.toString() + ")")
 
-			<div cl-if="state.status == 'error'" class="error">
-				<p>{state.message}</p>
-				<button onclick="onStart">Retry</button>
-			</div>
-		</div>
+	// Each event's data is the percentage, e.g. "42".
+	void onProgress()
+		string percent = feed.data()
+		integer s = ui.setStyle(".progress-fill", "width", percent + "%")
+		showMessage(percent + "% complete")
+
+	void onComplete()
+		integer s = ui.setStyle(".progress-fill", "width", "100%")
+		showMessage("Import complete")
+		stopFeed()
+
+	void onFeedError()
+		showMessage("Connection lost, reconnecting...")
+
+	void stopFeed()
+		if feedId > 0
+			integer closed = feed.close(feedId)
+			feedId = 0
+
+	void showMessage(string text)
+		integer s = ui.updateElement("#import-message", text)

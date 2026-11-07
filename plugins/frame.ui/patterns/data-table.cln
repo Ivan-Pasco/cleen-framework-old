@@ -1,111 +1,111 @@
 // Pattern: data-table
-// Use when: displaying a sortable, filterable list of records
-// Anti-pattern: DON'T fetch all rows and filter client-side.
-//   For large datasets this transfers too much data and is slow.
-//   Paginate and sort server-side; pass page + sort + filter as query params.
-// Requires: frame.client plugin for client-side API calls
+// Use when: displaying a queryable, sortable, filterable list of records
+// Anti-pattern: fetching all rows into the page and filtering or sorting them
+//   client-side — for large tables that is slow and leaks data. Paginate, sort
+//   and filter on the server; page, sort, dir and q travel as query params.
+//
+// The table is plain server-rendered HTML: the sort headers and pager are links
+// and the filter is a GET form, so every change is a new request that reads
+// only one page of rows. No client code is needed.
 
 plugins:
 	frame.ui
 	frame.server
 	frame.data
 
-// Server: accepts page, sort, order, search as query params
+data User:
+	fields:
+		integer id primary generated
+		string name required
+		string email required
+
 endpoints:
 	GET "/users":
-		integer page = req.query.page.toInteger()
-		string sort = req.query.sort
-		string order = req.query.order
-		string search = req.query.search
-
-		if page <= 0
-			page = 1
-		if sort.length() == 0
+		string q = req.query("q")
+		string sort = req.query("sort")
+		string dir = req.query("dir")
+		integer page = req.query("page").toInteger()
+		if sort != "email"
 			sort = "name"
-		if order.length() == 0
-			order = "asc"
+		if dir != "desc"
+			dir = "asc"
+		if page < 1
+			page = 1
+		PagedResult<User> result = usersPage("%" + q + "%", sort, dir, page)
+		return html(renderTable(result, q, sort, dir))
 
-		integer page_size = 20
-		integer offset = (page - 1) * page_size
-
-		// Server does the filtering — never pull all rows to the client
-		// ORM like operator maps to ILIKE on PostgreSQL (case-insensitive)
-		any users = User.find:
+functions:
+	// order: takes a column name, not a value, so each allowed column and
+	// direction is its own query — this also whitelists what users can sort by.
+	PagedResult<User> usersPage(string pattern, string sort, string dir, integer page)
+		if sort == "email" and dir == "desc"
+			return User.paginate:
+				where:
+					name like pattern
+				order: email desc
+				paginate:
+					page: page
+					perPage: 20
+		if sort == "email"
+			return User.paginate:
+				where:
+					name like pattern
+				order: email asc
+				paginate:
+					page: page
+					perPage: 20
+		if dir == "desc"
+			return User.paginate:
+				where:
+					name like pattern
+				order: name desc
+				paginate:
+					page: page
+					perPage: 20
+		return User.paginate:
 			where:
-				name like search
-			order:
-				name asc
-			limit:
-				page_size
-			offset:
-				offset
+				name like pattern
+			order: name asc
+			paginate:
+				page: page
+				perPage: 20
 
-		integer total = User.count:
-			where:
-				name like search
+	// Clicking the active column flips the direction.
+	string flip(string column, string sort, string dir)
+		if column == sort and dir == "asc"
+			return "desc"
+		return "asc"
 
-		return jsonResponse("{\"users\": " + users + ", \"page\": " + page.toString() + ", \"total\": " + total.toString() + ", \"total_pages\": " + (total / page_size + 1).toString() + "}")
-
-// UI component: data table with sort headers and pagination
-component: tag="data-table"
-	inputs:
-		string api_url = "/users"
-
-	state:
-		string sort = "name"
-		string order = "asc"
-		integer page = 1
-		list rows = []
-		integer total_pages = 1
-
-	events:
-		void load()
-			string url = inputs.api_url + "?page=" + state.page + "&sort=" + state.sort + "&order=" + state.order
-			any result = api.get(url)
-			state.rows = result.users
-			state.total_pages = result.total_pages
-
-		void sortBy(string col)
-			if state.sort == col
-				if state.order == "asc"
-					state.order = "desc"
-				else
-					state.order = "asc"
-			else
-				state.sort = col
-				state.order = "asc"
-			state.page = 1
-			load()
-
-		void nextPage()
-			if state.page < state.total_pages
-				state.page = state.page + 1
-				load()
-
-		void prevPage()
-			if state.page > 1
-				state.page = state.page - 1
-				load()
-
-	html:
-		<div class="data-table">
-			<table>
-				<thead>
-					<tr>
-						<th onclick="sortBy" data-col="name">Name</th>
-						<th onclick="sortBy" data-col="email">Email</th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr cl-iterate="state.rows">
-						<td>{item.name}</td>
-						<td>{item.email}</td>
-					</tr>
-				</tbody>
-			</table>
-			<div class="pagination">
-				<button onclick="prevPage" cl-show="state.page > 1">Previous</button>
-				<span>Page {state.page} of {state.total_pages}</span>
-				<button onclick="nextPage" cl-show="state.page < state.total_pages">Next</button>
-			</div>
-		</div>
+	string renderTable(PagedResult<User> result, string q, string sort, string dir)
+		string nameDir = flip("name", sort, dir)
+		string emailDir = flip("email", sort, dir)
+		string qs = http.encodeUrl(q)
+		string base = "/users?q=" + qs + "&sort=" + sort + "&dir=" + dir + "&page="
+		string prevUrl = base + (result.currentPage - 1).toString()
+		string nextUrl = base + (result.currentPage + 1).toString()
+		html:
+			<section class="data-table">
+				<form method="get" action="/users">
+					<input type="search" name="q" value="{q}" placeholder="Filter by name">
+					<button type="submit">Filter</button>
+				</form>
+				<table>
+					<thead>
+						<tr>
+							<th><a href="/users?q={qs}&sort=name&dir={nameDir}">Name</a></th>
+							<th><a href="/users?q={qs}&sort=email&dir={emailDir}">Email</a></th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr cl-iterate="user in result.items">
+							<td>{user.name}</td>
+							<td>{user.email}</td>
+						</tr>
+					</tbody>
+				</table>
+				<nav class="pagination">
+					<a cl-if="result.hasPrev" href="{prevUrl}">Previous</a>
+					<span>Page {result.currentPage.toString()} of {result.totalPages.toString()}</span>
+					<a cl-if="result.hasNext" href="{nextUrl}">Next</a>
+				</nav>
+			</section>

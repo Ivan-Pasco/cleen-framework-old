@@ -1,216 +1,97 @@
 // Pattern: ssr-page-with-islands
-// Use when: building any web page — this is the foundational page structure pattern
-// Requires: frame.client plugin for client-side API calls
-// Anti-pattern: DON'T put logic or dynamic content in the HTML file itself.
-//   The HTML file is a static shell. All server-rendered data comes from the
-//   companion .cln file's load() function. All interactivity lives in component: blocks.
-//   DON'T add client="on" to everything — most content should stay server-rendered
-//   (client="off") and ship zero JS. Only islands that truly need interactivity
-//   should opt in to hydration.
-
-// ─── HOW IT WORKS ───────────────────────────────────────────────────────────
+// Use when: building any page — this is the foundational structure pattern, read it first
+// Anti-pattern: putting logic or data loading in the HTML file, or making every
+//   component interactive — the HTML is a static shell, all data comes from the
+//   page's companion load(), and most content stays client="off" (server-rendered,
+//   zero JS). Only the few parts that need interactivity are hydrated islands.
 //
-// A Frame page has three layers:
+// ─── THREE LAYERS ─────────────────────────────────────────────────────────────
+// 1. app/ui/web/pages/products/[category].html — static shell. {name} values and
+//    cl-if / cl-else / cl-iterate are filled on the server from load()'s result;
+//    custom tags render components; no <script>, no logic:
 //
-//   1. HTML file (app/pages/*.html)
-//      Plain HTML shell. Uses {variable} for SSR interpolation and
-//      cl-* attributes for server-side conditionals and iteration.
-//      Embeds component custom tags where interactivity is needed.
-//      No JavaScript. No logic.
+//    <!DOCTYPE html>
+//    <html>
+//    <head><title>{category}</title><link rel="stylesheet" href="/public/css/app.css"></head>
+//    <body>
+//        <site-header></site-header>
+//        <screen name="StockFilter" client="on"></screen>
+//        <main class="product-grid">
+//            <h1>{category} ({count})</h1>
+//            <p cl-if="count == 0">No products in this category.</p>
+//            <product-card cl-iterate="p in products" name="{p.name}" price="{p.price}" stock="{p.stock}"></product-card>
+//        </main>
+//    </body>
+//    </html>
 //
-//   2. Companion file (app/pages/*.cln — paired by filename with the .html file)
-//      Exports load() and optionally guard() to load data and gate access.
-//      Runs entirely on the server — never in the browser.
+// 2. app/ui/web/pages/products/[category].cln — companion: load() (and an
+//    optional guard()) run on the server for every request. Below.
+// 3. app/ui/web/components/*.cln and screens — the tags used by the shell. Below.
 //
-//   3. Component blocks (app/components/*.cln)
-//      Define the custom tags used in the HTML. Default: SSR only (client="off").
-//      Add client="on|visible|idle|only" to opt into client-side hydration.
-//
-// ─── HYDRATION STRATEGIES ────────────────────────────────────────────────────
-//
-//   client="off"      (default) SSR only. Zero JS shipped. Use for all static
-//                     content: headers, footers, article bodies, product listings.
-//
-//   client="on"       SSR + hydrates at page load. Use for above-the-fold
-//                     interactive widgets: search bars, cart, nav dropdowns.
-//
-//   client="visible"  SSR + hydrates when scrolled into view. Use for below-
-//                     the-fold interactive sections: comment forms, live feeds.
-//
-//   client="idle"     SSR + hydrates when browser is idle. Use for low-priority
-//                     widgets: chat buttons, analytics, cookie banners.
-//
-//   client="only"     No SSR. Client renders on load. Use sparingly — only for
-//                     content that is meaningless without live data (e.g. a
-//                     real-time dashboard that would confuse users if shown stale).
+// Hydration (client= on the tag): off (default) = server HTML only, no JS;
+// on = hydrate at load; visible = when scrolled into view; idle = when the
+// browser is idle. frame.ui adds the browser runtime only to pages with a
+// hydrated island.
 
 plugins:
 	frame.ui
 	frame.server
 	frame.data
 
-// ─── COMPANION FILE (app/pages/products/[category].cln) ──────────────────────
-// Loads data for the HTML template. Runs on the server before the page renders.
+data Product:
+	fields:
+		integer id primary generated
+		string category required
+		string name required
+		string price required
+		integer stock default: 0
 
-// app/pages/products/[category].cln
+// ─── 2. COMPANION: the only source of the shell's {values} ────────────────────
 functions:
-	any guard(Request request)
-		if not request.auth.loggedIn
-			return null
-		return null
-
 	any load(Request request)
 		string category = request.params.category
-		string lang = request.query.lang
-		if lang == ""
-			lang = "en"
-
-		// Load server-rendered data — available as {variable} in the HTML
-		list products = Product.find:
+		list<Product> products = Product.find:
 			where:
 				category == category
-				is_active == true
-			order:
-				sort_order asc
+			order: name asc
+		return { category: category, count: products.length(), products: products }
 
-		string meta_title = category + " — My Store"
-		integer product_count = products.length()
-
-		return {
-			meta_title: meta_title,
-			category: category,
-			lang: lang,
-			products: products,
-			product_count: product_count
-		}
-
-// ─── HTML PAGE (app/pages/products/[category].html) ──────────────────────────
-// Plain HTML. { } for SSR values. cl-* for server-side directives.
-// Custom tags for components — client= controls whether they hydrate.
-//
-// <!DOCTYPE html>
-// <html lang="{lang}">
-// <head>
-//     <meta charset="UTF-8">
-//     <title>{meta_title}</title>
-//     <link rel="stylesheet" href="/css/main.css">
-// </head>
-// <body>
-//
-//     <!-- STATIC — server-rendered, zero JS, client="off" is the default -->
-//     <site-header></site-header>
-//
-//     <!-- ISLAND: above the fold, needs interactivity at load -->
-//     <search-bar client="on" placeholder="Search products..."></search-bar>
-//
-//     <!-- STATIC — pure SSR, the product grid itself ships as HTML -->
-//     <main class="product-grid">
-//         <h1>{category} <span class="count">({product_count})</span></h1>
-//
-//         <!-- cl-if/cl-else are evaluated on the server — no JS needed -->
-//         <div cl-if="product_count == 0">
-//             <p>No products found in this category.</p>
-//         </div>
-//         <div cl-else>
-//             <!-- cl-iterate renders the list on the server as plain HTML -->
-//             <article cl-iterate="product in products" class="product-card">
-//                 <img src="{product.image_url}" alt="{product.name}">
-//                 <h2>{product.name}</h2>
-//                 <p class="price">{product.price}</p>
-//
-//                 <!-- ISLAND: add-to-cart needs client state — hydrates at load -->
-//                 <add-to-cart
-//                     product-id="{product.id}"
-//                     product-name="{product.name}"
-//                     client="on">
-//                 </add-to-cart>
-//             </article>
-//         </div>
-//     </main>
-//
-//     <!-- ISLAND: below the fold, hydrates when user scrolls to it -->
-//     <recently-viewed client="visible"></recently-viewed>
-//
-//     <!-- ISLAND: low priority, hydrates when browser is idle -->
-//     <live-chat-button client="idle"></live-chat-button>
-//
-//     <!-- STATIC — footer is pure HTML, ships zero JS -->
-//     <site-footer></site-footer>
-//
-// </body>
-// </html>
-
-// ─── STATIC COMPONENT (client="off") ─────────────────────────────────────────
-// Renders on the server. Ships as plain HTML. Zero JS.
-
+// ─── 3a. STATIC COMPONENTS (client="off"): plain HTML, zero JS ────────────────
 component: tag="site-header"
 	html:
 		<header class="site-header">
 			<a href="/" class="logo">My Store</a>
-			<nav>
-				<a href="/products/all">All Products</a>
-				<a href="/about">About</a>
-			</nav>
+			<nav><a href="/products/all">All products</a></nav>
 		</header>
 
-// ─── ACTIVE ISLAND (client="on") ─────────────────────────────────────────────
-// SSR-rendered initial state + full client hydration at page load.
-// Use for widgets that need to respond to user input immediately.
-
-component: tag="add-to-cart"
+component: tag="product-card"
 	inputs:
-		string product_id
-		string product_name
-
-	state:
-		boolean added = false
-		integer quantity = 1
-
-	events:
-		void add()
-			any result = api.post("/api/cart/add", {
-				"product_id" to inputs.product_id,
-				"quantity" to state.quantity
-			})
-			state.added = true
-
-		void changeQty(string direction)
-			if direction == "up" and state.quantity < 99
-				state.quantity = state.quantity + 1
-			if direction == "down" and state.quantity > 1
-				state.quantity = state.quantity - 1
+		string name
+		string price
+		integer stock
 
 	html:
-		<div class="add-to-cart" cl-show="state.added == false">
-			<div class="qty-control">
-				<button onclick="changeQty" data-dir="down">-</button>
-				<span>{state.quantity}</span>
-				<button onclick="changeQty" data-dir="up">+</button>
-			</div>
-			<button class="btn-primary" onclick="add">Add to Cart</button>
-		</div>
-		<div class="added-confirm" cl-show="state.added">
-			✓ Added — <a href="/cart">View Cart</a>
-		</div>
+		<article class="product-card" data-stock="{stock.toString()}">
+			<h2 class="product-card-name">{name}</h2>
+			<p class="product-card-price">{price}</p>
+			<p class="product-card-stock" cl-if="stock == 0">Sold out</p>
+		</article>
 
-// ─── LAZY ISLAND (client="visible") ──────────────────────────────────────────
-// Hydrates only when the user scrolls to it. Ideal for below-the-fold sections.
-
-component: tag="recently-viewed"
+// ─── 3b. ONE ISLAND: placed with <screen name="StockFilter" client="on"> ──────
+// Its handlers run in the browser (StockFilter.toggle); it changes the
+// server-rendered grid through ui.* calls instead of re-rendering it.
+screen StockFilter:
 	state:
-		list items = []
+		boolean onlyInStock = false
 
-	events:
-		void onMount()
-			any result = api.get("/api/recently-viewed")
-			state.items = result.items
+	functions:
+		string render()
+			html:
+				<label class="stock-filter"><input type="checkbox" onchange="toggle"> In stock only</label>
 
-	html:
-		<section class="recently-viewed" cl-show="state.items.length() > 0">
-			<h3>Recently Viewed</h3>
-			<ul>
-				<li cl-iterate="state.items">
-					<a href="/products/{item.slug}">{item.name}</a>
-				</li>
-			</ul>
-		</section>
+		void toggle()
+			onlyInStock = not onlyInStock
+			if onlyInStock
+				integer s = ui.queryAddClass(".product-card[data-stock='0']", "is-hidden")
+			else
+				integer s = ui.queryRemoveClass(".product-card[data-stock='0']", "is-hidden")
