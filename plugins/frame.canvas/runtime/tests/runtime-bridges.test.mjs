@@ -33,7 +33,7 @@ const pluginDir = join(runtimeDir, '..');
 
 const { CanvasBridge } = require(join(runtimeDir, 'canvas-bridge.js'));
 globalThis.CanvasBridge = CanvasBridge; // loader.js constructs the bridge from the global
-const { CleanCanvasLoader } = require(join(runtimeDir, 'loader.js'));
+const { CleanCanvas, CleanCanvasLoader } = require(join(runtimeDir, 'loader.js'));
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -624,6 +624,22 @@ test('_time_relative: wording relative to now, localized', () => {
   eq(rel(now - 3 * 3600, 'es'), 'hace 3 horas', 'Spanish');
   eq(rel(now + 2 * 86400 + 30, 'fr'), 'dans 2 jours', 'French');
   eq(rel(now - 400 * 86400, 'de'), 'vor 1 Jahr', 'German');
+});
+
+// ---------------------------------------------------------------------------
+// Module URL policy (shell.html ?wasm=)
+// ---------------------------------------------------------------------------
+
+test('only same-origin relative module paths are loaded', () => {
+  const page = 'https://game.example/play/shell.html?wasm=x';
+  const resolve = (u) => CleanCanvas.sameOriginModuleUrl(u, page);
+  eq(resolve('app.wasm'), 'https://game.example/play/app.wasm', 'relative path');
+  eq(resolve('build/level1.wasm'), 'https://game.example/play/build/level1.wasm', 'nested relative path');
+  eq(resolve('/static/app.wasm'), 'https://game.example/static/app.wasm', 'root-relative path');
+  for (const bad of ['https://evil.example/x.wasm', 'http://game.example/app.wasm', '//evil.example/x.wasm',
+    'data:application/wasm;base64,AGFzbQ==', 'javascript:alert(1)', 'blob:https://evil.example/1', '/\\evil.example/x.wasm', ' ', '']) {
+    throws(() => resolve(bad), /refusing to load|non-empty relative path/, `rejects ${JSON.stringify(bad)}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -222,7 +222,9 @@
   <script src="canvas-bridge.js"></script>
   <script src="loader.js"></script>
   <script>
-    // Configuration - can be overridden by query parameters
+    // Configuration - can be overridden by query parameters. ?wasm= may
+    // only name a same-origin relative path: CleanCanvas.load refuses any
+    // other URL (loader.js sameOriginModuleUrl).
     const config = {
       wasmPath: getQueryParam('wasm') || 'app.wasm',
       showFps: getQueryParam('fps') !== 'false',

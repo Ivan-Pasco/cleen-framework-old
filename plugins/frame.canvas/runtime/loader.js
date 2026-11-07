@@ -131,6 +131,27 @@
 
   // --- window.__cleanRuntime registration (MEMORY_POLICY.md §9.3) ---
 
+  // URL of a module to load: only a relative path ("app.wasm",
+  // "build/app.wasm", "/static/app.wasm") that resolves to the page's own
+  // origin. The shell takes the path from its ?wasm= query parameter, so an
+  // absolute or protocol-relative URL ("https://…", "//host/…", "data:…")
+  // would let any link run any module in this page.
+  function sameOriginModuleUrl(url, pageHref) {
+    if (typeof url !== 'string' || url.trim() === '') {
+      throw new Error('module path must be a non-empty relative path');
+    }
+    const text = url.trim();
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text) || text.startsWith('//') || /[\\\u0000-\u001f]/.test(text)) {
+      throw new Error(`refusing to load "${url}": only same-origin relative paths can be loaded`);
+    }
+    const page = new URL(pageHref);
+    const resolved = new URL(text, page);
+    if (resolved.origin !== page.origin) {
+      throw new Error(`refusing to load "${url}": it resolves to another origin (${resolved.origin})`);
+    }
+    return resolved.href;
+  }
+
   function registerCleanRuntime(statsProvider) {
     if (typeof window === 'undefined') return;
     if (!window.__cleanRuntime) {
@@ -410,6 +431,9 @@
      * @returns {Promise<CleanCanvasApp>} Application instance
      */
     async load(url, options = {}) {
+      if (typeof location !== 'undefined' && location.href) {
+        url = sameOriginModuleUrl(url, location.href);
+      }
       console.log(`[CleanCanvas] Loading ${url}...`);
 
       // Fetch WASM first so we can inspect its memory declaration
@@ -1767,6 +1791,12 @@
     createLoader() {
       return new CleanCanvasLoader();
     },
+
+    /**
+     * Resolve a module path against the page; throws unless it is a
+     * same-origin relative path (see sameOriginModuleUrl)
+     */
+    sameOriginModuleUrl,
 
     /**
      * Get version
