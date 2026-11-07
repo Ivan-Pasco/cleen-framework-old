@@ -161,6 +161,7 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 			canvas.sprite "hero" x=50 y=60 clip=0 flipX=true anchorX=0.25
 		on layer "hud":
 			canvas.text value="Lives: " + lives.toString() x=10 y=20 size=14 color="#ffffff" font="pixel"
+			canvas.text value="Key: " + input.lastKey x=10 y=40 size=14 color="#ffffff"
 
 	onFrame: param="dt"
 		heroX = heroX + heroVX * dt

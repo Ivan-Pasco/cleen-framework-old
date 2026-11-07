@@ -2248,8 +2248,9 @@ class CanvasBridge {
         },
 
         _input_get_last_key() {
-          // Would need to write to WASM memory - return 0 for now
-          return 0;
+          // input.lastKey: the KeyboardEvent.key of the most recent keydown
+          // on a scene canvas ("" before any key), as an LP string.
+          return self.writeString(self.lastKey || '');
         },
 
         // ====================================================================

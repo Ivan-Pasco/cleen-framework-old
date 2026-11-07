@@ -331,6 +331,13 @@ test('scene / page stores return LP strings on the module heap', () => {
   eq(readLP(loader, env._anim_state_current(...raw(loader, 'noFsm'))), '', 'unknown animState');
 });
 
+test('input.lastKey returns the last key pressed as an LP string', () => {
+  const { loader, env, bridge } = freshLoader();
+  eq(readLP(loader, env._input_get_last_key()), '', 'no key pressed yet');
+  bridge.lastKey = 'ArrowUp';
+  eq(readLP(loader, env._input_get_last_key()), 'ArrowUp', 'last key');
+});
+
 test('collision helpers return 1 / 0 (CVS-P001) and a ray distance or -1 (CVS-P002)', () => {
   const { env } = freshLoader();
   eq([env._collision_circles(0, 0, 5, 8, 0, 3), env._collision_circles(0, 0, 1, 8, 0, 1)], [1, 0], 'circles');

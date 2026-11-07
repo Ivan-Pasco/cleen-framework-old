@@ -197,10 +197,12 @@ check(bridge.namedParticles.get('dust').emitters.length === 1, 'emit particles a
 // per row) so the sprite draws reach the 2D context.
 Object.assign(bridge.namedSprites.get('hero'), { loaded: true, framesPerRow: 4, totalFrames: 8 });
 drawCalls.length = 0;
+bridge.lastKey = 'q';
 exports._frame_callback(1);
 check(vars.get('heroX') === 140, `onFrame: heroX += heroVX * dt (got ${vars.get('heroX')})`);
 check(bridge.namedAnimStates.get('heroFSM').current === 'attack', 'animState `when` transition evaluated each frame');
 check(bridge.cameraFollowX === 140, 'camera target re-evaluated each frame');
+check(drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Key: q'), 'input.lastKey is the last key pressed (a string)');
 check(drawCalls.some(([k]) => k === 'fillRect') && drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Lives: 3'), 'draw: ran with state values (text value= is an expression)');
 // canvas.sprite anchorX / anchorY (CVS-C006): x, y name the point at
 // (anchorX, anchorY) of the 48x64 frame; with a transform it is the pivot.
