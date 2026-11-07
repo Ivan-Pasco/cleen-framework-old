@@ -275,7 +275,21 @@ functions:
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_expire_cookie_header failed")
 
-		// Internal helper used by jwt_sign (builds payload JSON with jti).
+		fn_h = build_jwt_issue_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_jwt_issue_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_jwt_issue failed")
+
+		fn_h = build_refresh_cookie_header_helper(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_refresh_cookie_header_helper failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush __auth_build_refresh_cookie_header failed")
+
+		// Internal helper used by __auth_jwt_issue (builds payload JSON).
 		fn_h = build_jwt_build_payload_helper(ctx)
 		if fn_h == 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "build_jwt_build_payload_helper failed")
@@ -521,15 +535,6 @@ functions:
 		if e == 0
 			return 0
 		return _batch_stmtReturn(ctx, e)
-
-	// Push `if __jwt_enabled == false { return "" }`: with `jwt: enabled =
-	// false` the JWT helpers issue and accept no token.
-	integer push_jwt_enabled_guard(integer ctx, integer body_arr)
-		integer cond = _batch_binop(ctx, "==", _batch_ident(ctx, "__jwt_enabled"), _batch_boolLit(ctx, 0))
-		integer guard = if_no_else(ctx, cond, body1(ctx, ret_empty_str(ctx)))
-		if cond == 0 or guard == 0
-			return 1
-		return _batch_arrayPush(ctx, body_arr, guard)
 
 	// stmtIf with empty else (else_array_handle = 0): if cond { stmts }
 	integer if_no_else(integer ctx, integer cond_h, integer then_arr)
@@ -985,244 +990,89 @@ functions:
 
 		return _batch_func(ctx, "session_destroy", params, "boolean", body_arr)
 
+	// JWT helpers (5–7). Every token carries a `typ` claim: "access" for the
+	// tokens auth.jwt.sign issues, "refresh" for refresh tokens. A refresh
+	// token is accepted only by auth.jwt.refresh, which consumes it
+	// (single-use rotation, AUTH-J007 / AUTH-J009) and answers with a new
+	// access token signed for ttlMinutes; the rotated refresh token goes to
+	// the HttpOnly `frame.refresh` cookie (AUTH-J005 / AUTH-J006). jti is a
+	// per-token unique id (16 random bytes -> 32 hex chars) the rotation
+	// bridge needs for replay detection. With `jwt: enabled = false` the
+	// helpers issue and accept nothing.
+
 	// 5. jwt_sign(claims: string) -> string
-	// Emits: iat/exp/jti + payload built by __auth_build_jwt_payload helper (see #19).
-	// jti is a per-token unique id required by _jwt_refresh_and_rotate for replay
-	// detection (AUTH-J009). 16 random bytes -> 32-char hex string (128 bits entropy).
 	integer build_jwt_sign(integer ctx)
-		integer params = one_param(ctx, "claims", "string")
-		if params == 0
-			return 0
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "return __auth_jwt_issue(claims, \"access\", __jwt_ttl)\n"
+		return source_helper(ctx, "jwt_sign", "claims:string", "string", src)
 
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-		if push_jwt_enabled_guard(ctx, body_arr) != 0
-			return 0
-
-		// integer iat = _time_now()
-		integer iat_e = call0(ctx, "_time_now")
-		if iat_e == 0
-			return 0
-		integer s1 = _batch_stmtVarDecl(ctx, "iat", "integer", iat_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// integer exp = iat + (__jwt_ttl * 60)
-		integer iat_ident = _batch_ident(ctx, "iat")
-		if iat_ident == 0
-			return 0
-		integer mul_e = mul_ident_int(ctx, "__jwt_ttl", 60)
-		if mul_e == 0
-			return 0
-		integer add_e = add_exprs(ctx, iat_ident, mul_e)
-		if add_e == 0
-			return 0
-		integer s2 = _batch_stmtVarDecl(ctx, "exp", "integer", add_e)
-		if s2 == 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
-		if p2 != 0
-			return 0
-
-		// string jti = _crypto_random_hex(16)   // 128 bits -> 32 hex chars
-		integer jti_call = call1_int(ctx, "_crypto_random_hex", 16)
-		if jti_call == 0
-			return 0
-		integer s_jti = _batch_stmtVarDecl(ctx, "jti", "string", jti_call)
-		if s_jti == 0
-			return 0
-		integer p_jti = _batch_arrayPush(ctx, body_arr, s_jti)
-		if p_jti != 0
-			return 0
-
-		// string payload = __auth_build_jwt_payload(iat, exp, jti, claims)
-		integer bpld_e_iat = _batch_ident(ctx, "iat")
-		if bpld_e_iat == 0
-			return 0
-		integer bpld_e_exp = _batch_ident(ctx, "exp")
-		if bpld_e_exp == 0
-			return 0
-		integer bpld_e_jti = _batch_ident(ctx, "jti")
-		if bpld_e_jti == 0
-			return 0
-		integer bpld_e_claims = _batch_ident(ctx, "claims")
-		if bpld_e_claims == 0
-			return 0
-		integer bpld_args = _batch_arrayNew(ctx)
-		if bpld_args == 0
-			return 0
-		integer bpa1 = _batch_arrayPush(ctx, bpld_args, bpld_e_iat)
-		if bpa1 != 0
-			return 0
-		integer bpa2 = _batch_arrayPush(ctx, bpld_args, bpld_e_exp)
-		if bpa2 != 0
-			return 0
-		integer bpa_jti = _batch_arrayPush(ctx, bpld_args, bpld_e_jti)
-		if bpa_jti != 0
-			return 0
-		integer bpa3 = _batch_arrayPush(ctx, bpld_args, bpld_e_claims)
-		if bpa3 != 0
-			return 0
-		integer bpld_call = _batch_call(ctx, "__auth_build_jwt_payload", bpld_args)
-		if bpld_call == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "payload", "string", bpld_call)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// return _jwt_sign(payload, __jwt_secret, __jwt_alg)
-		integer jp_e = _batch_ident(ctx, "payload")
-		if jp_e == 0
-			return 0
-		integer js_e = _batch_ident(ctx, "__jwt_secret")
-		if js_e == 0
-			return 0
-		integer ja_e = _batch_ident(ctx, "__jwt_alg")
-		if ja_e == 0
-			return 0
-		integer jsa = _batch_arrayNew(ctx)
-		if jsa == 0
-			return 0
-		integer jsp1 = _batch_arrayPush(ctx, jsa, jp_e)
-		if jsp1 != 0
-			return 0
-		integer jsp2 = _batch_arrayPush(ctx, jsa, js_e)
-		if jsp2 != 0
-			return 0
-		integer jsp3 = _batch_arrayPush(ctx, jsa, ja_e)
-		if jsp3 != 0
-			return 0
-		integer sign_call = _batch_call(ctx, "_jwt_sign", jsa)
-		if sign_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, sign_call)
-		if ret_s == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p4 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_sign", params, "string", body_arr)
-
-	// 6. jwt_verify(token: string) -> string
+	// 6. jwt_verify(token: string) -> string — the payload of a valid access
+	// token, "" otherwise. A refresh token is not an access token.
 	integer build_jwt_verify(integer ctx)
-		integer params = one_param(ctx, "token", "string")
-		if params == 0
-			return 0
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "string payload = _jwt_verify(token, __jwt_secret, __jwt_alg)\n"
+		src = src + "if payload == \"\"\n\treturn \"\"\n"
+		src = src + "string typ = json.get(json.textToData(payload), \"typ\")\n"
+		src = src + "if typ == \"refresh\"\n\treturn \"\"\n"
+		src = src + "return payload\n"
+		return source_helper(ctx, "jwt_verify", "token:string", "string", src)
 
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-		if push_jwt_enabled_guard(ctx, body_arr) != 0
-			return 0
-
-		// return _jwt_verify(token, __jwt_secret, __jwt_alg)
-		integer t_e = _batch_ident(ctx, "token")
-		if t_e == 0
-			return 0
-		integer s_e = _batch_ident(ctx, "__jwt_secret")
-		if s_e == 0
-			return 0
-		integer a_e = _batch_ident(ctx, "__jwt_alg")
-		if a_e == 0
-			return 0
-		integer jva = _batch_arrayNew(ctx)
-		if jva == 0
-			return 0
-		integer jvp1 = _batch_arrayPush(ctx, jva, t_e)
-		if jvp1 != 0
-			return 0
-		integer jvp2 = _batch_arrayPush(ctx, jva, s_e)
-		if jvp2 != 0
-			return 0
-		integer jvp3 = _batch_arrayPush(ctx, jva, a_e)
-		if jvp3 != 0
-			return 0
-		integer verify_call = _batch_call(ctx, "_jwt_verify", jva)
-		if verify_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, verify_call)
-		if ret_s == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p1 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_verify", params, "string", body_arr)
-
-	// 7. jwt_refresh(refreshToken: string) -> string
-	//
-	// AUTH-J007 / AUTH-J009 (foundation/spec/plugins/frame-auth-semantics.md):
-	// refresh MUST detect replay of a consumed refresh token. Verify+re-sign in
-	// pure Clean cannot do this atomically. Delegated to server bridge:
-	//
-	//   _jwt_refresh_and_rotate(token, secret, algorithm, new_ttl_seconds) -> string
-	//
-	// Semantics (clean-server 1.9.70+): atomically verifies signature+expiry,
-	// extracts jti, marks it consumed under the SessionStore write lock, signs a
-	// new token preserving original claims but with fresh jti / iat / exp.
-	// Replay of a consumed jti or missing-jti token returns empty string.
-	//
-	// Because the rotate bridge also does verify, the plugin no longer needs the
-	// early verify+guard pattern.
+	// 7. jwt_refresh(refreshToken: string) -> string — a new access token, or
+	// "" when the token is not a valid, unused refresh token (AUTH-J007).
+	// _jwt_refresh_and_rotate verifies the token, consumes its jti under the
+	// session store lock and re-signs it with a fresh jti / iat / exp; a
+	// replayed token yields "".
 	integer build_jwt_refresh(integer ctx)
-		integer params = one_param(ctx, "refreshToken", "string")
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "string payload = _jwt_verify(refreshToken, __jwt_secret, __jwt_alg)\n"
+		src = src + "if payload == \"\"\n\treturn \"\"\n"
+		src = src + "any data = json.textToData(payload)\n"
+		src = src + "string typ = json.get(data, \"typ\")\n"
+		src = src + "if typ != \"refresh\"\n\treturn \"\"\n"
+		src = src + "string rotated = _jwt_refresh_and_rotate(refreshToken, __jwt_secret, __jwt_alg, __jwt_refresh_ttl * 60)\n"
+		src = src + "if rotated == \"\"\n\treturn \"\"\n"
+		src = src + "_http_set_header(\"Set-Cookie\", __auth_build_refresh_cookie_header(rotated))\n"
+		src = src + "return __auth_jwt_issue(json.dataToText(json.get(data, \"claims\")), \"access\", __jwt_ttl)\n"
+		return source_helper(ctx, "jwt_refresh", "refreshToken:string", "string", src)
+
+	// __auth_jwt_issue(claims, typ, ttlMinutes) -> string — a token of type
+	// typ that expires ttlMinutes from now.
+	integer build_jwt_issue_helper(integer ctx)
+		string src = "integer iat = _time_now()\n"
+		src = src + "string payload = __auth_build_jwt_payload(iat, iat + ttlMinutes * 60, _crypto_random_hex(16), typ, claims)\n"
+		src = src + "return _jwt_sign(payload, __jwt_secret, __jwt_alg)\n"
+		return source_helper(ctx, "__auth_jwt_issue", "claims:string,typ:string,ttlMinutes:integer", "string", src)
+
+	// __auth_build_refresh_cookie_header(token) -> string — the Set-Cookie
+	// value carrying a refresh token: HttpOnly, with the session cookie's
+	// path, SameSite, Domain and Secure settings, for refreshTtlMinutes.
+	integer build_refresh_cookie_header_helper(integer ctx)
+		string src = "string cookie = \"frame.refresh=\" + token + \"; Path=\" + __session_path + \"; SameSite=\" + __session_same_site\n"
+		src = src + "if __session_domain != \"\"\n\tcookie = cookie + \"; Domain=\" + __session_domain\n"
+		src = src + "if __session_secure\n\tcookie = cookie + \"; Secure\"\n"
+		src = src + "return cookie + \"; HttpOnly; Max-Age=\" + (__jwt_refresh_ttl * 60).toString()\n"
+		return source_helper(ctx, "__auth_build_refresh_cookie_header", "token:string", "string", src)
+
+	// A helper whose body is Clean source (Amendment 11 §3.11, via
+	// batch.func2's from-source path). params_spec is "name:type,..." or "".
+	integer source_helper(integer ctx, string name, string params_spec, string return_type, string src)
+		integer params = _batch_arrayNew(ctx)
 		if params == 0
 			return 0
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
+		integer pos = 0
+		while pos < params_spec.length()
+			integer stop = params_spec.indexOf(",", pos)
+			if stop == -1
+				stop = params_spec.length()
+			string param = params_spec.substring(pos, stop)
+			integer colon = param.indexOf(":")
+			if _batch_arrayPush(ctx, params, _batch_param(ctx, param.substring(0, colon), param.substring(colon + 1, param.length()))) != 0
+				return 0
+			pos = stop + 1
+		integer body_h = _emit_stmt_from_source(ctx, src, 0)
+		if body_h == 0 or _ctx_had_error(ctx) != 0
 			return 0
-		if push_jwt_enabled_guard(ctx, body_arr) != 0
-			return 0
-
-		// return _jwt_refresh_and_rotate(refreshToken, __jwt_secret, __jwt_alg, __jwt_refresh_ttl * 60)
-		integer rt_e = _batch_ident(ctx, "refreshToken")
-		if rt_e == 0
-			return 0
-		integer s_e = _batch_ident(ctx, "__jwt_secret")
-		if s_e == 0
-			return 0
-		integer a_e = _batch_ident(ctx, "__jwt_alg")
-		if a_e == 0
-			return 0
-		integer new_ttl_e = mul_ident_int(ctx, "__jwt_refresh_ttl", 60)
-		if new_ttl_e == 0
-			return 0
-
-		integer rr_args = _batch_arrayNew(ctx)
-		if rr_args == 0
-			return 0
-		integer rp1 = _batch_arrayPush(ctx, rr_args, rt_e)
-		if rp1 != 0
-			return 0
-		integer rp2 = _batch_arrayPush(ctx, rr_args, s_e)
-		if rp2 != 0
-			return 0
-		integer rp3 = _batch_arrayPush(ctx, rr_args, a_e)
-		if rp3 != 0
-			return 0
-		integer rp4 = _batch_arrayPush(ctx, rr_args, new_ttl_e)
-		if rp4 != 0
-			return 0
-		integer rotate_call = _batch_call(ctx, "_jwt_refresh_and_rotate", rr_args)
-		if rotate_call == 0
-			return 0
-		integer ret_s = _batch_stmtReturn(ctx, rotate_call)
-		if ret_s == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p1 != 0
-			return 0
-
-		return _batch_func(ctx, "jwt_refresh", params, "string", body_arr)
+		return _batch_func2(ctx, name, params, return_type, 0, body_h)
 
 	// __auth_build_session_json(userId, claims, expiry) -> string
 	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + ",\"expiry\":" + expiry.toString() + "}"
@@ -1263,59 +1113,13 @@ functions:
 			return 0
 		return _batch_func2(ctx, "__auth_build_expire_cookie_header", params, "string", 0, body_h)
 
-	// 7b. __auth_build_jwt_payload(iat, exp, jti, claims) -> string
-	//
-	// Emits the Clean helper that assembles the JWT payload JSON. The four inputs
-	// are already validated by callers (jwt_sign) — `iat`/`exp` are integers,
-	// `jti` is 32 hex chars from _crypto_random_hex(16), `claims` is caller-supplied
-	// JSON. `claims` is NOT re-escaped: callers pass a well-formed JSON object.
-	//
-	// Emitted as: (composed via _emit_stmt_from_source so the runtime `+` /
-	// `.toString()` machinery is used — the batch expression builder has no
-	// method-call variant).
-	//
-	//   string __auth_build_jwt_payload(integer iat, integer exp, string jti, string claims)
-	//       return "{\"iat\":" + iat.toString() + ",\"exp\":" + exp.toString()
-	//              + ",\"jti\":\"" + jti + "\",\"claims\":" + claims + "}"
+	// __auth_build_jwt_payload(iat, exp, jti, typ, claims) -> string — the
+	// JWT payload JSON. iat/exp are integers, jti is 32 hex chars, typ is
+	// "access" or "refresh", claims is the caller's JSON object (not
+	// re-escaped).
 	integer build_jwt_build_payload_helper(integer ctx)
-		integer params = _batch_arrayNew(ctx)
-		if params == 0
-			return 0
-		integer p_iat = _batch_param(ctx, "iat", "integer")
-		if p_iat == 0
-			return 0
-		integer pp1 = _batch_arrayPush(ctx, params, p_iat)
-		if pp1 != 0
-			return 0
-		integer p_exp = _batch_param(ctx, "exp", "integer")
-		if p_exp == 0
-			return 0
-		integer pp2 = _batch_arrayPush(ctx, params, p_exp)
-		if pp2 != 0
-			return 0
-		integer p_jti = _batch_param(ctx, "jti", "string")
-		if p_jti == 0
-			return 0
-		integer pp3 = _batch_arrayPush(ctx, params, p_jti)
-		if pp3 != 0
-			return 0
-		integer p_claims = _batch_param(ctx, "claims", "string")
-		if p_claims == 0
-			return 0
-		integer pp4 = _batch_arrayPush(ctx, params, p_claims)
-		if pp4 != 0
-			return 0
-
-		// Emit the return via source so `+` and `.toString()` resolve via runtime.
-		// _emit_stmt_from_source returns a plain arena stmt handle (no BATCH_TAG),
-		// which cannot be pushed into a batch stmt array. Use batch.func2's
-		// from_source_handle path instead of batch.func + arrayPush (which
-		// triggers PLUGIN013 batch/arena handle-kind mismatch, fp f81afcc2).
-		integer ret_h = _emit_stmt_from_source(ctx, "return \"{\\\"iat\\\":\" + iat.toString() + \",\\\"exp\\\":\" + exp.toString() + \",\\\"jti\\\":\\\"\" + jti + \"\\\",\\\"claims\\\":\" + claims + \"}\"", 0)
-		if ret_h == 0
-			return 0
-
-		return _batch_func2(ctx, "__auth_build_jwt_payload", params, "string", 0, ret_h)
+		string src = "return \"{\\\"iat\\\":\" + iat.toString() + \",\\\"exp\\\":\" + exp.toString() + \",\\\"jti\\\":\\\"\" + jti + \"\\\",\\\"typ\\\":\\\"\" + typ + \"\\\",\\\"claims\\\":\" + claims + \"}\"\n"
+		return source_helper(ctx, "__auth_build_jwt_payload", "iat:integer,exp:integer,jti:string,typ:string,claims:string", "string", src)
 
 	// 8. hashPassword(password: string) -> string
 	integer build_hash_password(integer ctx)
