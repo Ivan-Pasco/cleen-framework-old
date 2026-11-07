@@ -131,7 +131,9 @@ canvasScene: id="decl" width=640 height=360 fps=60 background="#000000"
 		lineTo x=200 y=0
 		curveTo x=200 y=100 cx=260 cy=50
 		curveTo x=0 y=100 cp1x=150 cp1y=140 cp2x=50 cp2y=140
-		arcTo x=0 y=50 radius=50 startAngle=90 endAngle=270
+		// Fixed: angles were degrees; arc angles are radians (the runtime hands
+		// them to CanvasRenderingContext2D.arc; the spec does not name the unit).
+		arcTo x=0 y=50 radius=50 startAngle=1.5707963267948966 endAngle=4.71238898038469
 		closed = true
 
 	gradient "skyFade" linear x1=0 y1=0 x2=0 y2=360:
