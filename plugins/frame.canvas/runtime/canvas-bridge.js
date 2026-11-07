@@ -174,17 +174,6 @@ class CanvasBridge {
     this.cameraBounds = null; // {x, y, w, h} or null
 
     // ========================================================================
-    // RETURN-STRING HEAP (for bridge functions that return strings)
-    // ========================================================================
-    // Sits past the loader's STRING_BUFFER_OFFSET=1MB region. The 1MB window
-    // here is large enough for many frames of short string returns before it
-    // wraps. Clean reads each returned string immediately, so wrap-around is
-    // safe in practice.
-    this._returnHeapBase = 2 * 1024 * 1024;
-    this._returnHeapPtr = this._returnHeapBase;
-    this._returnHeapMax = 3 * 1024 * 1024;
-
-    // ========================================================================
     // WASM REFERENCES
     // ========================================================================
     this.memory = null;
@@ -229,36 +218,22 @@ class CanvasBridge {
 
   // Two calling conventions:
   //   writeString(str, ptr) — raw write at given ptr, returns byte length
-  //   writeString(str)      — allocate from the bridge return-string heap
-  //                           and write a 4-byte LE length-prefix followed
-  //                           by the UTF-8 bytes. Returns the pointer to the
-  //                           length prefix, which is the format Clean reads
-  //                           when a bridge function returns a string.
+  //   writeString(str)      — allocate on the module heap (the allocator
+  //                           setWasmInstance received) and write a 4-byte
+  //                           LE length prefix followed by the UTF-8 bytes.
+  //                           Returns the pointer to the length prefix, the
+  //                           format Clean reads when a bridge function
+  //                           returns a string.
   writeString(str, ptr) {
     if (!this.memory) return 0;
     const bytes = new TextEncoder().encode(str || '');
-    if (ptr === undefined && this.allocate) {
-      // Length-prefixed string on the module heap.
+    if (ptr === undefined) {
+      if (!this.allocate) {
+        throw new Error('CanvasBridge: a string return needs the module allocator (setWasmInstance(instance, allocate))');
+      }
       const result = this.allocate(4 + bytes.length);
       new DataView(this.memory.buffer).setUint32(result, bytes.length, true);
       new Uint8Array(this.memory.buffer, result + 4, bytes.length).set(bytes);
-      return result;
-    }
-    if (ptr === undefined) {
-      // Length-prefixed allocation in the bridge's return-string region
-      // (standalone use without a loader-provided allocator).
-      if (this._returnHeapPtr + bytes.length + 8 >= this._returnHeapMax) {
-        // wrap around — return strings are short-lived; Clean reads them
-        // immediately after the call.
-        this._returnHeapPtr = this._returnHeapBase;
-      }
-      const result = this._returnHeapPtr;
-      const dv = new DataView(this.memory.buffer);
-      dv.setUint32(result, bytes.length, true);
-      const view = new Uint8Array(this.memory.buffer, result + 4, bytes.length);
-      view.set(bytes);
-      const pad = (4 - (bytes.length % 4)) % 4;
-      this._returnHeapPtr += 4 + bytes.length + pad;
       return result;
     }
     const view = new Uint8Array(this.memory.buffer, ptr, bytes.length);
@@ -1549,10 +1524,9 @@ class CanvasBridge {
         // ====================================================================
         // Each canvas's current path is the Canvas2D context's own internal
         // path. _canvas_begin_path resets it; the move/line/curve/cubic/arc
-        // calls extend it; _canvas_fill_path commits it with a fill color.
-        // Stroke-the-current-path is intentionally not bridged here — strokes
-        // go through the immediate-mode shape functions (_canvas_line,
-        // _canvas_*_outline) which manage their own paths.
+        // calls extend it; _canvas_fill_path / _canvas_fill_path_gradient
+        // fill it and _canvas_stroke_path strokes it (canvas.fill /
+        // canvas.stroke, spec §6.10).
 
         _canvas_begin_path(canvasId) {
           const entry = self.canvases.get(canvasId);

@@ -331,6 +331,14 @@ test('scene / page stores return LP strings on the module heap', () => {
   eq(readLP(loader, env._anim_state_current(...raw(loader, 'noFsm'))), '', 'unknown animState');
 });
 
+test('string returns need the module allocator (no fixed scratch region)', () => {
+  const bridge = new CanvasBridge();
+  bridge.memory = new WebAssembly.Memory({ initial: 1 });
+  throws(() => bridge.writeString('x'), /module allocator/, 'no allocator');
+  const { loader, bridge: wired } = freshLoader();
+  eq(readLP(loader, wired.writeString('ok')), 'ok', 'loader-wired bridge allocates on the module heap');
+});
+
 test('input.lastKey returns the last key pressed as an LP string', () => {
   const { loader, env, bridge } = freshLoader();
   eq(readLP(loader, env._input_get_last_key()), '', 'no key pressed yet');
