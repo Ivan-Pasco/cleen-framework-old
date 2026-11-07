@@ -541,7 +541,14 @@ functions:
 			i = i + 1
 		return true
 
+	// An identifier segment for a primitive name, one to one: letters and
+	// digits stay, every other allowed character becomes `_` plus a letter
+	// naming it (`-` -> `_d`, `_` -> `_u`, `.` -> `_p`, `/` -> `_s`, ...), so
+	// "get-user" and "get_user" get different handlers. "!" when the name
+	// has a character outside the table.
 	string sanitize_name(string name)
+		string specials = name_specials()
+		string codes = "sdputxrnqbkalmiecgfowyzhv"
 		string result = ""
 		integer i = 0
 		while i < name.length()
@@ -550,9 +557,16 @@ functions:
 			if is_ok
 				result = result + ch
 			else
-				result = result + "_"
+				integer k = specials.indexOf(ch)
+				if k == -1
+					return "!"
+				result = result + "_" + codes.substring(k, k + 1)
 			i = i + 1
 		return result
+
+	// The non-alphanumeric characters a tool/resource/prompt name may use.
+	string name_specials()
+		return "/-._~!$&'()*+,;=:@%{}[]?#"
 
 // ============================================================================
 // HANDLER BODY REWRITE
@@ -1186,8 +1200,10 @@ functions:
 			integer sep = name.indexOf("://")
 			if sep <= 0 or sep + 3 >= name.length() or name.indexOf(" ") >= 0
 				return label + " must be a scheme://path URI without spaces (MCP-R001)"
-		else if not is_identifier(sanitize_name(name)) or name.indexOf(" ") >= 0
+		else if name.indexOf(" ") >= 0
 			return label + " name must not contain spaces"
+		if sanitize_name(name) == "!"
+			return label + " name may only use ASCII letters, digits and " + name_specials()
 
 		string kw = decl_keyword(block)
 		// MCP-R002
