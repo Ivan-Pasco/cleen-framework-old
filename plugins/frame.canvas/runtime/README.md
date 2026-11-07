@@ -8,7 +8,7 @@ Browser host for `canvasScene:` applications compiled with the frame.canvas plug
 |------|-------------|
 | `canvas-bridge.js` | Implements every `[bridge]` function declared in `../plugin.toml` (canvas, sprites, tweens, timelines, animState, particles, audio, input, collision, camera, scenes, page bridge) |
 | `loader.js` | Instantiates the module: canvas bridge + stdlib imports (`env`) + `memory_runtime`, JSON bridges, module-heap allocation |
-| `shell.html` | Page template that loads `app.wasm` (`?wasm=` overrides the path) |
+| `shell.html` | Page template that loads `app.wasm` (`?wasm=` overrides the path; only a same-origin relative path is loaded) |
 | `examples/*.cln` | Hand-written example scenes |
 | `tests/` | Node tests for the runtime (see below) |
 
@@ -30,7 +30,8 @@ element exists the bridge creates one inside `#canvas-container` (or `<body>`).
 
 - String parameters declared with `expand_strings = true` arrive as `(ptr, len)`.
   String results are length-prefixed (`[u32 length][UTF-8 bytes]`) and allocated
-  on the module heap (`malloc` export, else the `__heap_ptr` bump pointer).
+  on the module heap (`malloc` export, else the `__heap_ptr` bump pointer); a
+  bridge without the loader's allocator cannot return strings.
 - `integer` is i32 except where the registry says i64 (`int64_to_string`, JSON
   integers): i64 values cross as `BigInt`.
 - Each frame the runtime advances tweens / timelines / animSprites / particles,
@@ -49,6 +50,9 @@ node plugins/frame.canvas/runtime/tests/runtime-bridges.test.mjs
 # Plugin + runtime end to end (compiles tests/fixtures/scene.cln with
 # $CLEEN_CLN or ~/.cleen/bin/cln and the plugin in this directory)
 node plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs
+
+# Compile-time checks: invalid scenes fail with the CVS rule they break
+node plugins/frame.canvas/runtime/tests/scene-diagnostics.test.mjs
 ```
 
 Each prints one `PASS:` / `FAIL:` line and exits non-zero on failure.
