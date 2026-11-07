@@ -236,7 +236,6 @@ implicit_import = true
 # Starter files created when plugin is added to a project
 files = [
   { path = "app/auth/auth.cln", template = "auth.cln" },
-  { path = "app/auth/project.cln", template = "project.cln" },
 ]
 
 [enforcement]
@@ -281,7 +280,7 @@ example = "patterns/session-scoped-tenant.cln"
 [[ai.patterns]]
 name = "csrf-protection"
 use_when = "any server-rendered form that mutates state (login, settings, payments)"
-anti_pattern = "no CSRF protection on POST endpoints — a third-party site can submit a form as the logged-in user; generate a token with auth.csrf.generate(), embed it in the form, and validate with auth.csrf.validate() on every mutation"
+anti_pattern = "turning csrf: off or moving mutations to GET routes — a third-party site can submit a form as the logged-in user; keep csrf: on (the default): frame.ui puts the session's token in a hidden _csrf input of every non-GET form, and the server rejects session-cookie POST/PUT/PATCH/DELETE requests without it (403 CSRF_FAIL)"
 example = "patterns/csrf-protection.cln"
 
 [build]

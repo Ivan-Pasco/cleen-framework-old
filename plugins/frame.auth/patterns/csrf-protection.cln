@@ -1,57 +1,52 @@
 // Pattern: csrf-protection
 // Use when: any server-rendered form that mutates state
-// Anti-pattern: DON'T leave POST/PUT/DELETE endpoints unprotected in server-rendered apps.
-//   A third-party page can submit a form as the logged-in user (CSRF attack).
-//   Generate a token per-session with auth.csrf.generate(), embed it as a hidden
-//   field, and validate with auth.csrf.validate() on every mutating request.
+// Anti-pattern: DON'T turn csrf: off, or write mutating endpoints as GET routes
+//   to dodge the check. A third-party page can submit a form as the logged-in
+//   user (CSRF attack); the CSRF token is what tells your form from theirs.
+//
+// How it works (frame-auth-semantics AUTH-S006 / AUTH-S007):
+//   - csrf: is on by default. Each session gets a token, stored server-side.
+//   - frame.ui adds <input type="hidden" name="_csrf"> with the session's token
+//     to every non-GET form it renders (UI-B011). A form you build yourself
+//     embeds auth.csrf.generate() the same way.
+//   - clean-server checks POST / PUT / PATCH / DELETE requests that carry the
+//     session cookie before the handler runs: the token must come in the
+//     _csrf form field or the X-CSRF-Token header, or the answer is
+//     403 {"ok":false,"err":{"code":"CSRF_FAIL",...}}.
+//   - GET and HEAD need no token, and neither do bearer-token (JWT) requests.
 
 plugins:
 	frame.server
 	frame.auth
+	frame.ui
+
+auth:
+	session:
+		cookie = "app.sid"
+		timeoutMinutes = 60
+	csrf:
+		enabled = true
+
+page SettingsPage:
+	<form method="post" action="/settings">
+		<input type="text" name="display_name" placeholder="Display name">
+		<button type="submit">Save</button>
+	</form>
 
 endpoints:
-	// GET: render the form — generate a CSRF token and embed it.
-	// The inline [auth] modifier requires a valid session before the handler runs.
-	GET "/settings" [auth]:
-		string csrf_token = auth.csrf.generate()
-		// Embed csrf_token as a hidden input in the rendered HTML form
-		return htmlResponse("
-			<form method='POST' action='/settings'>
-				<input type='hidden' name='_csrf' value='" + csrf_token + "'>
-				<input type='text' name='display_name' placeholder='Display name'>
-				<button type='submit'>Save</button>
-			</form>
-		")
+	// GET: render the form. frame.ui adds the hidden _csrf input.
+	GET "/settings":
+		if not auth.isAuthenticated()
+			return redirect("/login")
+		SettingsPage page = SettingsPage()
+		return html(page.render())
 
-	// POST: validate the CSRF token before processing the mutation
-	POST "/settings" [auth]:
-		string csrf_token = req.body_field("_csrf")
-
-		// Reject immediately if token is missing or invalid
-		if csrf_token.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"CSRF_MISSING\", \"message\": \"CSRF token missing\"}"))
-
-		integer valid = auth.csrf.validate(csrf_token)
-		if valid == 0
-			return status(403, jsonResponse("{\"code\": \"CSRF_INVALID\", \"message\": \"Invalid or expired CSRF token\"}"))
-
-		// Safe to process the mutation
-		string display_name = req.body_field("display_name")
-		if display_name.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"display_name\", \"message\": \"display_name is required\"}"))
-
-		return jsonResponse("{\"message\": \"Settings saved\", \"display_name\": \"" + display_name + "\"}")
-
-	// DELETE with CSRF — token passed as a header for JS-initiated requests
-	DELETE "/account" [auth]:
-		// For JS fetch requests, send CSRF token in X-CSRF-Token header
-		string csrf_token = req.header("X-CSRF-Token")
-		if csrf_token.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"CSRF_MISSING\", \"message\": \"X-CSRF-Token header required\"}"))
-
-		integer valid = auth.csrf.validate(csrf_token)
-		if valid == 0
-			return status(403, jsonResponse("{\"code\": \"CSRF_INVALID\", \"message\": \"Invalid CSRF token\"}"))
-
-		// Proceed with destructive action
-		return jsonResponse("{\"message\": \"Account deleted\"}")
+	// POST: runs only when the request carried the session's CSRF token.
+	POST "/settings":
+		if not auth.isAuthenticated()
+			return unauthorized()
+		any form = json.tryTextToData(req.form())
+		if form == null or form.display_name == null
+			return badRequest("display_name is required")
+		string displayName = form.display_name.toString()
+		return json({saved: true, display_name: displayName})

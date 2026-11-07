@@ -1,9 +1,10 @@
 // Pattern: session-scoped-tenant
 // Use when: a multi-tenant app where each session belongs to exactly one tenant
-// Anti-pattern: DON'T accept tenant_id from request body, query params, or headers.
-//   An attacker can forge any value they supply. The tenant context must come
-//   from the authenticated session only — auth.tenant.getId() reads it from
-//   the signed session token, which the server controls.
+// Anti-pattern: DON'T accept a tenant id from the request body, query string or
+//   headers. An attacker can forge any value they send. Put the tenant id in
+//   the session claims at login; auth.tenant.getId() reads it back from the
+//   server-side session, and frame.data scopes every query of a model with a
+//   tenantId field to it (AUTH-I003).
 
 plugins:
 	frame.server
@@ -13,73 +14,52 @@ plugins:
 auth:
 	session:
 		cookie = "app.sid"
-		timeoutMinutes = 480  // 8 hours
+		timeoutMinutes = 480  // 8 hours of inactivity
 
-functions:
-	// Login: embed tenant_id in the session at login time
-	string login_user(string email, string password)
-		string user = User.first:
-			where:
-				email == email
+data User:
+	fields:
+		integer id primary generated
+		string email required unique
+		string password_hash required
+		string role default: "user"
+		string organisation required
 
-		if user == null
-			return ""
-
-		integer valid = auth.verifyPassword(password, user.password_hash)
-		if valid == 0
-			return ""
-
-		// tenant_id is stored in the session — never trust it from the client again
-		string session_id = auth.session.create(user.id, {
-			"role" to user.role,
-			"tenant_id" to user.tenant_id,
-			"email" to user.email
-		})
-		auth.session.setCookie(session_id)
-		return session_id
+data Project:
+	fields:
+		integer id primary generated
+		string tenantId                 // filled from the session on insert
+		string name required
 
 endpoints:
 	POST "/auth/login":
-		string email = req.body_field("email")
-		string password = req.body_field("password")
-		string session = login_user(email, password)
-		if session == ""
-			return unauthorized(jsonResponse("{\"code\": \"INVALID_CREDENTIALS\", \"message\": \"Invalid email or password\"}"))
-		return jsonResponse("{\"message\": \"Logged in\"}")
-
-	// All tenant-scoped routes read tenant_id from session, not from the request.
-	// The inline [auth] modifier requires a valid session before the handler runs.
-	GET "/projects" [auth]:
-		// auth.tenant.getId() reads from the session — cannot be forged
-		string tid = auth.tenant.getId()
-		string projects = Project.find:
+		any data = json.tryTextToData(req.body())
+		if data == null or data.email == null or data.password == null
+			return badRequest("email and password are required")
+		string address = data.email.toString()
+		User user = User.first:
 			where:
-				tenant_id == tid
-		return jsonResponse("{\"projects\": " + projects + "}")
+				email == address
+		onError:
+			return unauthorized()
+		if not auth.verifyPassword(data.password.toString(), user.password_hash)
+			return unauthorized()
+		// The tenant id goes into the session claims — never trusted from the
+		// client again.
+		string sid = auth.session.create(user.id, "{\"role\":\"" + user.role + "\",\"tenantId\":\"" + user.organisation + "\"}")
+		return auth.session.setCookie(sid, json({message: "Logged in"}))
 
-	POST "/projects" [auth]:
-		string tid = auth.tenant.getId()
-		string name = req.body_field("name")
-		if name.length() == 0
-			return badRequest(jsonResponse("{\"code\": \"VALIDATION_ERROR\", \"field\": \"name\", \"message\": \"name is required\"}"))
+	// The tenant comes from the session; frame.data adds it to the query.
+	GET "/projects" [user, admin]:
+		list<Project> projects = Project.find:
+			order: name asc
+		return json({tenant: auth.tenant.getId(), count: projects.length()})
 
-		// tenant_id injected from session — caller cannot override it
-		string id = Project.insert:
-			tenant_id = tid
-			name = name
-		return jsonResponse("{\"id\": " + id + ", \"name\": \"" + name + "\"}")
-
-	GET "/projects/:id" [auth]:
-		string tid = auth.tenant.getId()
-		integer pid = param("id").toInteger()
-
-		// Always scope the lookup to the session tenant — prevents cross-tenant reads
-		string project = Project.first:
-			where:
-				id == pid
-				tenant_id == tid
-
-		if project == null
-			return notFound(jsonResponse("{\"code\": \"NOT_FOUND\", \"message\": \"Project not found\"}"))
-
-		return jsonResponse(project)
+	// tenantId is filled from the session on insert, whatever the request says.
+	POST "/projects" [user, admin]:
+		any data = json.tryTextToData(req.body())
+		if data == null or data.name == null
+			return badRequest("name is required")
+		Project project = Project()
+		project.name = data.name.toString()
+		Database.save(project)
+		return json({id: project.id, name: project.name})
