@@ -86,6 +86,8 @@ external:
 	integer _type_class_ref(integer ctx, string name)
 	// Error reporting
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
+	// Build-state keystore (lifecycle.md §2.5)
+	void _build_state_set(string key, string value)
 
 // ============================================================================
 // V3 LIFECYCLE SLOT: emit_module_helpers_typed
@@ -127,6 +129,19 @@ functions:
 			return expand_form_typed(ctx, attrs_json, body)
 		if block_name == "send"
 			return expand_send_typed(ctx, attrs_json, body)
+		return 0
+
+// ============================================================================
+// ASSEMBLE HOOK
+// ============================================================================
+// assemble.md: runs once per build, before any block is expanded. frame.client
+// injects no source; it records that it is part of the build, so frame.ui
+// adds <script src='/frame-client.js'> (this plugin's [[artifacts]] entry)
+// after /loader.js on the pages that load the browser runtime.
+
+functions:
+	integer assemble_typed(integer ctx, string ctx_json)
+		_build_state_set("frame.client.loaded", "1")
 		return 0
 
 // ============================================================================
@@ -844,6 +859,13 @@ functions:
 		if fields.length() == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E031", "form: block has no field declarations", "{\"source\":\"plugin\"}")
 			return 1
+		string bad_field = first_bad_name(fields)
+		if bad_field != ""
+			_emit_error(ctx, 2, "FRAME-CLIENT-E094", "form: field '" + bad_field + "' is not a valid variable name", "{\"source\":\"plugin\"}")
+			return 1
+		if emit_on_success != "" and is_identifier(emit_on_success) == false
+			_emit_error(ctx, 2, "FRAME-CLIENT-E095", "form: emit \"" + emit_on_success + "\" does not name a function", "{\"source\":\"plugin\"}")
+			return 1
 
 		// ---- Emit state: block ----
 		// Fields per declaration + submitting/formError/formSuccess
@@ -854,13 +876,6 @@ functions:
 		integer bool_t = _type_boolean(ctx)
 		if bool_t == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E033", "failed to build boolean type for form state", "{\"source\":\"plugin\"}")
-			return 1
-		string bad_field = first_bad_name(fields)
-		if bad_field != ""
-			_emit_error(ctx, 2, "FRAME-CLIENT-E094", "form: field '" + bad_field + "' is not a valid variable name", "{\"source\":\"plugin\"}")
-			return 1
-		if emit_on_success != "" and is_identifier(emit_on_success) == false
-			_emit_error(ctx, 2, "FRAME-CLIENT-E095", "form: emit \"" + emit_on_success + "\" does not name a function", "{\"source\":\"plugin\"}")
 			return 1
 
 		string state_fields = "["

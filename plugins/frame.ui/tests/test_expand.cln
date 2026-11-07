@@ -23,6 +23,7 @@ start:
 	test_validate_rules()
 	test_routes_guards()
 	test_page_access()
+	test_head_links()
 
 functions:
 	// html: without var= builds __html and returns it (UI-P004).
@@ -192,4 +193,15 @@ functions:
 		assert(page_access_error("<page auth=\"maybe\" />", true).contains("auth must be required, guest or none"))
 		assert(page_access_error("<page roles=\"a\\\"b\" />", true).contains("each role must be a name"))
 		assert(page_access_error("<p>no page tag</p>", false) == "")
+
+	// _ui_head_links: the theme link with a styles block (UI-S009); with
+	// frame.client in the build, /frame-client.js right after /loader.js.
+	void test_head_links()
+		assert(head_links_body(false, false) == "string out = page\nreturn out\n")
+		string themed = head_links_body(true, false)
+		assert(themed.contains("/theme.css") and themed.contains("frame-client") == false)
+		string client = head_links_body(false, true)
+		assert(client.contains("integer loader_at = out.indexOf(\"/loader.js\")\n"))
+		assert(client.contains("out.indexOf(\"/frame-client.js\") == -1"))
+		assert(client.contains("<script src=\\\"/frame-client.js\\\" defer></script>"))
 

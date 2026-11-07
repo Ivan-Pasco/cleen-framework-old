@@ -2,8 +2,11 @@
 // Registers api.*, live.*, feed.* bridge functions into __cleanRuntime
 // Version: 1.0.0
 //
-// This file must load BEFORE loader.js (which instantiates WASM).
-// It does NOT load WASM -- it only registers bridge functions.
+// Served as /frame-client.js (plugin.toml [[artifacts]]). Load it AFTER
+// frame.ui's loader.js: loader.js defines window.__cleanRuntime when it
+// starts and instantiates the WASM only once the document has been parsed,
+// so the functions registered here are in its imports. This file does NOT
+// load WASM -- it only registers bridge functions.
 
 (function() {
 	const rt = window.__cleanRuntime;

@@ -114,27 +114,36 @@ functions:
 		// _ui_head_links(page: string) -> string
 		// UI-S009 theme auto-link: when the project declares a `styles` block,
 		// adds <link rel="stylesheet" href="/theme.css"> before the page's
-		// </head>. Without a styles block the page is returned unchanged.
+		// </head>. When the build includes frame.client, a page that loads the
+		// browser runtime (/loader.js, which clean-server adds to pages with
+		// hydration islands) also gets frame.client's /frame-client.js right
+		// after it.
 		integer hl_p_page = _type_string(ctx)
 		integer hl_r_str = _type_string(ctx)
 		string hl_params = "[{\"name\":\"page\",\"type_handle\":" + hl_p_page.toString() + "}]"
-		ui_helper_function(ctx, "_ui_head_links", hl_params, hl_r_str, head_links_body(_build_state_get("frame.ui.has_styles") == "1"), 1)
+		ui_helper_function(ctx, "_ui_head_links", hl_params, hl_r_str, head_links_body(_build_state_get("frame.ui.has_styles") == "1", _build_state_get("frame.client.loaded") == "1"), 1)
 		_ctx_clear_error(ctx)
 		return 0
 
 	// Body source of the _ui_head_links helper (see emit_ui_helpers_typed).
 	// The theme link is added once, before the first </head>, and only when
-	// the page does not already link /theme.css itself.
-	string head_links_body(boolean has_styles)
-		if has_styles == false
-			return "return page\n"
-		string b = "integer head_end = page.indexOf(\"</head>\")\n"
-		b = b + "if head_end == -1\n"
-		b = b + "\treturn page\n"
-		b = b + "if page.indexOf(\"href=\\\"/theme.css\\\"\") != -1 or page.indexOf(\"href='/theme.css'\") != -1\n"
-		b = b + "\treturn page\n"
-		b = b + "return page.substring(0, head_end) + \"<link rel=\\\"stylesheet\\\" href=\\\"/theme.css\\\">\" + page.substring(head_end, page.length())\n"
-		return b
+	// the page does not already link /theme.css itself. The client script is
+	// added once, right after the </script> of the /loader.js tag (defer, as
+	// that tag is, so it runs after the runtime has started).
+	string head_links_body(boolean has_styles, boolean has_client)
+		string b = "string out = page\n"
+		if has_styles
+			b = b + "integer head_end = out.indexOf(\"</head>\")\n"
+			b = b + "if head_end != -1 and out.indexOf(\"href=\\\"/theme.css\\\"\") == -1 and out.indexOf(\"href='/theme.css'\") == -1\n"
+			b = b + "\tout = out.substring(0, head_end) + \"<link rel=\\\"stylesheet\\\" href=\\\"/theme.css\\\">\" + out.substring(head_end, out.length())\n"
+		if has_client
+			b = b + "integer loader_at = out.indexOf(\"/loader.js\")\n"
+			b = b + "if loader_at != -1 and out.indexOf(\"/frame-client.js\") == -1\n"
+			b = b + "\tinteger loader_end = out.indexOf(\"</script>\", loader_at)\n"
+			b = b + "\tif loader_end != -1\n"
+			b = b + "\t\tinteger insert_at = loader_end + 9\n"
+			b = b + "\t\tout = out.substring(0, insert_at) + \"<script src=\\\"/frame-client.js\\\" defer></script>\" + out.substring(insert_at, out.length())\n"
+		return b + "return out\n"
 
 	// Body source of the _ui_attr_get helper (see emit_ui_helpers_typed):
 	// the decoded string value of key `name` in the JSON object `attrs`, or
@@ -377,6 +386,10 @@ functions:
 			return template_error(ctx, template_error_code(render_code))
 		if needs_client_runtime(html)
 			render_code = render_code + append_stmt("html", "\"<script src='/loader.js' data-wasm='/frontend.wasm'></script>\"")
+			// frame.client's browser bridges (api.*, live.*, feed.*) load after
+			// the runtime, which waits for them before instantiating the WASM.
+			if _build_state_get("frame.client.loaded") == "1"
+				render_code = render_code + append_stmt("html", "\"<script src='/frame-client.js'></script>\"")
 		string page_name = path_to_class_name(path)
 		expand_page_typed(ctx, page_name, path, layout, auth, roles, render_code, companion_json)
 		_ctx_clear_error(ctx)
