@@ -1,20 +1,9 @@
-// Tests for frame.client plugin — v3 typed emission (Plugin Contracts v3)
-// Tests cover: pure DSL parser helpers, URL segment compiler helpers, and
-// field-record helper functions that feed the typed emitter.
-//
-// Tests are split into two categories:
-//   1. Pure helper functions (no ctx required) — runnable in type-check mode
-//   2. Typed emitter entry points (require live compiler ctx) — validated by
-//      compiling a real browser-target app in the CI integration test.
-//
-// To type-check:
-//   cat tests/test_expand.cln src/main.cln > /tmp/combined.cln && cln check /tmp/combined.cln
-//
-// (test file must come first so start: appears before functions:)
-// Note: v1 expand_block and compile_url/compile_send_url no longer exist.
-//       Tests that called those functions are now covered by the new
-//       compile_url_segments / compile_send_url_segments helpers and by
-//       the CI smoke compile (tests/test_app/).
+// Tests for the frame.client plugin's DSL parser and URL helpers
+// (plugin-internal). scripts/test-plugins.sh combines this file with
+// src/main.cln and runs it, so the functions below call the plugin's own
+// string-level helpers directly; a failed assert() stops the run. The typed
+// emitters (expand_*_typed) need the compiler's emission context and are
+// covered by tests/framework/unit/plugins/client/.
 
 start:
 	// ---- parse_load_decl ----
@@ -49,11 +38,6 @@ start:
 	test_parse_send_url()
 
 functions:
-	// Minimal assert helper — prints a failure message if condition is false.
-	void assert(boolean condition)
-		if condition == false
-			print("FAIL")
-
 	// ======== parse_load_decl tests ========
 
 	void test_parse_decl_basic()
