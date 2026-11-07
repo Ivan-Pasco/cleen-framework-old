@@ -24,7 +24,6 @@ external:
 	integer _batch_intLit(integer ctx, integer value_lo, integer value_hi)
 	integer _batch_call(integer ctx, string callee, integer args_array_handle)
 	integer _batch_binop(integer ctx, string op, integer lhs_handle, integer rhs_handle)
-	integer _batch_methodCall(integer ctx, integer receiver_handle, string method, integer args_array_handle)
 	// Statement builders (§3.14)
 	integer _batch_stmtAssign(integer ctx, string target, integer expr_handle)
 	// Real let-declaration; required for the first introduction of a local
@@ -494,24 +493,6 @@ functions:
 			return 0
 		return _batch_call(ctx, callee, args)
 
-	// Statement: _session_store(<sid_ident>, "", <data_ident>, 0, 0) — stores
-	// the whole session blob (empty key) under the session id.
-	integer session_store_stmt(integer ctx, string sid_ident, string data_ident)
-		integer args = _batch_arrayNew(ctx)
-		if args == 0
-			return 0
-		if _batch_arrayPush(ctx, args, _batch_ident(ctx, sid_ident)) != 0
-			return 0
-		if _batch_arrayPush(ctx, args, _batch_stringLit(ctx, "")) != 0
-			return 0
-		if _batch_arrayPush(ctx, args, _batch_ident(ctx, data_ident)) != 0
-			return 0
-		if _batch_arrayPush(ctx, args, _batch_intLit(ctx, 0, 0)) != 0
-			return 0
-		if _batch_arrayPush(ctx, args, _batch_intLit(ctx, 0, 0)) != 0
-			return 0
-		return _batch_stmtCall(ctx, "_session_store", args)
-
 	// stmtReturn an ident
 	integer ret_ident(integer ctx, string name)
 		integer e = _batch_ident(ctx, name)
@@ -570,16 +551,6 @@ functions:
 			return 0
 		return _batch_binop(ctx, "!=", l, r)
 
-	// Multiply: ident * int_lit
-	integer mul_ident_int(integer ctx, string ident_name, integer int_val)
-		integer l = _batch_ident(ctx, ident_name)
-		if l == 0
-			return 0
-		integer r = _batch_intLit(ctx, int_val, 0)
-		if r == 0
-			return 0
-		return _batch_binop(ctx, "*", l, r)
-
 	// Add: expr + expr (both already built handles)
 	integer add_exprs(integer ctx, integer lhs_h, integer rhs_h)
 		return _batch_binop(ctx, "+", lhs_h, rhs_h)
@@ -599,139 +570,23 @@ functions:
 			return 0
 		return arr
 
-	// Build a two-stmt body array
-	integer body2(integer ctx, integer s1, integer s2)
-		integer arr = _batch_arrayNew(ctx)
-		if arr == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, arr, s1)
-		if p1 != 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, arr, s2)
-		if p2 != 0
-			return 0
-		return arr
-
 // ============================================================================
-// PER-HELPER FACTORY FUNCTIONS (18 factories)
+// PER-HELPER FACTORY FUNCTIONS
 // ============================================================================
 
 functions:
 	// 1. session_create(userId: integer, claims: string) -> string
-	// Equivalent to v1 session_create body.
+	// Stores {"userId":..,"claims":..} under a new random session id. The
+	// blob has no expiry: timeoutMinutes is an inactivity timeout (AUTH-S008)
+	// that the host session store enforces from the last request that used
+	// the session, not from creation.
 	integer build_session_create(integer ctx)
-		integer params = two_params(ctx, "userId", "integer", "claims", "string")
-		if params == 0
-			return 0
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// string sessionId = _crypto_random_hex(32)
-		integer rnd_e = call1_int(ctx, "_crypto_random_hex", 32)
-		if rnd_e == 0
-			return 0
-		integer s1 = _batch_stmtVarDecl(ctx, "sessionId", "string", rnd_e)
-		if s1 == 0
-			return 0
-		integer p1 = _batch_arrayPush(ctx, body_arr, s1)
-		if p1 != 0
-			return 0
-
-		// integer expiry = _time_now() + (__session_timeout * 60)
-		integer tn_e = call0(ctx, "_time_now")
-		if tn_e == 0
-			return 0
-		integer mul_e = mul_ident_int(ctx, "__session_timeout", 60)
-		if mul_e == 0
-			return 0
-		integer add_e = add_exprs(ctx, tn_e, mul_e)
-		if add_e == 0
-			return 0
-		integer s2 = _batch_stmtVarDecl(ctx, "expiry", "integer", add_e)
-		if s2 == 0
-			return 0
-		integer p2 = _batch_arrayPush(ctx, body_arr, s2)
-		if p2 != 0
-			return 0
-
-		// string sessionData = __auth_build_session_json(userId, claims, expiry)
-		// (the JSON is assembled at run time by the generated helper).
-		integer bsj_e = _batch_ident(ctx, "userId")
-		if bsj_e == 0
-			return 0
-		integer claims_e = _batch_ident(ctx, "claims")
-		if claims_e == 0
-			return 0
-		integer expiry_e = _batch_ident(ctx, "expiry")
-		if expiry_e == 0
-			return 0
-		integer bsj_args = _batch_arrayNew(ctx)
-		if bsj_args == 0
-			return 0
-		integer bp1 = _batch_arrayPush(ctx, bsj_args, bsj_e)
-		if bp1 != 0
-			return 0
-		integer bp2 = _batch_arrayPush(ctx, bsj_args, claims_e)
-		if bp2 != 0
-			return 0
-		integer bp3 = _batch_arrayPush(ctx, bsj_args, expiry_e)
-		if bp3 != 0
-			return 0
-		integer build_json_call = _batch_call(ctx, "__auth_build_session_json", bsj_args)
-		if build_json_call == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "sessionData", "string", build_json_call)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// _session_store(sessionId, "", sessionData, 0, 0)
-		integer store_stmt = session_store_stmt(ctx, "sessionId", "sessionData")
-		if store_stmt == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, store_stmt)
-		if p4 != 0
-			return 0
-
-		// if __csrf_enabled { _session_set_csrf(_crypto_random_hex(32)) }
-		integer csrf_cond = _batch_ident(ctx, "__csrf_enabled")
-		if csrf_cond == 0
-			return 0
-		integer rnd32_e = call1_int(ctx, "_crypto_random_hex", 32)
-		if rnd32_e == 0
-			return 0
-		integer csrf_args = _batch_arrayNew(ctx)
-		if csrf_args == 0
-			return 0
-		integer csrf_push = _batch_arrayPush(ctx, csrf_args, rnd32_e)
-		if csrf_push != 0
-			return 0
-		integer csrf_call_stmt = _batch_stmtCall(ctx, "_session_set_csrf", csrf_args)
-		if csrf_call_stmt == 0
-			return 0
-		integer csrf_then = body1(ctx, csrf_call_stmt)
-		if csrf_then == 0
-			return 0
-		integer csrf_if = if_no_else(ctx, csrf_cond, csrf_then)
-		if csrf_if == 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, body_arr, csrf_if)
-		if p5 != 0
-			return 0
-
-		// return sessionId
-		integer ret_s = ret_ident(ctx, "sessionId")
-		if ret_s == 0
-			return 0
-		integer p6 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p6 != 0
-			return 0
-
-		return _batch_func(ctx, "session_create", params, "string", body_arr)
+		string src = "string sessionId = _crypto_random_hex(32)\n"
+		src = src + "string sessionData = __auth_build_session_json(userId, claims)\n"
+		src = src + "_session_store(sessionId, \"\", sessionData, 0, 0)\n"
+		src = src + "if __csrf_enabled\n\t_session_set_csrf(_crypto_random_hex(32))\n"
+		src = src + "return sessionId\n"
+		return source_helper(ctx, "session_create", "userId:integer,claims:string", "string", src)
 
 	// 2. session_setCookie(sessionId: string, response: string) -> string
 	integer build_session_set_cookie(integer ctx)
@@ -789,121 +644,12 @@ functions:
 
 		return _batch_func(ctx, "session_setCookie", params, "string", body_arr)
 
-	// 3. session_get() -> string
+	// 3. session_get() -> string — the current session's data, "" without
+	// one. The host resolves the session (one created earlier in this
+	// request, or the request cookie) and drops sessions idle for longer
+	// than timeoutMinutes.
 	integer build_session_get(integer ctx)
-		integer params = no_params(ctx)
-		if params == 0
-			return 0
-
-		integer body_arr = _batch_arrayNew(ctx)
-		if body_arr == 0
-			return 0
-
-		// The host resolves the current session itself — from a session
-		// established earlier in this request (auth.setSession /
-		// session_create) or from the request cookie — so no cookie
-		// pre-check here: it would hide a session created in this request.
-		// string data = _session_get()
-		integer sg_e = call0(ctx, "_session_get")
-		if sg_e == 0
-			return 0
-		integer s3 = _batch_stmtVarDecl(ctx, "data", "string", sg_e)
-		if s3 == 0
-			return 0
-		integer p3 = _batch_arrayPush(ctx, body_arr, s3)
-		if p3 != 0
-			return 0
-
-		// if data == "" { return "" }
-		integer cond2 = eq_ident_str(ctx, "data", "")
-		if cond2 == 0
-			return 0
-		integer ret_es2 = ret_empty_str(ctx)
-		if ret_es2 == 0
-			return 0
-		integer then2 = body1(ctx, ret_es2)
-		if then2 == 0
-			return 0
-		integer if2 = if_no_else(ctx, cond2, then2)
-		if if2 == 0
-			return 0
-		integer p4 = _batch_arrayPush(ctx, body_arr, if2)
-		if p4 != 0
-			return 0
-
-		// Expiry check: string expiry_str = _json_get(data, "expiry")
-		integer jg_e = call2_ident_str(ctx, "_json_get", "data", "expiry")
-		if jg_e == 0
-			return 0
-		integer s5 = _batch_stmtVarDecl(ctx, "expiry_str", "string", jg_e)
-		if s5 == 0
-			return 0
-		integer p5 = _batch_arrayPush(ctx, body_arr, s5)
-		if p5 != 0
-			return 0
-
-		// if expiry_str != "" { integer expiry = expiry_str.toInteger(); if _time_now() > expiry { _session_delete(); return "" } }
-		integer cond3 = ne_ident_str(ctx, "expiry_str", "")
-		if cond3 == 0
-			return 0
-
-		integer expiry_e = _batch_methodCall(ctx, _batch_ident(ctx, "expiry_str"), "toInteger", 0)
-		if expiry_e == 0
-			return 0
-		integer s_expiry = _batch_stmtVarDecl(ctx, "expiry", "integer", expiry_e)
-		if s_expiry == 0
-			return 0
-
-		integer tn_e = call0(ctx, "_time_now")
-		if tn_e == 0
-			return 0
-		integer exp_ident = _batch_ident(ctx, "expiry")
-		if exp_ident == 0
-			return 0
-		integer expired_cond = _batch_binop(ctx, ">", tn_e, exp_ident)
-		if expired_cond == 0
-			return 0
-		integer del_args = _batch_arrayNew(ctx)
-		if del_args == 0
-			return 0
-		integer del_stmt = _batch_stmtCall(ctx, "_session_delete", del_args)
-		if del_stmt == 0
-			return 0
-		integer ret_es3 = ret_empty_str(ctx)
-		if ret_es3 == 0
-			return 0
-		integer inner_then = body2(ctx, del_stmt, ret_es3)
-		if inner_then == 0
-			return 0
-		integer inner_if = if_no_else(ctx, expired_cond, inner_then)
-		if inner_if == 0
-			return 0
-
-		integer outer_then_arr = _batch_arrayNew(ctx)
-		if outer_then_arr == 0
-			return 0
-		integer op1 = _batch_arrayPush(ctx, outer_then_arr, s_expiry)
-		if op1 != 0
-			return 0
-		integer op2 = _batch_arrayPush(ctx, outer_then_arr, inner_if)
-		if op2 != 0
-			return 0
-		integer outer_if = if_no_else(ctx, cond3, outer_then_arr)
-		if outer_if == 0
-			return 0
-		integer p6 = _batch_arrayPush(ctx, body_arr, outer_if)
-		if p6 != 0
-			return 0
-
-		// return data
-		integer ret_s = ret_ident(ctx, "data")
-		if ret_s == 0
-			return 0
-		integer p7 = _batch_arrayPush(ctx, body_arr, ret_s)
-		if p7 != 0
-			return 0
-
-		return _batch_func(ctx, "session_get", params, "string", body_arr)
+		return source_helper(ctx, "session_get", "", "string", "return _session_get()\n")
 
 	// 4. session_destroy() -> boolean
 	integer build_session_destroy(integer ctx)
@@ -1074,17 +820,11 @@ functions:
 			return 0
 		return _batch_func2(ctx, name, params, return_type, 0, body_h)
 
-	// __auth_build_session_json(userId, claims, expiry) -> string
-	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + ",\"expiry\":" + expiry.toString() + "}"
+	// __auth_build_session_json(userId, claims) -> string
+	//   return "{\"userId\":" + userId.toString() + ",\"claims\":" + claims + "}"
 	integer build_session_json_helper(integer ctx)
-		integer params = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "userId", "integer"))
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "claims", "string"))
-		_batch_arrayPush(ctx, params, _batch_param(ctx, "expiry", "integer"))
-		integer ret_h = _emit_stmt_from_source(ctx, "return \"{\\\"userId\\\":\" + userId.toString() + \",\\\"claims\\\":\" + claims + \",\\\"expiry\\\":\" + expiry.toString() + \"}\"", 0)
-		if ret_h == 0 or _ctx_had_error(ctx) != 0
-			return 0
-		return _batch_func2(ctx, "__auth_build_session_json", params, "string", 0, ret_h)
+		string src = "return \"{\\\"userId\\\":\" + userId.toString() + \",\\\"claims\\\":\" + claims + \"}\"\n"
+		return source_helper(ctx, "__auth_build_session_json", "userId:integer,claims:string", "string", src)
 
 	// __auth_build_cookie_header(sessionId) -> string — the Set-Cookie value
 	// for a new session, built from the auth: session configuration.

@@ -1,0 +1,40 @@
+// Test: frame.auth — timeoutMinutes is an inactivity timeout, not an
+// absolute expiry.
+// Semantic: AUTH-S008, AUTH-D003
+// Regression: auth.session.create stored an absolute `expiry` (creation time
+// + timeoutMinutes) in the session blob, and both session_get and the host
+// rejected the session once it passed, however recently it was used. The
+// blob now carries no expiry; the host session store drops a session only
+// after timeoutMinutes without a request (its last-access clock is reset on
+// every use).
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+endpoints:
+	GET "/test":
+		string sid = auth.session.create(42, "{\"role\":\"user\"}")
+		boolean ok_created = sid.length() > 0
+
+		string data = auth.session.get()
+		boolean ok_data = data.contains("\"userId\":42") and data.contains("\"role\":\"user\"")
+		boolean ok_no_absolute_expiry = not data.contains("expiry")
+		boolean ok_authenticated = auth.isAuthenticated()
+
+		if ok_created and ok_data and ok_no_absolute_expiry and ok_authenticated
+			printl("PASS: auth-session-inactivity-timeout")
+		else
+			printl("FAIL: auth-session-inactivity-timeout created=" + ok_created.toString() + " data=" + ok_data.toString() + " no_expiry=" + ok_no_absolute_expiry.toString() + " auth=" + ok_authenticated.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] auth-session-inactivity-timeout server ready")
