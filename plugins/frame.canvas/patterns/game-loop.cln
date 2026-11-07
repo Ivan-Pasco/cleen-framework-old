@@ -34,6 +34,17 @@ canvasScene: width=800 height=600 fps=60
 		number jump_force = -400.0
 		boolean on_ground = true
 
+	draw:
+		on layer "background":
+			canvas.rect x=0 y=0 width=800 height=600 color="#1a1a2e"
+			canvas.rect x=0 y=520 width=800 height=80 color="#2d5a27"
+
+		on layer "entities":
+			canvas.image src="player" x=playerX y=playerY width=48 height=64
+
+		on layer "hud":
+			canvas.text value="x=" + playerX.toInteger().toString() + " y=" + playerY.toInteger().toString() x=10 y=20 size=14 color="white"
+
 	onFrame: param="dt"
 		// dt is the onFrame param= delta time in seconds (e.g. 0.016 at 60fps, 0.033 at 30fps)
 		// Multiplying by dt makes movement frame-rate-independent
@@ -63,14 +74,3 @@ canvasScene: width=800 height=600 fps=60
 			playerY = 500.0
 			velY = 0.0
 			on_ground = true
-
-		// Draw
-		on layer "background":
-			canvas.rect x=0 y=0 width=800 height=600 color="#1a1a2e"
-			canvas.rect x=0 y=520 width=800 height=80 color="#2d5a27"
-
-		on layer "entities":
-			canvas.image src="player" x=playerX y=playerY width=48 height=64
-
-		on layer "hud":
-			canvas.text value="x={playerX.toInteger()} y={playerY.toInteger()}" x=10 y=20 size=14 color="white"
