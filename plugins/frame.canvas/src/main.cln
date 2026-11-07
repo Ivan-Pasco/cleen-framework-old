@@ -459,7 +459,7 @@ functions:
 				boolean at_start = at == 0
 				if at > 0
 					string prev_char = ia.substring(at - 1, at)
-					at_start = prev_char == " " or prev_char == "\t"
+					at_start = (prev_char == " " or prev_char == "\t") and inside_string_literal(ia, at) == false
 				integer after_pos = at + pat.length()
 				boolean is_compare = false
 				if after_pos < ia.length()
@@ -490,6 +490,20 @@ functions:
 				i = ia.length()
 			i = i + 1
 		return ia.substring(vs, ve2).trim()
+
+	// True when offset `pos` of `s` lies inside a double-quoted string
+	// literal (so `" y="` in a text value is not the y= attribute).
+	boolean inside_string_literal(string s, integer pos)
+		boolean inside = false
+		integer i = 0
+		while i < pos
+			string c = s.substring(i, i + 1)
+			if c == "\\" and inside
+				i = i + 1
+			else if c == "\""
+				inside = inside == false
+			i = i + 1
+		return inside
 
 	// True when an attribute `name=` (not `name==`) starts at `pos` in `ia`.
 	boolean iexpr_attr_starts(string ia, integer pos)

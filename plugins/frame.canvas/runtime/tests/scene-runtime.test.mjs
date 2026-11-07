@@ -211,6 +211,8 @@ check(vars.get('heroX') === 140, `onFrame: heroX += heroVX * dt (got ${vars.get(
 check(bridge.namedAnimStates.get('heroFSM').current === 'attack', 'animState `when` transition evaluated each frame');
 check(bridge.cameraFollowX === 140, 'camera target re-evaluated each frame');
 check(drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Key: q'), 'input.lastKey is the last key pressed (a string)');
+check(drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'x=3 y=3' && a[1] === 10 && a[2] === 60),
+  'an `x=` / ` y=` inside a string literal is text, not an attribute');
 check(drawCalls.some(([k]) => k === 'fillRect') && drawCalls.some(([k, a]) => k === 'fillText' && a[0] === 'Lives: 3'), 'draw: ran with state values (text value= is an expression)');
 // canvas.sprite anchorX / anchorY (CVS-C006): x, y name the point at
 // (anchorX, anchorY) of the 48x64 frame; with a transform it is the pivot.
