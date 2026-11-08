@@ -54,9 +54,55 @@ route: method="GET" path="/users/:id"
     return getUserById(id)
 ```
 
+#### Route sub-blocks
+
+Instead of (or as well as) the inline `[roles] cache() middleware()`
+modifiers, a route can hold sub-blocks; its statements then go in `handle:`
+(frame-server.ebnf §3.4, frame-server-semantics.md SRV-B014 / SRV-B015):
+
+```clean
+endpoints:
+    GET "/api/reports":
+        guard:
+            role in ["admin", "analyst"]
+            auth.can(auth.getCurrentUser(), "report.read")
+        cache: "5m"
+        middleware: [RateLimit]
+        returns: Report
+        handle:
+            return json(buildReport())
+```
+
+- `guard:` — one clause per line (or one on the `guard:` line), all must
+  hold: `role in ["a", "b"]`, `role == "a"`, `authenticated`, or any boolean
+  expression. A failing clause answers 401 and the handler does not run.
+- `cache:` — the same values as `cache()`. Declaring both is an error.
+- `middleware: [A, B]` — runs after the inline `middleware()` list.
+- `returns:` — the response type, for documentation only.
+
+With both forms on one route, the request passes through: `server:
+middleware:`, the inline `[roles]`, the `guard:` clauses, the cache, the
+inline `middleware()` list, the `middleware:` list, then the handler.
+
 ### middleware
 
-Adds middleware to the request chain.
+A middleware is either a zero-argument function returning `string` (`""` to
+continue, a response to end the request), or a declaration:
+
+```clean
+middleware RateLimit
+    functions:
+        Request handle(Request req)
+            if tooMany(req.ip)
+                req.response = httpError(429, "Too many requests")
+            return req
+```
+
+`handle` receives the request being handled as a `Request` (`method`,
+`path`, `ip`, `headers`, `body`, `params`, `query`, `auth`) and returns it;
+setting `req.response` ends the request with that response. Use either kind
+by name in `middleware()`, `middleware:` or `server: middleware: [...]` (every
+route). See frame-server-semantics.md SRV-B007..SRV-B009.
 
 ## Bridge Functions
 

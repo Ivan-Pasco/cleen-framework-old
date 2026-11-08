@@ -1,0 +1,48 @@
+// Test: frame.server — `middleware Name` declarations (Request handle(Request req)).
+// Grammar: frame-server.ebnf §7 middleware_declaration, §3.4 middleware_sub_block
+// Semantic: SRV-B007 — handle() receives the request being handled as a
+// Request and returns it; setting req.response ends the request with that
+// response, so later middleware and the handler do not run.
+// Inspect checks the Request it is given and passes the request on; Deny
+// ends it; Never (a zero-argument middleware) and the handler must not run.
+
+plugins:
+	frame.server
+
+server:
+	port: 3400
+
+middleware Inspect
+	functions:
+		Request handle(Request req)
+			RequestAuth who = req.auth
+			if req.method != "GET" or req.path != "/test" or req.query.page != "" or who.loggedIn or who.userId != "" or req.response != ""
+				printl("FAIL: server-middleware-declaration (unexpected Request: method=" + req.method + " path=" + req.path + " page=" + req.query.page.toString() + " loggedIn=" + who.loggedIn.toString() + ")")
+			else
+				printl("[mw] Inspect saw GET /test")
+			return req
+
+middleware Deny
+	functions:
+		Request handle(Request req)
+			req.response = httpError(429, "slow down")
+			if req.response.contains("\"code\":\"HTTP_ERROR\"") and req.response.contains("slow down")
+				printl("PASS: server-middleware-declaration")
+			else
+				printl("FAIL: server-middleware-declaration (unexpected envelope: " + req.response + ")")
+			return req
+
+endpoints:
+	GET "/test":
+		middleware: [Inspect, Deny, Never]
+		handle:
+			printl("FAIL: server-middleware-declaration (handler ran after Deny ended the request)")
+			return json({ok: true})
+
+start:
+	printl("[boot] server-middleware-declaration server ready")
+
+functions:
+	string Never()
+		printl("FAIL: server-middleware-declaration (middleware after Deny ran)")
+		return ""

@@ -294,6 +294,9 @@ keywords = [
   { name = "DELETE", description = "HTTP DELETE endpoint", context = "block" },
   { name = "cache", description = "Cache hint modifier: cache(seconds) or cache(\"5m\"|\"2h\"|\"1d\"|\"no-store\"|\"no-cache\")", context = "route_header" },
   { name = "middleware", description = "Middleware definition block", context = "block" },
+  { name = "guard", description = "Route sub-block: clauses checked before the handler (role in [...], role == \"x\", authenticated, or a boolean expression); a failing clause answers 401", context = "endpoints" },
+  { name = "handle", description = "Route sub-block holding the handler statements when the route declares sub-blocks", context = "endpoints" },
+  { name = "returns", description = "Route sub-block naming the response type (documentation only)", context = "endpoints" },
   { name = "body", description = "Request body parameter declaration", context = "block" },
   { name = "params", description = "Route parameter declaration", context = "block" },
   { name = "port", description = "Server port configuration", context = "config" },
@@ -308,7 +311,7 @@ keywords = [
 # Custom types provided by the plugin
 types = [
   { name = "RequestAuth", description = "Authentication context attached to a Request", fields = [{name="loggedIn", type="boolean", description="True when a valid session or JWT is present"}, {name="userId", type="string", description="Authenticated user ID (empty when not logged in)"}, {name="role", type="string", description="Primary role of the authenticated user"}, {name="roles", type="string", description="JSON array of all roles held by the user"}] },
-  { name = "Request", description = "HTTP request context — available as a parameter in guard/load functions and endpoint handlers", fields = [{name="auth", type="RequestAuth", description="Authentication context (loggedIn, userId, role, roles)"}, {name="query", type="any", description="Query-string parameters object"}, {name="body", type="any", description="Parsed request body (JSON object or raw string)"}, {name="params", type="any", description="URL path parameters object"}, {name="headers", type="any", description="Request headers object"}, {name="method", type="string", description="HTTP method (GET, POST, etc.)"}, {name="path", type="string", description="Request URL path"}, {name="ip", type="string", description="Client IP address"}] },
+  { name = "Request", description = "HTTP request context — available as a parameter in guard/load functions and endpoint handlers", fields = [{name="auth", type="RequestAuth", description="Authentication context (loggedIn, userId, role, roles)"}, {name="query", type="any", description="Query-string parameters object"}, {name="body", type="any", description="Parsed request body (JSON object or raw string)"}, {name="params", type="any", description="URL path parameters object"}, {name="headers", type="any", description="Request headers object"}, {name="method", type="string", description="HTTP method (GET, POST, etc.)"}, {name="path", type="string", description="Request URL path"}, {name="ip", type="string", description="Client IP address"}, {name="response", type="string", description="Set by a middleware's handle() to end the request: the response to send (for example httpError(429, \"slow down\")); empty to let the request continue"}] },
   { name = "Response", description = "HTTP response object" },
 ]
 

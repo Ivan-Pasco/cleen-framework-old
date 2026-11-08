@@ -1,0 +1,36 @@
+// Test: frame.server — global middleware (server: middleware: [...]).
+// Grammar: frame-server.ebnf §1 middleware_field
+// Semantic: SRV-B008 (global middleware applies to every route), SRV-B014
+// (it runs first, before the route's [roles] guard).
+// /test requires [admin] and the runner's request has no session, so the
+// guard would answer 401 — Gate must run before it, end the request, and the
+// handler must never run.
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+	middleware: [Gate]
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+roles:
+	admin: ["*"]
+
+endpoints:
+	GET "/test" [admin]:
+		printl("FAIL: server-middleware-global (handler ran)")
+		return json({ok: true})
+
+start:
+	printl("[boot] server-middleware-global server ready")
+
+functions:
+	string Gate()
+		printl("PASS: server-middleware-global")
+		return httpError(503, "maintenance")

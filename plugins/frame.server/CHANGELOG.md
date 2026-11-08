@@ -4,6 +4,12 @@ Extracted from plugin.toml description on 2026-07-19. Each entry below was previ
 
 > Intro (pre-versioned): Server plugin for Clean Language - provides routing, request context, response helpers, and authentication guards.
 
+## Unreleased
+
+- Route sub-blocks (frame-server.ebnf §3.4): `guard:` (`role in [...]`, `role == "..."`, `authenticated`, boolean expressions; a failing clause answers 401), `cache:`, `middleware: [...]`, `returns:` and `handle:`. The inline `[roles] cache() middleware()` form keeps working and can be combined with them (order: SRV-B014).
+- `middleware Name` declarations (`Request handle(Request req)`) are compiled: the plugin emits the handler and a `Name()` that every middleware list can call; setting `req.response` ends the request. The `Request` type gains the `response` field. Before, the declaration was dropped.
+- `server: middleware: [A, B]` runs middleware for every `endpoints:` route, before its guard.
+
 ## v2.9.9
 
 - plugin.toml: the legacy `_json_encode` / `_json_decode` bridges are no longer declared. `json.*` lowers to `_json_encode_v2` / `_json_encode_pretty_v2` / `_json_decode_v2` / `_json_get`, so nothing emits the legacy pair, and the `_json_encode` declaration (`params = ["string"]`, a ptr+len string) differed from function-registry.toml (`params = ["any"]`). clean-server keeps implementing both for modules built before Delivery 2. Every [bridge] declaration now matches the registry (`scripts/check-bridge-registry.py`).

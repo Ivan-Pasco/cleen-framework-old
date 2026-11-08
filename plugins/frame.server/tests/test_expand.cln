@@ -4,7 +4,9 @@
 // (expand_block_typed) calls compiler-provided typed-emission bridges and is
 // exercised end to end by tests/framework/unit/plugins/server/.
 // Grammar: frame-server.ebnf §2 route_declaration, §3.1 guard_inline,
-//          §3.2 cache_modifier, §3.3 middleware_modifier, §10.1 redirect_rule
+//          §3.2 cache_modifier, §3.3 middleware_modifier, §3.4 route
+//          sub-blocks, §7 middleware_declaration, §10.1 redirect_rule
+// Semantic: frame-server-semantics.md SRV-B007, SRV-B014, SRV-B015, SRV-C007
 
 start:
 	test_route_header_scanning()
@@ -12,6 +14,9 @@ start:
 	test_validation()
 	test_return_wrapping()
 	test_reindent()
+	test_sub_block_parsing()
+	test_sub_block_validation()
+	test_middleware_declaration()
 
 functions:
 	void test_route_header_scanning()
@@ -68,3 +73,59 @@ functions:
 	void test_reindent()
 		assert(reindent_block("\t\t// note\n\t\tstring a = \"x\"\n\t\t\tprintl(a)\n") == "string a = \"x\"\n\tprintl(a)\n")
 		assert(reindent_block("\t\t// only a comment\n") == "")
+
+	void test_sub_block_parsing()
+		string region = "\n\t\tguard:\n\t\t\trole in [\"admin\", \"editor\"]\n\t\t\tauthenticated // signed in\n\t\tcache: \"5m\" // five minutes\n\t\tmiddleware: [RateLimit, Audit]\n\t\treturns: User\n\t\thandle:\n\t\t\tstring who = \"x\"\n\t\t\treturn json(who)\n"
+		assert(route_has_sub_blocks(region))
+		assert(route_has_sub_blocks("\n\t\tstring cache = \"x\"\n\t\treturn cache\n") == false)
+		assert(route_has_sub_blocks("\n\t\tstring handler = \"x\"\n\t\treturn handler\n") == false)
+		assert(route_sub_inline(region, "cache") == "\"5m\"")
+		assert(route_sub_inline(region, "returns") == "User")
+		assert(route_sub_middleware(region) == "RateLimit,Audit")
+		assert(reindent_block(route_sub_body(region, "handle")) == "string who = \"x\"\nreturn json(who)\n")
+		list<string> clauses = route_guard_clauses(region)
+		assert(clauses.length() == 2)
+		assert(clauses[0] == "role in [\"admin\", \"editor\"]")
+		assert(clauses[1] == "authenticated")
+		assert(route_guard_clauses("\n\t\tguard: role == \"admin\"\n\t\thandle:\n\t\t\treturn \"x\"\n")[0] == "role == \"admin\"")
+		assert(guard_clause_kind("role in [\"admin\", \"editor\"]") == "roles")
+		assert(guard_clause_roles("role in [\"admin\", \"editor\"]") == "admin,editor")
+		assert(guard_clause_kind("role == \"admin\"") == "roles")
+		assert(guard_clause_roles("role == \"admin\"") == "admin")
+		assert(guard_clause_kind("authenticated") == "auth")
+		assert(guard_clause_kind("roleAllowed()") == "expr")
+		assert(guard_clause_kind("auth.hasRole(\"editor\")") == "expr")
+		assert(guard_clause_roles("role in [admin]") == "")
+		assert(strip_line_comment("cache: 300 // seconds") == "cache: 300")
+		assert(strip_line_comment("x == \"a//b\"") == "x == \"a//b\"")
+
+	void test_sub_block_validation()
+		string ok = "\tGET \"/a\" [admin] middleware(First):\n\t\tguard: role == \"editor\"\n\t\tmiddleware: [Second]\n\t\thandle:\n\t\t\treturn \"a\"\n"
+		assert(validate_block("endpoints", "{}", ok) == "")
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tguard: authenticated\n\t\treturn \"a\"\n").contains("outside handle:"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tguard: authenticated\n").contains("needs a handle: block"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\thandle:\n\t\t\treturn \"a\"\n\t\thandle:\n\t\t\treturn \"b\"\n").contains("more than once"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\" cache(60):\n\t\tcache: 30\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("declared twice"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tcache: \"soon\"\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("invalid cache:"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tmiddleware: RateLimit\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("list of middleware names"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tguard: role in [admin]\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("role names in quotes"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\tguard:\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("guard: is empty"))
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\treturns:\n\t\thandle:\n\t\t\treturn \"a\"\n").contains("returns: takes"))
+		assert(validate_block("endpoints", "{}", "\tLIVE \"/ws\":\n\t\tguard: authenticated\n\t\thandle:\n\t\t\tws.send(1, \"x\")\n").contains("LIVE route takes no sub-blocks"))
+		// A second route's sub-blocks are checked too.
+		assert(validate_block("endpoints", "{}", "\tGET \"/a\":\n\t\treturn \"a\"\n\tGET \"/b\":\n\t\tguard: authenticated\n").contains("GET \"/b\""))
+
+	void test_middleware_declaration()
+		string body = "\tfunctions:\n\t\tRequest handle(Request req)\n\t\t\tif req.params.id == \"0\" or req.query.page == \"x\"\n\t\t\t\treq.response = httpError(400, \"bad\")\n\t\t\treturn req\n"
+		assert(attrs_model_name("{\"model_name\":\"RateLimit\"}") == "RateLimit")
+		assert(validate_block("middleware", "{\"model_name\":\"RateLimit\"}", body) == "")
+		assert(middleware_handle_param("Request handle(Request req)") == "req")
+		assert(middleware_handle_param("Request  handle ( Request r )") == "r")
+		assert(middleware_handle_param("string handle(Request req)") == "")
+		assert(middleware_read_names(body, "req", "params") == "id")
+		assert(middleware_read_names(body, "req", "query") == "page")
+		assert(middleware_read_names("myreq.params.x", "req", "params") == "")
+		assert(validate_block("middleware", "{}", body).contains("needs a name"))
+		assert(validate_block("middleware", "{\"model_name\":\"M\"}", "\tfunctions:\n\t\tRequest handle(Request req)\n\t\t\treturn req\n\t\tstring helper()\n\t\t\treturn \"\"\n").contains("exactly one function"))
+		assert(validate_block("middleware", "{\"model_name\":\"M\"}", "\tfunctions:\n\t\tvoid handle()\n\t\t\treturn\n").contains("exactly one function"))
+		assert(validate_block("middleware", "{\"model_name\":\"M\"}", "\tstring x = \"1\"\n").contains("functions: block"))

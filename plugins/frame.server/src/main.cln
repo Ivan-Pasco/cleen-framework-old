@@ -1,6 +1,8 @@
 // frame.server plugin - HTTP Server DSL
-// Provides: endpoints block with inline route modifiers [guard] cache() middleware(),
-// server: configuration, routes: redirects/guards, response helpers.
+// Provides: endpoints block with inline route modifiers [guard] cache() middleware()
+// and route sub-blocks guard: / cache: / middleware: / returns: / handle:,
+// middleware declarations, server: configuration, routes: redirects/guards,
+// response helpers.
 // Spec: foundation/spec/framework/grammar/frame-server.ebnf,
 //       foundation/spec/framework/frame-server-semantics.md
 // ABI: Plugin Contracts v3 — typed AST emission (typed-emission.md)
@@ -12,7 +14,7 @@
 //
 // These are env imports provided by the compiler's typed-emission sandbox only.
 // They MUST NOT appear in plugin.toml [bridge].functions — they are sandbox-internal.
-// Count: 22 bridges
+// Count: 23 bridges
 
 external:
 	// Statement constructors (typed-emission.md §3.8)
@@ -42,6 +44,8 @@ external:
 	integer _type_integer(integer ctx)
 	integer _type_boolean(integer ctx)
 	integer _type_void(integer ctx)
+	// A named class (the plugin's Request type), resolved during type-check.
+	integer _type_class_ref(integer ctx, string name)
 	// Declaration emitters (typed-emission.md §3.1–3.7)
 	integer _emit_function(integer ctx, string name, string params_json, integer return_type, integer body_stmt, integer flags)
 	integer _emit_statement_into_start(integer ctx, integer stmt_handle)
@@ -307,7 +311,8 @@ functions:
 			return expand_server_typed(ctx, body)
 		if block_name == "routes"
 			return expand_routes_typed(ctx, body)
-		// middleware and error blocks: no expansion needed
+		if block_name == "middleware"
+			return expand_middleware_typed(ctx, attrs_json, body)
 		return 0
 
 // ============================================================================
@@ -316,7 +321,7 @@ functions:
 
 functions:
 	string get_keywords()
-		return "[\"endpoints\", \"routes\", \"cache\", \"handle\", \"jsonResponse\", \"htmlResponse\", \"redirect\", \"redirectTo\", \"notFound\", \"notFoundMsg\", \"badRequest\", \"unauthorized\", \"forbidden\", \"httpStatus\", \"status\", \"httpHeader\", \"httpError\", \"middleware\", \"param\", \"body\", \"header\", \"method\", \"mail\", \"resDownload\", \"emailSend\", \"emailSendFrom\", \"emailLastError\", \"res.download\", \"email.send\", \"email.sendFrom\", \"email.lastError\", \"LIVE\", \"FEED\", \"live.send\", \"live.broadcast\", \"live.close\", \"live.clientId\", \"live.message\", \"live.roomJoin\", \"live.roomLeave\", \"live.roomBroadcast\", \"live.onMessage\", \"live.onClose\", \"jsonResponseStatus\", \"redirectToStatus\"]"
+		return "[\"endpoints\", \"routes\", \"cache\", \"handle\", \"guard\", \"returns\", \"authenticated\", \"jsonResponse\", \"htmlResponse\", \"redirect\", \"redirectTo\", \"notFound\", \"notFoundMsg\", \"badRequest\", \"unauthorized\", \"forbidden\", \"httpStatus\", \"status\", \"httpHeader\", \"httpError\", \"middleware\", \"param\", \"body\", \"header\", \"method\", \"mail\", \"resDownload\", \"emailSend\", \"emailSendFrom\", \"emailLastError\", \"res.download\", \"email.send\", \"email.sendFrom\", \"email.lastError\", \"LIVE\", \"FEED\", \"live.send\", \"live.broadcast\", \"live.close\", \"live.clientId\", \"live.message\", \"live.roomJoin\", \"live.roomLeave\", \"live.roomBroadcast\", \"live.onMessage\", \"live.onClose\", \"jsonResponseStatus\", \"redirectToStatus\"]"
 
 // ============================================================================
 // VALIDATION EXPORT (not a lifecycle slot)
@@ -328,6 +333,8 @@ functions:
 			return validate_endpoints(body)
 		if block_name == "routes"
 			return validate_routes(body)
+		if block_name == "middleware"
+			return validate_middleware(attrs_model_name(attributes), body)
 		return ""
 
 // ============================================================================
@@ -411,19 +418,45 @@ functions:
 		// (frame-ui.ebnf html_block; SRV-R003). Raw `return X` becomes
 		// `return __route_default_body(X)` so `return "hello"` answers JSON;
 		// see wrap_returns_with_json for which returns are rewritten.
-		string handler_code = trailing_html_block_to_response(reindent_block(region))
+		// With route sub-blocks (frame-server.ebnf §3.4) the handler is the
+		// handle: body; validate_endpoints has already checked their shape.
+		boolean subs = route_has_sub_blocks(region)
+		string handler_src = region
+		if subs
+			handler_src = route_sub_body(region, "handle")
+		string handler_code = trailing_html_block_to_response(reindent_block(handler_src))
 		if handler_streams(handler_code) == false
 			handler_code = wrap_returns_with_json(handler_code, contains_response_call(handler_code))
 
-		// Preamble: guard, then cache, then middleware (frame-server.ebnf §2
-		// modifier order).
+		// Preamble, in the order frame-server-semantics.md SRV-B014 fixes:
+		// global middleware (server: middleware:), the inline [roles] guard,
+		// the guard: clauses, the cache (inline cache() or cache:), the
+		// inline middleware() list, then the middleware: list.
 		string stmts = ""
+		string global_mw = _build_state_get("frame.server:middleware")
+		if global_mw.length() > 0
+			stmts = join_handles(stmts, build_middleware_stmts(ctx, global_mw, "__mw_g"))
 		if guard_roles.length() > 0
-			stmts = join_handles(stmts, build_guard_stmts(ctx, guard_roles, false))
+			stmts = join_handles(stmts, build_guard_stmts(ctx, guard_roles, false, "__auth_ok"))
+		string route_mw = mw_list
+		if subs
+			string guard_stmts = build_guard_clause_stmts(ctx, region, method, path)
+			if guard_stmts == "!"
+				return 1
+			stmts = join_handles(stmts, guard_stmts)
+			string sub_cache = route_sub_inline(region, "cache")
+			if sub_cache.length() > 0
+				cache_arg = sub_cache
+			string sub_mw = route_sub_middleware(region)
+			if sub_mw.length() > 0
+				if route_mw.length() > 0
+					route_mw = route_mw + "," + sub_mw
+				else
+					route_mw = sub_mw
 		if cache_arg.length() > 0
 			stmts = join_handles(stmts, build_cache_stmt(ctx, cache_arg).toString())
-		if mw_list.length() > 0
-			stmts = join_handles(stmts, build_middleware_stmts(ctx, mw_list))
+		if route_mw.length() > 0
+			stmts = join_handles(stmts, build_middleware_stmts(ctx, route_mw, "__mw_"))
 
 		if handler_code.length() > 0
 			integer body_stmt = _emit_stmt_from_source(ctx, handler_code, 0)
@@ -501,14 +534,15 @@ functions:
 			return more
 		return acc + "," + more
 
-	// Typed guard statements as a comma-separated handle list:
-	//   boolean __auth_ok = false
-	//   if _auth_require_role("<role>") == 1: __auth_ok = true     (per role)
-	//   if __auth_ok == false: return unauthorized()
+	// Typed guard statements as a comma-separated handle list (ok_var names
+	// the flag, unique per guard in one handler):
+	//   boolean <ok_var> = false
+	//   if _auth_require_role("<role>") == 1: <ok_var> = true     (per role)
+	//   if <ok_var> == false: return unauthorized()
 	// For void WebSocket handlers (is_void) the failure branch closes the
 	// connection instead: _ws_close(_ws_client_id()); return.
-	string build_guard_stmts(integer ctx, string roles, boolean is_void)
-		integer auth_ok_decl = _stmt_var_decl(ctx, "__auth_ok", "boolean", _expr_bool_lit(ctx, 0))
+	string build_guard_stmts(integer ctx, string roles, boolean is_void, string ok_var)
+		integer auth_ok_decl = _stmt_var_decl(ctx, ok_var, "boolean", _expr_bool_lit(ctx, 0))
 		string result = auth_ok_decl.toString()
 
 		list<string> role_list = roles.split(",")
@@ -517,11 +551,11 @@ functions:
 			if role.length() > 0
 				integer role_check = _expr_call(ctx, "_auth_require_role", "[" + _expr_string_lit(ctx, role).toString() + "]")
 				integer cond = _expr_binop(ctx, "==", role_check, _expr_int_lit(ctx, 1, 0))
-				integer set_true = _stmt_assign(ctx, "__auth_ok", _expr_bool_lit(ctx, 1))
+				integer set_true = _stmt_assign(ctx, ok_var, _expr_bool_lit(ctx, 1))
 				integer role_if = _stmt_if(ctx, cond, _stmt_block(ctx, "[" + set_true.toString() + "]"), 0)
 				result = result + "," + role_if.toString()
 
-		integer not_auth = _expr_binop(ctx, "==", _expr_ident(ctx, "__auth_ok"), _expr_bool_lit(ctx, 0))
+		integer not_auth = _expr_binop(ctx, "==", _expr_ident(ctx, ok_var), _expr_bool_lit(ctx, 0))
 		string fail_stmts = ""
 		if is_void
 			integer ws_id_call = _expr_call(ctx, "_ws_client_id", "[]")
@@ -548,18 +582,20 @@ functions:
 			return _stmt_call(ctx, "_http_set_cache", "[" + _expr_int_lit(ctx, secs, 0).toString() + "]")
 		return _stmt_call(ctx, "_http_set_cache", "[" + _expr_int_lit(ctx, cache_arg.toInteger(), 0).toString() + "]")
 
-	// The middleware() modifier (frame-server.ebnf §3.3): each listed function
-	// is called in order; a non-empty result short-circuits the request and
-	// becomes the response.
-	//   string __mw_N = <Name>()
-	//   if __mw_N.length() > 0: return __mw_N
-	string build_middleware_stmts(integer ctx, string mw_list)
+	// A middleware list (the middleware() modifier, frame-server.ebnf §3.3;
+	// the middleware: sub-block, §3.4; server: middleware:, §1): each listed
+	// function is called in order; a non-empty result short-circuits the
+	// request and becomes the response. A `middleware Name` declaration
+	// (§7) defines the zero-argument Name() these calls reach.
+	//   string <prefix>N = <Name>()
+	//   if <prefix>N.length() > 0: return <prefix>N
+	string build_middleware_stmts(integer ctx, string mw_list, string prefix)
 		string result = ""
 		list<string> names = mw_list.split(",")
 		iterate i in 0 to names.length() - 1
 			string name = names[i].trim()
 			if name.length() > 0
-				string var_name = "__mw_" + i.toString()
+				string var_name = prefix + i.toString()
 				integer decl = _stmt_var_decl(ctx, var_name, "string", _expr_call(ctx, name, "[]"))
 				integer len_call = _expr_method_call(ctx, _expr_ident(ctx, var_name), "length", "[]")
 				integer cond = _expr_binop(ctx, ">", len_call, _expr_int_lit(ctx, 0, 0))
@@ -572,7 +608,7 @@ functions:
 	integer emit_ws_handler_typed(integer ctx, string name, string ws_body, string guard_roles)
 		string stmts = ""
 		if guard_roles.length() > 0
-			stmts = build_guard_stmts(ctx, guard_roles, true)
+			stmts = build_guard_stmts(ctx, guard_roles, true, "__auth_ok")
 		if ws_body.length() > 0
 			integer body_stmt = _emit_stmt_from_source(ctx, ws_body, 0)
 			if body_stmt == 0
@@ -582,6 +618,536 @@ functions:
 		integer fn_err = _emit_function(ctx, name, "[]", _type_void(ctx), _stmt_block(ctx, "[" + stmts + "]"), 2)
 		if fn_err != 0
 			_emit_error(ctx, 2, "FRAME-SERVER-E004", "failed to emit WebSocket handler: " + name, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+			return 1
+		return 0
+
+// ============================================================================
+// ROUTE SUB-BLOCKS (frame-server.ebnf §3.4, frame-server-semantics.md SRV-B014)
+// ============================================================================
+// A route body either is the handler, or holds only sub-blocks at its top
+// level: guard:, cache:, middleware:, returns: and handle: (the handler).
+// These helpers read a route region (the text after the route header's ':'
+// up to the next route header).
+
+functions:
+	// The sub-block labels a route body may hold.
+	list<string> route_sub_labels()
+		return "guard,cache,middleware,returns,handle".split(",")
+
+	// The label a top-level route body line opens (`guard:`, `cache: 300`,
+	// ...), or "" when the line is a statement.
+	string route_sub_label(string trimmed)
+		list<string> labels = route_sub_labels()
+		integer i = 0
+		while i < labels.length()
+			string label = labels[i]
+			if trimmed.startsWith(label)
+				string rest = trimmed.substring(label.length(), trimmed.length()).trim()
+				if rest.startsWith(":")
+					return label
+			i = i + 1
+		return ""
+
+	// True when a line holds code (not blank, not a whole-line comment).
+	boolean is_code_line(string line)
+		string t = line.trim()
+		return t.length() > 0 and t.startsWith("//") == false
+
+	// A line without its trailing `//` comment (one outside a string
+	// literal), trimmed.
+	string strip_line_comment(string line)
+		boolean in_str = false
+		integer i = 0
+		while i < line.length()
+			string ch = line.substring(i, i + 1)
+			if ch == "\\" and in_str
+				i = i + 2
+				continue
+			if ch == "\""
+				in_str = in_str == false
+			else if in_str == false and ch == "/" and line.substring(i, i + 2) == "//"
+				return line.substring(0, i).trim()
+			i = i + 1
+		return line.trim()
+
+	// Leading tabs of the shallowest code line in region, -1 when none.
+	integer region_base_tabs(string region)
+		list<string> lines = region.split("\n")
+		integer base = -1
+		integer i = 0
+		while i < lines.length()
+			if is_code_line(lines[i])
+				integer t = leading_tabs(lines[i])
+				if base == -1 or t < base
+					base = t
+			i = i + 1
+		return base
+
+	// True when a top-level line of the route body opens a sub-block.
+	boolean route_has_sub_blocks(string region)
+		integer base = region_base_tabs(region)
+		list<string> lines = region.split("\n")
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) == base
+				if route_sub_label(line.trim()).length() > 0
+					return true
+			i = i + 1
+		return false
+
+	// The value written on a sub-block's own line (`cache: 300` -> "300"),
+	// "" when the label is absent or has nothing after its ':'.
+	string route_sub_inline(string region, string label)
+		integer base = region_base_tabs(region)
+		list<string> lines = region.split("\n")
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) == base
+				string t = line.trim()
+				if route_sub_label(t) == label
+					string after = t.substring(label.length(), t.length()).trim()
+					return strip_line_comment(after.substring(1, after.length()))
+			i = i + 1
+		return ""
+
+	// The lines nested under a sub-block's label, as written (up to the next
+	// top-level line); "" when the label is absent or has no nested lines.
+	string route_sub_body(string region, string label)
+		integer base = region_base_tabs(region)
+		list<string> lines = region.split("\n")
+		string result = ""
+		boolean inside = false
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) <= base
+				inside = route_sub_label(line.trim()) == label
+			else if inside
+				result = result + line + "\n"
+			i = i + 1
+		return result
+
+	// How many top-level lines open `label`.
+	integer route_sub_count(string region, string label)
+		integer base = region_base_tabs(region)
+		list<string> lines = region.split("\n")
+		integer n = 0
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) == base and route_sub_label(line.trim()) == label
+				n = n + 1
+			i = i + 1
+		return n
+
+	// The middleware: sub-block's names as "A,B" ("" when absent).
+	string route_sub_middleware(string region)
+		string v = route_sub_inline(region, "middleware")
+		if v.startsWith("[") and v.endsWith("]")
+			return v.substring(1, v.length() - 1).replace(" ", "").replace("\t", "")
+		return ""
+
+	// The guard: clauses, one per line: the clause on guard:'s own line, or
+	// each nested line.
+	list<string> route_guard_clauses(string region)
+		string joined = route_sub_inline(region, "guard")
+		list<string> lines = route_sub_body(region, "guard").split("\n")
+		integer i = 0
+		while i < lines.length()
+			if is_code_line(lines[i])
+				string c = strip_line_comment(lines[i])
+				if joined.length() > 0
+					joined = joined + "\n" + c
+				else
+					joined = c
+			i = i + 1
+		if joined.length() == 0
+			list<string> empty = []
+			return empty
+		return joined.split("\n")
+
+	// What a guard clause checks: "roles" (`role in [...]`, `role == "x"`),
+	// "auth" (`authenticated`) or "expr" (any boolean expression).
+	string guard_clause_kind(string c)
+		if c == "authenticated"
+			return "auth"
+		if c.startsWith("role") and c.length() > 4
+			string next = c.substring(4, 5)
+			if next == " " or next == "\t" or next == "="
+				string rest = c.substring(4, c.length()).trim()
+				if rest.startsWith("==") or rest.startsWith("in ") or rest.startsWith("in[")
+					return "roles"
+		return "expr"
+
+	// The roles a "roles" clause allows, as "a,b"; "" when the clause is
+	// malformed (validate_endpoints reports why).
+	string guard_clause_roles(string c)
+		string rest = c.substring(4, c.length()).trim()
+		string items = ""
+		if rest.startsWith("==")
+			items = rest.substring(2, rest.length()).trim()
+		else
+			string list_part = rest.substring(2, rest.length()).trim()
+			if list_part.startsWith("[") == false or list_part.endsWith("]") == false
+				return ""
+			items = list_part.substring(1, list_part.length() - 1)
+		list<string> parts = items.split(",")
+		string roles = ""
+		integer i = 0
+		while i < parts.length()
+			string q = parts[i].trim()
+			if q.length() < 3 or q.startsWith("\"") == false or q.endsWith("\"") == false
+				return ""
+			string role = q.substring(1, q.length() - 1)
+			if is_identifier(role) == false
+				return ""
+			if roles.length() > 0
+				roles = roles + ","
+			roles = roles + role
+			i = i + 1
+		return roles
+
+	// True when s is a non-empty run of letters, digits and underscores.
+	boolean is_identifier(string s)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			boolean ok = (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_"
+			if not ok
+				return false
+			i = i + 1
+		return true
+
+	// The guard: clauses as statement handles, in order; each failing clause
+	// answers unauthorized() (401) and the handler body does not run
+	// (SRV-B001, SRV-B015). "!" after reporting an error.
+	string build_guard_clause_stmts(integer ctx, string region, string method, string path)
+		list<string> clauses = route_guard_clauses(region)
+		string result = ""
+		integer n = 0
+		while n < clauses.length()
+			string c = clauses[n]
+			string kind = guard_clause_kind(c)
+			if kind == "roles"
+				result = join_handles(result, build_guard_stmts(ctx, guard_clause_roles(c), false, "__guard_ok_" + n.toString()))
+			else
+				integer cond = 0
+				if kind == "auth"
+					cond = _expr_binop(ctx, "==", _expr_call(ctx, "_auth_require_auth", "[]"), _expr_int_lit(ctx, 0, 0))
+				else
+					integer check = _emit_expr_from_source(ctx, c, 0)
+					if check == 0
+						_emit_error(ctx, 2, "FRAME-SERVER-E021", "route " + method + " \"" + path + "\": guard: clause `" + c + "` is not a valid expression", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+						return "!"
+					cond = _expr_binop(ctx, "==", check, _expr_bool_lit(ctx, 0))
+				integer deny = _stmt_return(ctx, _expr_call(ctx, "unauthorized", "[]"))
+				integer clause_if = _stmt_if(ctx, cond, _stmt_block(ctx, "[" + deny.toString() + "]"), 0)
+				result = join_handles(result, clause_if.toString())
+			n = n + 1
+		return result
+
+	// "" when a route's sub-blocks are well formed, else the error
+	// (frame-server-semantics.md SRV-C007). modifiers is the route header
+	// between the path and the ':'.
+	string check_route_sub_blocks(string method, string path, string region, string modifiers)
+		if route_has_sub_blocks(region) == false
+			return ""
+		string where = "endpoints: " + method + " \"" + path + "\": "
+		if method == "LIVE"
+			return where + "a LIVE route takes no sub-blocks; use the inline [roles] guard and the live.onMessage: / live.onClose: blocks"
+		integer base = region_base_tabs(region)
+		list<string> lines = region.split("\n")
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) == base
+				if route_sub_label(line.trim()).length() == 0
+					return where + "`" + line.trim() + "` is outside handle: — a route with sub-blocks keeps its statements in handle:"
+			i = i + 1
+		list<string> labels = route_sub_labels()
+		integer li = 0
+		while li < labels.length()
+			if route_sub_count(region, labels[li]) > 1
+				return where + labels[li] + ": is declared more than once"
+			li = li + 1
+
+		if route_sub_count(region, "handle") == 0
+			return where + "a route with sub-blocks needs a handle: block holding its statements"
+		if route_sub_inline(region, "handle").length() > 0
+			return where + "handle: takes its statements on the following, deeper lines"
+		if reindent_block(route_sub_body(region, "handle")).length() == 0
+			return where + "handle: is empty"
+
+		if route_sub_count(region, "guard") == 1
+			if route_sub_inline(region, "guard").length() > 0 and reindent_block(route_sub_body(region, "guard")).length() > 0
+				return where + "guard: takes one clause on its own line or one clause per nested line, not both"
+			list<string> clauses = route_guard_clauses(region)
+			if clauses.length() == 0
+				return where + "guard: is empty"
+			string gbody = route_sub_body(region, "guard")
+			list<string> glines = gbody.split("\n")
+			integer gbase = region_base_tabs(gbody)
+			integer gi = 0
+			while gi < glines.length()
+				if is_code_line(glines[gi]) and leading_tabs(glines[gi]) != gbase
+					return where + "guard: clauses are one per line, all at the same indentation"
+				gi = gi + 1
+			integer ci = 0
+			while ci < clauses.length()
+				string c = clauses[ci]
+				if guard_clause_kind(c) == "roles" and guard_clause_roles(c).length() == 0
+					return where + "guard: `" + c + "` — write role in [\"admin\", \"editor\"] or role == \"admin\" (role names in quotes: letters, digits, underscore)"
+				ci = ci + 1
+
+		if route_sub_count(region, "cache") == 1
+			if reindent_block(route_sub_body(region, "cache")).length() > 0
+				return where + "cache: takes its value on the same line"
+			if modifiers.indexOf("cache(") != -1
+				return where + "cache is declared twice (cache() on the route header and cache: in the body); keep one"
+			string cache_err = check_cache_arg(route_sub_inline(region, "cache"), "cache:")
+			if cache_err.length() > 0
+				return where + cache_err
+
+		if route_sub_count(region, "middleware") == 1
+			if reindent_block(route_sub_body(region, "middleware")).length() > 0
+				return where + "middleware: takes its list on the same line: middleware: [RateLimit, Audit]"
+			string mv = route_sub_inline(region, "middleware")
+			if mv.startsWith("[") == false or mv.endsWith("]") == false
+				return where + "middleware: takes a list of middleware names: middleware: [RateLimit, Audit]"
+			string mnames = route_sub_middleware(region)
+			if mnames.length() == 0
+				return where + "middleware: needs at least one middleware name"
+			list<string> mlist = mnames.split(",")
+			integer mi = 0
+			while mi < mlist.length()
+				if is_identifier(mlist[mi]) == false
+					return where + "middleware: `" + mlist[mi] + "` is not a middleware name"
+				mi = mi + 1
+
+		if route_sub_count(region, "returns") == 1
+			if reindent_block(route_sub_body(region, "returns")).length() > 0 or route_sub_inline(region, "returns").length() == 0
+				return where + "returns: takes the response type on the same line: returns: User"
+		return ""
+
+	// "" when a cache value (cache() argument or cache: value) is valid,
+	// else the error; form names the syntax in the message.
+	string check_cache_arg(string arg, string form)
+		if arg.length() == 0
+			return form + " requires a value — use an integer (seconds) or \"5m\"/\"2h\"/\"1d\"/\"no-store\""
+		boolean cache_ok = false
+		if arg.startsWith("\"") and arg.endsWith("\"") and arg.length() >= 2
+			string val = arg.substring(1, arg.length() - 1)
+			if val == "no-store" or val == "no-cache" or val == "public" or val == "private"
+				cache_ok = true
+			if not cache_ok and val.length() >= 2
+				string last = val.substring(val.length() - 1, val.length())
+				if (last == "m" or last == "h" or last == "d") and all_digits(val.substring(0, val.length() - 1))
+					cache_ok = true
+		if not arg.startsWith("\"") and all_digits(arg)
+			cache_ok = true
+		if not cache_ok
+			return "invalid " + form + " value — use integer seconds, or \"no-store\"/\"no-cache\"/\"public\"/\"private\"/\"5m\"/\"2h\"/\"1d\""
+		return ""
+
+// ============================================================================
+// MIDDLEWARE DECLARATIONS (frame-server.ebnf §7, SRV-B007)
+// ============================================================================
+//   middleware RateLimit
+//       functions:
+//           Request handle(Request req)
+//               ...
+//               return req
+//
+// becomes two functions: __mw_RateLimit_handle(Request req) -> Request (the
+// body as written) and RateLimit() -> string, the zero-argument form every
+// middleware list calls. RateLimit() builds the Request for the request being
+// handled, calls handle, and returns the returned Request's `response` ("" =
+// continue, otherwise the response that ends the request).
+
+functions:
+	// The declared name in a block's attributes JSON (`middleware RateLimit`
+	// arrives as {"model_name":"RateLimit"}), "" when there is none.
+	string attrs_model_name(string attrs)
+		string key = "\"model_name\":\""
+		integer k = attrs.indexOf(key)
+		if k == -1
+			return ""
+		integer name_from = k + key.length()
+		integer name_end = attrs.indexOf("\"", name_from)
+		if name_end == -1
+			return ""
+		return attrs.substring(name_from, name_end)
+
+	// The parameter name of a `Request handle(Request <name>)` header line,
+	// "" when the line is not that header.
+	string middleware_handle_param(string trimmed)
+		if trimmed.startsWith("Request ") == false
+			return ""
+		string rest = trimmed.substring(8, trimmed.length()).trim()
+		if rest.startsWith("handle") == false
+			return ""
+		rest = rest.substring(6, rest.length()).trim()
+		if rest.startsWith("(") == false or rest.endsWith(")") == false
+			return ""
+		string inner = rest.substring(1, rest.length() - 1).trim()
+		if inner.startsWith("Request ") == false
+			return ""
+		string pname = inner.substring(8, inner.length()).trim()
+		if is_identifier(pname) == false
+			return ""
+		return pname
+
+	// The code lines of a middleware body at the function-header depth
+	// (one deeper than `functions:`), joined by "\n".
+	string middleware_function_headers(string body)
+		integer base = region_base_tabs(body)
+		list<string> lines = body.split("\n")
+		string result = ""
+		integer i = 0
+		while i < lines.length()
+			if is_code_line(lines[i]) and leading_tabs(lines[i]) == base + 1
+				if result.length() > 0
+					result = result + "\n"
+				result = result + lines[i].trim()
+			i = i + 1
+		return result
+
+	// The handle function's body lines, as written.
+	string middleware_handle_body(string body)
+		integer base = region_base_tabs(body)
+		list<string> lines = body.split("\n")
+		string result = ""
+		boolean inside = false
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line) and leading_tabs(line) <= base + 1
+				inside = leading_tabs(line) == base + 1 and middleware_handle_param(line.trim()).length() > 0
+			else if inside
+				result = result + line + "\n"
+			i = i + 1
+		return result
+
+	// "" when a middleware declaration is well formed, else the error.
+	string validate_middleware(string name, string body)
+		if name.length() == 0
+			return "middleware: a middleware declaration needs a name — middleware RateLimit"
+		if is_identifier(name) == false
+			return "middleware " + name + ": the name must be an identifier (letters, digits, underscore)"
+		string where = "middleware " + name + ": "
+		integer base = region_base_tabs(body)
+		list<string> lines = body.split("\n")
+		integer i = 0
+		while i < lines.length()
+			string line = lines[i]
+			if is_code_line(line)
+				integer t = leading_tabs(line)
+				if t == base and strip_line_comment(line) != "functions:"
+					return where + "the body is a functions: block holding Request handle(Request req)"
+			i = i + 1
+		string headers = middleware_function_headers(body)
+		if headers.length() == 0
+			return where + "functions: must declare Request handle(Request req)"
+		list<string> hl = headers.split("\n")
+		if hl.length() > 1 or middleware_handle_param(hl[0]).length() == 0
+			return where + "functions: holds exactly one function, Request handle(Request req) — the middleware receives the request and returns it; declare helper functions in a top-level functions: block"
+		if reindent_block(middleware_handle_body(body)).length() == 0
+			return where + "handle() has no body"
+		return ""
+
+	// The names <param>.<field>.<name> reads in code (field "params" or
+	// "query"), as a comma-separated list without duplicates.
+	string middleware_read_names(string code, string param, string field)
+		string needle = param + "." + field + "."
+		string names = ","
+		integer pos = code.indexOf(needle)
+		while pos >= 0
+			integer name_from = pos + needle.length()
+			integer name_end = name_from
+			while name_end < code.length() and is_identifier(code.substring(name_end, name_end + 1))
+				name_end = name_end + 1
+			string nm = code.substring(name_from, name_end)
+			boolean starts_token = pos == 0 or is_identifier(code.substring(pos - 1, pos)) == false
+			if starts_token and nm.length() > 0 and names.indexOf("," + nm + ",") == -1
+				names = names + nm + ","
+			pos = code.indexOf(needle, name_end)
+		if names == ","
+			return ""
+		return names.substring(1, names.length() - 1)
+
+	// A Clean object literal reading each name with a request bridge:
+	// { id: _req_param("id") }. Names are identifiers (middleware_read_names).
+	string middleware_lookup_object(string names, string bridge)
+		if names.length() == 0
+			return "\{\}"
+		list<string> parts = names.split(",")
+		string result = ""
+		integer i = 0
+		while i < parts.length()
+			if result.length() > 0
+				result = result + ", "
+			result = result + parts[i] + ": " + bridge + "(\"" + parts[i] + "\")"
+			i = i + 1
+		return "\{ " + result + " \}"
+
+	integer expand_middleware_typed(integer ctx, string attrs_json, string body)
+		string name = attrs_model_name(attrs_json)
+		string pname = middleware_handle_param(middleware_function_headers(body))
+		string handle_code = reindent_block(middleware_handle_body(body))
+
+		// The handle function, its body as written.
+		integer handle_body = _emit_stmt_from_source(ctx, handle_code, 0)
+		if handle_body == 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E022", "syntax error in middleware " + name + " handle() body", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+			return 1
+		string handle_name = "__mw_" + name + "_handle"
+		string params = "[" + param_entry(pname, _type_class_ref(ctx, "Request")) + "]"
+		if _emit_function(ctx, handle_name, params, _type_class_ref(ctx, "Request"), _stmt_block(ctx, "[" + handle_body.toString() + "]"), 2) != 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E022", "failed to emit middleware " + name, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+			return 1
+
+		// Name(): plugin-authored; the only names spliced in are the
+		// middleware name and the params / query names the body reads, all
+		// checked identifiers.
+		string src = "Request __mw_req = Request()\n"
+		src = src + "__mw_req.method = _req_method()\n"
+		src = src + "__mw_req.path = _req_path()\n"
+		src = src + "__mw_req.ip = _req_ip()\n"
+		src = src + "string __mw_raw = _req_body()\n"
+		src = src + "any __mw_body = json.tryTextToData(__mw_raw)\n"
+		src = src + "if __mw_body == null\n\t__mw_body = __mw_raw\n"
+		src = src + "__mw_req.body = __mw_body\n"
+		src = src + "__mw_req.headers = json.textToData(_req_headers())\n"
+		src = src + "__mw_req.params = " + middleware_lookup_object(middleware_read_names(handle_code, pname, "params"), "_req_param") + "\n"
+		src = src + "__mw_req.query = " + middleware_lookup_object(middleware_read_names(handle_code, pname, "query"), "_req_query") + "\n"
+		src = src + "RequestAuth __mw_auth = RequestAuth()\n"
+		src = src + "__mw_auth.loggedIn = false\n"
+		src = src + "__mw_auth.userId = \"\"\n"
+		src = src + "__mw_auth.role = \"\"\n"
+		src = src + "__mw_auth.roles = \"[]\"\n"
+		src = src + "string __mw_session = _auth_get_session()\n"
+		src = src + "if __mw_session.length() > 0 and __mw_session != \"null\"\n"
+		src = src + "\tany __mw_who = json.textToData(__mw_session)\n"
+		src = src + "\t__mw_auth.loggedIn = true\n"
+		src = src + "\t__mw_auth.userId = json.get(__mw_who, \"user_id\").toString()\n"
+		src = src + "\tstring __mw_role = json.get(__mw_who, \"role\").toString()\n"
+		src = src + "\t__mw_auth.role = __mw_role\n"
+		src = src + "\t__mw_auth.roles = \"[\\\"\" + __mw_role + \"\\\"]\"\n"
+		src = src + "__mw_req.auth = __mw_auth\n"
+		src = src + "__mw_req.response = \"\"\n"
+		src = src + "Request __mw_out = " + handle_name + "(__mw_req)\n"
+		src = src + "string __mw_response = __mw_out.response\n"
+		src = src + "return __mw_response\n"
+		integer wrapper_body = _emit_stmt_from_source(ctx, src, 0)
+		if wrapper_body == 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E022", "failed to build middleware " + name, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
+			return 1
+		if _emit_function(ctx, name, "[]", _type_string(ctx), _stmt_block(ctx, "[" + wrapper_body.toString() + "]"), 2) != 0
+			_emit_error(ctx, 2, "FRAME-SERVER-E022", "failed to emit middleware " + name, "{\"start\":0,\"end\":0,\"source\":\"plugin\"}")
 			return 1
 		return 0
 
@@ -748,6 +1314,25 @@ functions:
 
 			if trimmed.startsWith("port:")
 				port_str = trimmed.substring(5, trimmed.length()).trim()
+
+			if trimmed.startsWith("middleware:")
+				string mw_val = trimmed.substring(11, trimmed.length()).trim()
+				string mw_names = ""
+				if mw_val.startsWith("[") and mw_val.endsWith("]")
+					mw_names = mw_val.substring(1, mw_val.length() - 1).replace(" ", "").replace("\t", "")
+				list<string> mw_parts = mw_names.split(",")
+				integer mwi = 0
+				while mwi < mw_parts.length()
+					if is_identifier(mw_parts[mwi]) == false
+						_emit_error(ctx, 2, "FRAME-SERVER-E023", "server: middleware: takes a list of middleware names: middleware: [RateLimit, Audit]", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+						return 1
+					mwi = mwi + 1
+				// Routes read the list while they expand, so it must be
+				// known before any route is (SRV-B008).
+				if _build_state_get("frame.server:routes").length() > 0
+					_emit_error(ctx, 2, "FRAME-SERVER-E023", "server: middleware: applies to every route, so the server: block must come before every endpoints: block — declare it in the entry file (main.cln), above its endpoints:", "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
+					return 1
+				_build_state_set("frame.server:middleware", mw_names)
 
 			if trimmed.startsWith("host:")
 				host_str = resolve_server_config_value(trimmed.substring(5, trimmed.length()).trim())
@@ -1616,6 +2201,28 @@ functions:
 					if not ok
 						return "endpoints: middleware function names must be valid identifiers"
 					mi = mi + 1
+
+		// Route bodies: sub-blocks (frame-server.ebnf §3.4). Walk the routes
+		// the way expand_endpoints_typed does.
+		string remaining = body
+		integer method_pos = next_route_pos(remaining, indent)
+		while method_pos >= 0
+			string method = route_method_at(remaining, method_pos)
+			integer path_first_pos = method_pos + method.length() + 1
+			integer close_q_pos = remaining.indexOf("\"", path_first_pos + 1)
+			string path = remaining.substring(path_first_pos + 1, close_q_pos)
+			integer header_start_pos = close_q_pos + 1
+			integer header_nl_pos = remaining.indexOf("\n", header_start_pos)
+			if header_nl_pos == -1
+				header_nl_pos = remaining.length()
+			string header_line = remaining.substring(header_start_pos, header_nl_pos)
+			integer colon_pos = header_line.lastIndexOf(":")
+			string route_modifiers = header_line.substring(0, colon_pos).trim()
+			remaining = remaining.substring(header_start_pos + colon_pos + 1, remaining.length())
+			string sub_err = check_route_sub_blocks(method, path, route_region(remaining, indent), route_modifiers)
+			if sub_err.length() > 0
+				return sub_err
+			method_pos = next_route_pos(remaining, indent)
 
 		return ""
 

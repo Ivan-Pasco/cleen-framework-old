@@ -1,0 +1,72 @@
+// Test: frame.server — the guard: route sub-block.
+// Grammar: frame-server.ebnf §3.4 route_sub_block, guard_sub_block, guard_clause
+// Semantic: SRV-B001 (guard: runs before the handler), SRV-B003 (handle: is
+// the handler), SRV-B015 (clause forms), SRV-C006 (role in [...])
+// Each guarded route's handler is called directly (handler names are
+// __route_handler_<METHOD>_<path id>, see endpoint-route-names-test) first
+// without a session, then as an "editor". A failing clause answers the 401
+// AUTH_ERROR envelope and the handle: body never runs.
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+roles:
+	admin: ["*"]
+	editor: ["post.edit"]
+
+endpoints:
+	GET "/anyrole":
+		guard:
+			role in ["admin", "editor"]
+		handle:
+			return json({route: "anyrole"})
+
+	GET "/onlyadmin":
+		guard: role == "admin"
+		handle:
+			printl("FAIL: server-route-guard-subblock (onlyadmin handler ran for a non-admin)")
+			return json({route: "onlyadmin"})
+
+	GET "/signedin":
+		guard: authenticated
+		handle:
+			return json({route: "signedin"})
+
+	GET "/expression":
+		guard:
+			authenticated
+			auth.hasRole("editor")
+		handle:
+			return json({route: "expression"})
+
+	GET "/test":
+		// No session yet: every guard refuses.
+		boolean ok_anon = __route_handler_GET__sanyrole().contains("AUTH_ERROR") and __route_handler_GET__sonlyadmin().contains("AUTH_ERROR") and __route_handler_GET__ssignedin().contains("AUTH_ERROR") and __route_handler_GET__sexpression().contains("AUTH_ERROR")
+
+		auth.setSession("\{\"user_id\":7,\"role\":\"editor\"\}")
+		string anyrole = __route_handler_GET__sanyrole()
+		string onlyadmin = __route_handler_GET__sonlyadmin()
+		string signedin = __route_handler_GET__ssignedin()
+		string expression = __route_handler_GET__sexpression()
+		boolean ok_anyrole = anyrole.contains("anyrole")
+		boolean ok_onlyadmin = onlyadmin.contains("AUTH_ERROR")
+		boolean ok_signedin = signedin.contains("signedin")
+		boolean ok_expression = expression.contains("expression")
+
+		if ok_anon and ok_anyrole and ok_onlyadmin and ok_signedin and ok_expression
+			printl("PASS: server-route-guard-subblock")
+		else
+			printl("FAIL: server-route-guard-subblock anon=" + ok_anon.toString() + " anyrole=" + anyrole + " onlyadmin=" + onlyadmin + " signedin=" + signedin + " expression=" + expression)
+		return json({ok: true})
+
+start:
+	printl("[boot] server-route-guard-subblock server ready")

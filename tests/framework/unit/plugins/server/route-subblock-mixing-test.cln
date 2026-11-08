@@ -1,0 +1,85 @@
+// Test: frame.server — inline route modifiers and route sub-blocks together.
+// Grammar: frame-server.ebnf §2 route_declaration (inline modifiers), §3.4
+// route sub-blocks (guard:, cache:, middleware:, returns:, handle:)
+// Semantic: SRV-B014 — inline [roles] and every guard: clause must all pass;
+// the inline middleware() list runs before the middleware: list; cache: works
+// like cache(); returns: is documentation only.
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+roles:
+	admin: ["*"]
+	editor: ["post.edit"]
+
+endpoints:
+	// Inline [admin] and guard: role == "editor" can never both hold for a
+	// one-role user.
+	GET "/both" [admin]:
+		guard: role == "editor"
+		handle:
+			return json({route: "both"})
+
+	GET "/either" [admin, editor]:
+		guard: role == "editor"
+		returns: string
+		cache: "5m"
+		handle:
+			return json({route: "either"})
+
+	// Inline middleware runs first: First answers, Second never runs.
+	GET "/order" middleware(First):
+		middleware: [Second]
+		handle:
+			printl("FAIL: server-route-subblock-mixing (/order handler ran after a short-circuit)")
+			return json({route: "order"})
+
+	// Inline middleware passes, then the middleware: list runs.
+	GET "/chain" middleware(Pass):
+		middleware: [Second]
+		handle:
+			printl("FAIL: server-route-subblock-mixing (/chain handler ran after a short-circuit)")
+			return json({route: "chain"})
+
+	GET "/test":
+		auth.setSession("\{\"user_id\":7,\"role\":\"editor\"\}")
+		string both_editor = __route_handler_GET__sboth()
+		string either_editor = __route_handler_GET__seither()
+		auth.setSession("\{\"user_id\":8,\"role\":\"admin\"\}")
+		string both_admin = __route_handler_GET__sboth()
+		string either_admin = __route_handler_GET__seither()
+		string order = __route_handler_GET__sorder()
+		string chain = __route_handler_GET__schain()
+
+		boolean ok_both = both_editor.contains("AUTH_ERROR") and both_admin.contains("AUTH_ERROR")
+		boolean ok_either = either_editor.contains("either") and either_admin.contains("AUTH_ERROR")
+		boolean ok_order = order.contains("from First")
+		boolean ok_chain = chain.contains("from Second")
+
+		if ok_both and ok_either and ok_order and ok_chain
+			printl("PASS: server-route-subblock-mixing")
+		else
+			printl("FAIL: server-route-subblock-mixing both_editor=" + both_editor + " both_admin=" + both_admin + " either_editor=" + either_editor + " either_admin=" + either_admin + " order=" + order + " chain=" + chain)
+		return json({ok: true})
+
+start:
+	printl("[boot] server-route-subblock-mixing server ready")
+
+functions:
+	string First()
+		return httpError(429, "from First")
+
+	string Pass()
+		return ""
+
+	string Second()
+		return httpError(429, "from Second")
