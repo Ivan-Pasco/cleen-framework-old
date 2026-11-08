@@ -36,7 +36,11 @@ bash tests/framework/integration/dev-capture/debug-capture-endpoint-test.sh
 The runner uses `~/.cleen/bin/cln` and `~/.cleen/bin/clean-server`
 (override with `CLEEN_CLN` / `CLEEN_SERVER`), binds each test server to
 port 3334 (`CLEEN_TEST_PORT`), and exports `DATABASE_URL=sqlite::memory:`
-and a random `JWT_SECRET` unless they are already set.
+and a random `JWT_SECRET` unless they are already set. With
+`FRAMEWORK_TEST_MYSQL_URL=mysql://user:pass@host:port` every test runs
+against a fresh MySQL database of its own instead (created before the test,
+dropped after; needs the `mysql` client and a user that may create
+databases).
 
 ## How a test is run
 

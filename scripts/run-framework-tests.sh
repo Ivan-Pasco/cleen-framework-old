@@ -23,6 +23,11 @@ COMPILER="${CLEEN_CLN:-$HOME/.cleen/bin/cln}"
 # Test database: SQLite :memory: per server process (tests/CONVENTIONS.md —
 # the framework default for tests). Override with DATABASE_URL.
 export DATABASE_URL="${DATABASE_URL:-sqlite::memory:}"
+# MySQL instead: FRAMEWORK_TEST_MYSQL_URL=mysql://user:pass@host:port names a
+# MySQL server whose user may create databases. Every test then runs against
+# a fresh database of its own, created before the test and dropped after it
+# (needs the `mysql` command-line client).
+MYSQL_URL="${FRAMEWORK_TEST_MYSQL_URL:-}"
 # JWT signing secret for auth tests. frame-auth reads it from the environment
 # (`secret = env.get("JWT_SECRET")`, AUTH-C004), so each run gets a fresh
 # random value instead of a secret committed to source.
@@ -57,6 +62,8 @@ usage() {
     echo "  CLEEN_CLN        Compiler (default: ~/.cleen/bin/cln)"
     echo "  CLEEN_SERVER     Runtime  (default: ~/.cleen/bin/clean-server)"
     echo "  CLEEN_TEST_PORT  Port each test server binds (default: 3334)"
+    echo "  FRAMEWORK_TEST_MYSQL_URL  mysql://user:pass@host:port — run every test"
+    echo "                   against a fresh MySQL database instead of SQLite"
     echo ""
     echo "Filters:"
     echo "  runtime          Run only the runtime smoke test"
@@ -125,9 +132,54 @@ check_prerequisites() {
         fi
     fi
 
+    if [ -n "$MYSQL_URL" ]; then
+        if ! command -v mysql >/dev/null 2>&1; then
+            print_error "FRAMEWORK_TEST_MYSQL_URL is set but the mysql client is not installed"
+            exit 1
+        fi
+        if ! mysql_admin "SELECT 1" >/dev/null; then
+            print_error "Cannot reach the MySQL server in FRAMEWORK_TEST_MYSQL_URL"
+            exit 1
+        fi
+        print_success "MySQL server: $(mysql_url_part host):$(mysql_url_part port) (a fresh database per test)"
+    fi
+
     # Create output directory
     mkdir -p "$OUTPUT_DIR"
     print_success "Output directory ready: $OUTPUT_DIR"
+}
+
+# One part (user, password, host, port) of FRAMEWORK_TEST_MYSQL_URL.
+mysql_url_part() {
+    python3 - "$MYSQL_URL" "$1" <<'PYEOF'
+import sys
+from urllib.parse import urlsplit, unquote
+url = urlsplit(sys.argv[1])
+part = sys.argv[2]
+value = {"user": url.username, "password": url.password, "host": url.hostname, "port": url.port}[part]
+if value is None:
+    value = {"user": "root", "password": "", "host": "127.0.0.1", "port": 3306}[part]
+print(unquote(str(value)) if part in ("user", "password") else value)
+PYEOF
+}
+
+# Run one SQL statement as the FRAMEWORK_TEST_MYSQL_URL user.
+mysql_admin() {
+    MYSQL_PWD="$(mysql_url_part password)" mysql --protocol=TCP \
+        -h "$(mysql_url_part host)" -P "$(mysql_url_part port)" \
+        -u "$(mysql_url_part user)" -N -e "$1"
+}
+
+# The DATABASE_URL a test runs with: SQLite :memory: (or DATABASE_URL), or a
+# fresh MySQL database when FRAMEWORK_TEST_MYSQL_URL is set.
+test_database_url() {
+    local db_name="$1"
+    if [ -z "$MYSQL_URL" ]; then
+        echo "$DATABASE_URL"
+        return 0
+    fi
+    mysql_admin "DROP DATABASE IF EXISTS \`$db_name\`; CREATE DATABASE \`$db_name\`" || return 1
+    echo "${MYSQL_URL%/}/$db_name"
 }
 
 # Compile a single test file
@@ -206,12 +258,20 @@ run_test() {
     pkill -f "clean-server.*--port $test_port\$" 2>/dev/null || true
     sleep 0.2
 
+    # Each test gets an empty database (SQLite :memory: is empty per process).
+    local db_name="cln_fw_test_${test_port}_$$"
+    local database_url
+    if ! database_url=$(test_database_url "$db_name"); then
+        print_error "$test_name (could not create MySQL database $db_name)"
+        return 1
+    fi
+
     # Start clean-server with the WASM file and capture output
     local server_log="/tmp/test_server_$$_${test_port}.log"
     # The server runs from the framework root so tests can name fixture files
     # (translation tables, ...) by repo-relative paths whatever the caller's
     # cwd; stdin is closed so a stdio app can't swallow the runner's input.
-    (cd "$FRAMEWORK_DIR" && exec "$SERVER" "$wasm_file" --port "$test_port") < /dev/null > "$server_log" 2>&1 &
+    (cd "$FRAMEWORK_DIR" && DATABASE_URL="$database_url" exec "$SERVER" "$wasm_file" --port "$test_port") < /dev/null > "$server_log" 2>&1 &
     local server_pid=$!
 
     # Wait for server to initialize (it runs start() on load). start() may do
@@ -259,6 +319,9 @@ run_test() {
     # Kill the server
     kill $server_pid 2>/dev/null || true
     sleep 0.2
+    if [ -n "$MYSQL_URL" ]; then
+        mysql_admin "DROP DATABASE IF EXISTS \`$db_name\`" || true
+    fi
 
     # Check for test results in output
     if echo "$output" | grep -q "FAIL:"; then
