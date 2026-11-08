@@ -30,7 +30,7 @@ functions:
 		targetId = ui.eventAttr("data-id")
 		targetName = ui.eventAttr("data-name")
 		integer s = ui.updateElement("#confirm-modal", renderModal(targetName))
-		s = ui.focus("#confirm-cancel")
+		ui.focus("#confirm-cancel")
 
 	// Cancel is focused first, so Enter never confirms by accident; Escape closes.
 	string renderModal(string name)

@@ -1590,7 +1590,7 @@ functions:
 		render_body_source = render_body_source + "return __html\n"
 
 		// -------- Build setSlot() body source --------
-		string setslot_body_source = "_slot_content = content\n"
+		string setslot_body_source = "_slot_content = __content\n"
 
 		// -------- Build renderSSR() body source --------
 		string renderssr_body_source = "return this.render()\n"
@@ -1601,10 +1601,10 @@ functions:
 		integer render_bh = _emit_stmt_from_source(ctx, render_body_source, 0)
 		integer setslot_bh = _emit_stmt_from_source(ctx, setslot_body_source, 0)
 		integer renderssr_bh = _emit_stmt_from_source(ctx, renderssr_body_source, 0)
-		// setInput(attr, value): a tag attribute written as text, converted
+		// setInput(__attr, __value): a tag attribute written as text, converted
 		// to the declared input type (UI-C010).
 		integer setinput_bh = _emit_stmt_from_source(ctx, set_input_body(input_lines), 0)
-		// setBound(field, value): a cl-bind edit from the browser, converted
+		// setBound(__field, __value): a cl-bind edit from the browser, converted
 		// to the field's declared type (UI-B005).
 		integer setbound_bh = 0
 		if has_bind
@@ -1613,11 +1613,11 @@ functions:
 		// -------- Assemble the methods array --------
 		string methods_json = "["
 		methods_json = methods_json + spec_method_inline_bh("render", "[]", "string", render_bh)
-		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"content\",\"type\":\"string\"}]", "void", setslot_bh)
+		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"__content\",\"type\":\"string\"}]", "void", setslot_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("renderSSR", "[]", "string", renderssr_bh)
-		methods_json = methods_json + "," + spec_method_inline_bh("setInput", "[{\"name\":\"attr\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setinput_bh)
+		methods_json = methods_json + "," + spec_method_inline_bh("setInput", "[{\"name\":\"__attr\",\"type\":\"string\"},{\"name\":\"__value\",\"type\":\"string\"}]", "void", setinput_bh)
 		if has_bind
-			methods_json = methods_json + "," + spec_method_inline_bh("setBound", "[{\"name\":\"field\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setbound_bh)
+			methods_json = methods_json + "," + spec_method_inline_bh("setBound", "[{\"name\":\"__field\",\"type\":\"string\"},{\"name\":\"__value\",\"type\":\"string\"}]", "void", setbound_bh)
 		// User-declared events: handlers and functions: methods.
 		string event_methods = component_section_methods(ctx, section_text, "events")
 		if event_methods != ""
@@ -1717,14 +1717,14 @@ functions:
 				result = result + t.substring(sp + 1, t.length()).trim() + " " + t.substring(0, sp) + "\n"
 		return result
 
-	// Body of setInput(attr, value): assigns the input named by the attribute
+	// Body of setInput(__attr, __value): assigns the input named by the attribute
 	// (camelCase name or its kebab-case form), converting the text to the
 	// declared type. Attributes that are not scalar inputs are ignored.
 	string set_input_body(string input_lines)
-		return set_name_types_body(input_name_types(input_lines), "attr")
+		return set_name_types_body(input_name_types(input_lines), "__attr")
 
-	// Body of setBound(field, value): assigns the state: / inputs: field
-	// named `field` ("|name:type|..." list), converting the text to its type.
+	// Body of setBound(__field, __value): assigns the state: / inputs: field
+	// named `__field` ("|name:type|..." list), converting the text to its type.
 	string set_fields_body(string bind_types)
 		string name_types = ""
 		string remaining = bind_types.substring(1, bind_types.length())
@@ -1734,11 +1734,11 @@ functions:
 			remaining = remaining.substring(bar + 1, remaining.length())
 			integer colon = item.indexOf(":")
 			name_types = name_types + item.substring(0, colon) + " " + item.substring(colon + 1, item.length()) + "\n"
-		string body = set_name_types_body(name_types, "field")
+		string body = set_name_types_body(name_types, "__field")
 		return body
 
 	// Assignment chain for "name type" lines: the field named by the string
-	// parameter `param` (its camelCase or kebab-case name) gets `value`
+	// parameter `param` (its camelCase or kebab-case name) gets `__value`
 	// converted to its type; names of non-scalar fields are ignored.
 	string set_name_types_body(string name_types, string param)
 		string body = ""
@@ -1752,13 +1752,13 @@ functions:
 			string input_type = entry.substring(sp + 1, entry.length())
 			string converted = ""
 			if input_type == "string"
-				converted = "value"
+				converted = "__value"
 			else if input_type == "integer"
-				converted = "value.toInteger()"
+				converted = "__value.toInteger()"
 			else if input_type == "number"
-				converted = "value.toNumber()"
+				converted = "__value.toNumber()"
 			else if input_type == "boolean"
-				converted = "value.toBoolean()"
+				converted = "__value.toBoolean()"
 			if converted != ""
 				string cond = param + " == \"" + input_name + "\""
 				string kebab = camel_to_kebab(input_name)
@@ -1767,10 +1767,11 @@ functions:
 				string keyword = "if "
 				if body != ""
 					keyword = "else if "
-				// setBound reads `this.` so a field named like a parameter
-				// (`value`, `field`) is still the field.
+				// The parameters are named `__attr` / `__field` / `__value`,
+				// so a component field never shares a parameter's name
+				// (CLASS007). setBound keeps reading `this.`.
 				string assigned = input_name
-				if param != "attr"
+				if param != "__attr"
 					assigned = "this." + input_name
 				body = body + keyword + cond + "\n\t" + assigned + " = " + converted + "\n"
 		if body == ""
