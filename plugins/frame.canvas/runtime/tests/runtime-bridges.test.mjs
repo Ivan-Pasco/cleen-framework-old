@@ -670,6 +670,60 @@ test('every plugin.toml [bridge] function is implemented with its WASM arity', (
   eq(problems, [], 'bridge contract');
 });
 
+// ---------------------------------------------------------------------------
+// background / later tasks (HOST_BRIDGE.md §Async)
+// ---------------------------------------------------------------------------
+//
+// A task is the function at `slot` of the module's __indirect_function_table,
+// called with its environment block; it returns its result cell address.
+
+function asyncLoader(tasks) {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const loader = new CleanCanvasLoader();
+  const table = { get: (slot) => tasks[slot] || null };
+  loader.attachInstance({ exports: { memory, __indirect_function_table: table } });
+  return { loader, env: loader.createStdlibImports() };
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
+    passes++;
+  } catch (err) {
+    failures++;
+    console.log(`FAIL: ${name}\n  ${err && err.message ? err.message : err}`);
+  }
+}
+
+test('_async_await_slot runs the task now and returns its result cell', () => {
+  const calls = [];
+  const { env } = asyncLoader({ 3: (e) => { calls.push(e); return e + 8; } });
+  eq(env._async_await_slot(3, 64), 72, 'result cell address');
+  eq(calls, [64], 'task called with its environment block');
+  throws(() => env._async_await_slot(1, 64), /slot 1/, 'a slot without a task');
+});
+
+await testAsync('_async_fire_slot runs tasks in order after the current call, past a failing one', async () => {
+  const calls = [];
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const { env } = asyncLoader({
+      0: (e) => { calls.push(['a', e]); return e + 8; },
+      1: () => { throw new Error('task failed'); },
+      2: (e) => { calls.push(['b', e]); return e + 8; },
+    });
+    env._async_fire_slot(0, 16);
+    env._async_fire_slot(1, 32);
+    env._async_fire_slot(2, 48);
+    eq(calls, [], 'no task runs during the call that fired it');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    eq(calls, [['a', 16], ['b', 48]], 'tasks ran in order; the failing one did not stop the next');
+  } finally {
+    console.error = quiet;
+  }
+});
+
 console.log(`${passes} passed, ${failures} failed`);
 if (failures > 0) {
   console.log('FAIL: frame.canvas runtime bridges');

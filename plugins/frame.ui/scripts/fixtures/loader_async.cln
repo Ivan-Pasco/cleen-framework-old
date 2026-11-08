@@ -1,0 +1,21 @@
+// Fixture for test_loader_runtime.mjs — background / later on the browser
+// host (HOST_BRIDGE.md §Async). The `later` call runs when its variable is
+// read; the `background` call runs after start returns.
+
+plugins:
+	frame.ui
+
+start:
+	print("start begins")
+	background note("task")
+	later shown = start describe("value")
+	print("read " + shown)
+	print("start ends")
+
+functions:
+	void note(string label)
+		print("ran " + label)
+
+	string describe(string text)
+		print("describing " + text)
+		return "described " + text

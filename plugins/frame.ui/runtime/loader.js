@@ -1138,6 +1138,34 @@
 	// fragments — [count][elem_ptr × count] and [count][(key_ptr, val_ptr) ×
 	// count] — NOT Clean list<any> / pairs<string,any>. Every access
 	// re-acquires the DataView: writeString / allocBytes can grow memory.
+	// ========== background / later tasks (HOST_BRIDGE.md §Async) ==========
+	// The compiler turns the call of a `background` / `later` statement into
+	// a task: a function (env) -> i32 at `slot` of the module's
+	// __indirect_function_table, plus its environment block `env`. Fired
+	// tasks run in order in a macrotask after the export that started them
+	// (start, an event handler) has returned; awaiting a task runs it now. The
+	// task function itself runs the call once and returns its result cell.
+	const asyncTasks = [];
+	let asyncTasksScheduled = false;
+	function asyncTask(slot) {
+		const table = instance && instance.exports.__indirect_function_table;
+		const task = table ? table.get(slot) : null;
+		if (typeof task !== 'function') throw new Error('[frame.ui] async task slot ' + slot + ' holds no function');
+		return task;
+	}
+	function runAsyncTasks() {
+		asyncTasksScheduled = false;
+		while (asyncTasks.length > 0) {
+			const [slot, env] = asyncTasks.shift();
+			try {
+				asyncTask(slot)(env);
+			} catch (err) {
+				// A failed task does not reach the code that started it.
+				console.error('[frame.ui] background task failed:', err);
+			}
+		}
+	}
+
 	const jsonView = () => new DataView(memory.buffer);
 
 	function readLPString(lpPtr) {
@@ -1823,6 +1851,15 @@
 			// this is a no-op stub. Without it the WASM module fails to instantiate
 			// with a LinkError and the entire UI bridge silently dies.
 			_server_sleep: (_ms) => 0,
+
+			_async_fire_slot: (slot, env) => {
+				asyncTasks.push([slot, env]);
+				if (!asyncTasksScheduled) {
+					asyncTasksScheduled = true;
+					setTimeout(runAsyncTasks, 0);
+				}
+			},
+			_async_await_slot: (slot, env) => asyncTask(slot)(env),
 
 			// String operations
 			string_compare: (hptr1, hptr2) => {

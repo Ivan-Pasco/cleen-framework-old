@@ -165,6 +165,7 @@ async function main() {
 	const eventsWasm = compile('loader_events');
 	const startErrorWasm = compile('loader_start_error');
 	const bindWasm = compileProject('loader_bind');
+	const asyncWasm = compile('loader_async');
 
 	console.log('loader runtime:');
 
@@ -381,6 +382,13 @@ async function main() {
 		await booted.ready();
 		eq(called, true, 'companion import used');
 		eq(booted.doc.querySelector('#out').textContent, 'X|7|7', '#out');
+	});
+
+	await test('background runs after start returns; later runs when read (HOST_BRIDGE.md §Async)', async () => {
+		const { logs } = await boot('<div id="out"></div>', asyncWasm);
+		const order = logs.log.filter((l) => /^(start|read|ran|describing)/.test(l));
+		eq(order.join(' / '), 'start begins / describing value / read described value / start ends / ran task', 'console order');
+		eq(logs.error.length, 0, 'errors: ' + logs.error.join(' | '));
 	});
 
 	console.log('\n' + passed + ' passed, ' + failures.length + ' failed');

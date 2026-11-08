@@ -405,6 +405,9 @@
       this.bridge = new CanvasBridge();
       this.memory = null;
       this.instance = null;
+      // background / later tasks waiting to run, as [slot, env]
+      this._asyncTasks = [];
+      this._asyncTasksScheduled = false;
       this._initialPages = 0;
       this._maxPages = 0;
       this._growCount = 0;
@@ -1143,27 +1146,19 @@
         },
 
         // ================================================================
-        // ASYNC RUNTIME (no synchronous WASM async on browser host)
+        // BACKGROUND / LATER TASKS (HOST_BRIDGE.md §Async)
         // ================================================================
-        // The Clean async runtime requires the host to suspend a WASM
-        // function call until a JS Promise resolves. Browser WASM doesn't
-        // support that without the JSPI proposal (still behind flags).
-        // For now these are honest no-ops that log a warning so callers
-        // know the call did not actually run; the registry contract for
-        // these is "may be a no-op on hosts lacking JSPI."
+        // A task is the compiler-generated function (env) -> i32 at `slot`
+        // of __indirect_function_table plus its environment block. Fired
+        // tasks run in order in a macrotask after the export that started
+        // them returns; awaiting one runs it now (it runs its call once).
 
-        _async_await(fnNamePtr, fnNameLen, argsPtr, argsLen) {
-          const name = self.readString(fnNamePtr, fnNameLen);
-          console.warn(`[frame.canvas/loader] _async_await("${name}") is unsupported in the browser host without WASM JSPI; returning empty result.`);
-          void argsPtr; void argsLen;
-          return self._writeLP('');
+        _async_fire_slot(slot, env) {
+          self._queueAsyncTask(slot, env);
         },
 
-        _async_fire(fnNamePtr, fnNameLen, argsPtr, argsLen) {
-          const name = self.readString(fnNamePtr, fnNameLen);
-          console.warn(`[frame.canvas/loader] _async_fire("${name}") is unsupported in the browser host without WASM JSPI; the call did not run.`);
-          void argsPtr; void argsLen;
-          return 0;
+        _async_await_slot(slot, env) {
+          return self._asyncTask(slot)(env);
         },
 
         // ================================================================
@@ -1186,6 +1181,37 @@
     /**
      * Read string from WASM memory
      */
+    // The task function at `slot` of the module's __indirect_function_table.
+    _asyncTask(slot) {
+      const table = this.instance && this.instance.exports.__indirect_function_table;
+      const task = table ? table.get(slot) : null;
+      if (typeof task !== 'function') {
+        throw new Error(`[frame.canvas/loader] async task slot ${slot} holds no function`);
+      }
+      return task;
+    }
+
+    _queueAsyncTask(slot, env) {
+      this._asyncTasks.push([slot, env]);
+      if (this._asyncTasksScheduled) return;
+      this._asyncTasksScheduled = true;
+      setTimeout(() => this._runAsyncTasks(), 0);
+    }
+
+    // Run the queued tasks in order, including the ones they queue. A task
+    // that fails is logged; it does not reach the code that started it.
+    _runAsyncTasks() {
+      this._asyncTasksScheduled = false;
+      while (this._asyncTasks.length > 0) {
+        const [slot, env] = this._asyncTasks.shift();
+        try {
+          this._asyncTask(slot)(env);
+        } catch (err) {
+          console.error('[frame.canvas/loader] background task failed:', err);
+        }
+      }
+    }
+
     readString(ptr, len) {
       if (!this.memory) return '';
       this._checkMemoryGrowth();
