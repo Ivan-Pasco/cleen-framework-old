@@ -1,0 +1,147 @@
+// Test: frame.data — paginate:/cursor: where: values are bound parameters.
+// Spec: HOST_BRIDGE.md "where envelope" (`__where` with $1, $2, ...
+// placeholders, values in `__params`, Decision 17); frame-data.ebnf §5.1
+// (where: right-hand side is any expression), §5.3 (paginate:/cursor:),
+// DAT-I001 (tenant scope).
+// Regression (Ivan-Pasco/clean-server-old#2): the paginate/cursor where
+// condition was sent as SQL text with every run-time value quoted in
+// place; booleans became 'true' (matching no row) and the values' safety
+// rested on quoting alone.
+
+plugins:
+	frame.server
+	frame.auth
+	frame.data
+
+server:
+	port: 3400
+
+// tenant_getId() comes from frame.auth, which emits it with its auth: block.
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+data Person:
+	fields:
+		integer id primary generated
+		string name required
+		integer age
+		boolean active
+
+data Memo:
+	fields:
+		integer id primary generated
+		string tenantId
+		string body required
+
+start:
+	printl("[boot] data-pagination-bound-where server ready")
+
+endpoints:
+	GET "/test":
+		Person.migrate()
+		Memo.migrate()
+		list<string> names = ["Ann", "it's", "$1", "what?", "Ann", "Ann"]
+		iterate i in 0 to names.length() - 1
+			Person p = Person()
+			p.name = names[i]
+			p.age = 10 * (i + 1)
+			p.active = i % 2 == 0
+			Database.save(p)
+
+		// Injection attempts are values: they match no row and run nothing.
+		list<string> attacks = ["x' OR '1'='1", "x'; DROP TABLE persons; --", "\\' OR 1=1 -- ", "' OR ''='"]
+		boolean ok_inject = true
+		iterate a in attacks
+			PagedResult<Person> leaked = Person.paginate:
+				where:
+					name == a
+				paginate:
+					page: 1
+					perPage: 10
+			if leaked.totalCount != 0 or leaked.items.length() != 0
+				ok_inject = false
+			CursorResult<Person> leaked_c = Person.cursor:
+				where:
+					name == a
+				cursor:
+					after: ""
+					perPage: 10
+					by: id
+			if leaked_c.items.length() != 0
+				ok_inject = false
+		integer still_there = Person.count:
+			where:
+				age > 0
+		ok_inject = ok_inject and still_there == 6
+
+		// Quotes and placeholder look-alikes are matched by exact value.
+		string quoted = "it's"
+		string marker = "$1"
+		string mark2 = "what?"
+		PagedResult<Person> odd = Person.paginate:
+			where:
+				name in [quoted, marker, mark2]
+			order: id
+			paginate:
+				page: 1
+				perPage: 10
+		boolean ok_values = odd.totalCount == 3 and odd.items.length() == 3 and odd.items[0].name == "it's" and odd.items[1].name == "$1" and odd.items[2].name == "what?"
+
+		// Typed values compare as their types (a quoted 'true' matched nothing).
+		boolean wanted = true
+		integer minAge = 15
+		PagedResult<Person> typed = Person.paginate:
+			where:
+				active == wanted
+				age > minAge
+			paginate:
+				page: 1
+				perPage: 10
+		boolean ok_typed = typed.totalCount == 2 and typed.items.length() == 2
+
+		// cursor: where values and the cursor value bind together.
+		string who = "Ann"
+		CursorResult<Person> c1 = Person.cursor:
+			where:
+				name == who
+			cursor:
+				after: ""
+				perPage: 2
+				by: id
+		CursorResult<Person> c2 = Person.cursor:
+			where:
+				name == who
+			cursor:
+				after: c1.nextCursor
+				perPage: 2
+				by: id
+		boolean ok_cursor = c1.items.length() == 2 and c1.hasNext and c2.items.length() == 1 and c2.items[0].name == "Ann" and c2.items[0].age == 60 and not c2.hasNext
+
+		// The tenant scope is a bound value ahead of the where: values.
+		Memo mine = Memo()
+		mine.body = "mine"
+		Database.save(mine)
+		db.execute("INSERT INTO memos (tenantId, body) VALUES ('other', 'mine')", "[]")
+		string want_body = "mine"
+		PagedResult<Memo> memos = Memo.paginate:
+			where:
+				body == want_body
+			paginate:
+				page: 1
+				perPage: 10
+		CursorResult<Memo> memos_c = Memo.cursor:
+			where:
+				body == want_body
+			cursor:
+				after: ""
+				perPage: 10
+				by: id
+		boolean ok_tenant = memos.totalCount == 1 and memos.items.length() == 1 and memos_c.items.length() == 1
+
+		if ok_inject and ok_values and ok_typed and ok_cursor and ok_tenant
+			printl("PASS: data-pagination-bound-where")
+		else
+			printl("FAIL: data-pagination-bound-where inject=" + ok_inject.toString() + " values=" + ok_values.toString() + " typed=" + ok_typed.toString() + " cursor=" + ok_cursor.toString() + " tenant=" + ok_tenant.toString())
+		return json({ok: true})

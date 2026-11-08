@@ -2195,7 +2195,6 @@ functions:
 	//   __M_cols(sql)        renamed field names rewritten to columns (DAT-M017)
 	//   __M_tenant_param()   the bound tenant value (JSON), "" without a tenant field
 	//   __M_cond(w)          w (columns resolved) with the tenant scope (DAT-I001)
-	//   __M_cond_inline(w)   same with the tenant value quoted in place
 	//   __M_where(w)         " WHERE <cond>", or "" when there is no condition
 	//   __parse_as_M(json)   rows of a _db_query result as list<M>
 	//   __first_as_M(json)   first row or null (DAT-Q001)
@@ -2211,13 +2210,10 @@ functions:
 			return 1
 
 		// The tenant scope is a bound parameter (`?`, value from
-		// __M_tenant_param) in __M_cond; __M_cond_inline quotes it in place
-		// for the paginate/cursor `__where` fragment, which the host does
-		// not bind.
+		// __M_tenant_param) in __M_cond, ahead of the where: values.
 		string tf = tenant_field(field_names)
 		string tp_src = "return \"\"\n"
 		string cond_src = "string __w = __" + model_name + "_cols(w)\n"
-		string inline_src = cond_src
 		if tf.length() > 0
 			string tcol = table_name + "." + column_of(field_names, field_columns, tf)
 			if field_type_of(field_names, field_types, tf) == "integer"
@@ -2225,19 +2221,13 @@ functions:
 			else
 				tp_src = "return json.dataToText(tenant_getId())\n"
 			cond_src = cond_src + "string __t = " + clean_str(tcol + " = ?") + "\n"
-			inline_src = inline_src + "string __t = " + clean_str(tcol + " = '") + " + tenant_getId().replace(\"'\", \"''\") + \"'\"\n"
-			string join_src = "if __w.length() == 0\n\treturn __t\n"
-			join_src = join_src + "return __t + \" AND (\" + __w + \")\"\n"
-			cond_src = cond_src + join_src
-			inline_src = inline_src + join_src
+			cond_src = cond_src + "if __w.length() == 0\n\treturn __t\n"
+			cond_src = cond_src + "return __t + \" AND (\" + __w + \")\"\n"
 		else
 			cond_src = cond_src + "return __w\n"
-			inline_src = inline_src + "return __w\n"
 		if emit_fn(ctx, "__" + model_name + "_tenant_param", "[]", _type_string(ctx), tp_src) != 0
 			return 1
 		if emit_fn(ctx, "__" + model_name + "_cond", string_param(ctx, "w"), _type_string(ctx), cond_src) != 0
-			return 1
-		if emit_fn(ctx, "__" + model_name + "_cond_inline", string_param(ctx, "w"), _type_string(ctx), inline_src) != 0
 			return 1
 
 		string where_src = "string __c = __" + model_name + "_cond(w)\n"
@@ -2947,15 +2937,12 @@ functions:
 			return t
 		return ""
 
-	// A where:/having: condition is built in one of three parts, all from
+	// A where:/having: condition is built in one of two parts, both from
 	// the same walk so they stay in step:
 	//   "sql"     SQL text with a `?` placeholder for every run-time value
 	//             (numbered $1, $2, ... at run time by __frame_data_sql);
 	//   "params"  the matching bound values: a Clean expression for the
-	//             comma-separated JSON values, or "" when there are none;
-	//   "inline"  SQL text with every run-time value quoted in place, for
-	//             the paginate/cursor host calls, whose `__where` fragment
-	//             cannot carry bound parameters.
+	//             comma-separated JSON values, or "" when there are none.
 	// Literal right-hand sides are SQL literals at plugin time in every part.
 
 	// Join two "params" parts.
@@ -2971,8 +2958,6 @@ functions:
 	string value_part(string head, string v, string part)
 		if part == "params"
 			return "json.dataToText(" + v + ")"
-		if part == "inline"
-			return cat_expr(sql_lit(head + "'"), "(" + v + ").toString().replace(\"'\", \"''\") + \"'\"")
 		return sql_lit(head + "?")
 
 	// Clean expression for one comparison `lhs <op> rhs` (frame-data.ebnf
@@ -3033,9 +3018,6 @@ functions:
 						pending = pending + lit
 					else if part == "params"
 						in_expr = param_cat(in_expr, value_part("", item, part))
-					else if part == "inline"
-						in_expr = cat_expr(in_expr, value_part(pending, item, part))
-						pending = ""
 					else
 						pending = pending + "?"
 				pos = e + 1
@@ -3187,7 +3169,7 @@ functions:
 			pos = e + 1
 		return result
 
-	// The where: condition `w` (part "sql" or "inline") of a query with
+	// The where: condition `w` (part "sql") of a query with
 	// include: as a semi-join: `<T>.<pk> IN (SELECT <T>.<pk> FROM <T>
 	// <joins> [WHERE w])`. Each matching parent row appears once, however
 	// many has_many rows match (DAT-Q008), and relation-scoped where: terms
@@ -3526,12 +3508,15 @@ functions:
 	string cols_expr(string model_name, string sql_expr)
 		return "__" + model_name + "_cols(" + sql_expr + ")"
 
-	// JSON where-object for _db_paginate / _db_cursor_page:
-	// {"__where": <condition incl. tenant scope>, "__order": <ORDER BY list>}.
+	// JSON where-object for _db_paginate / _db_cursor_page (HOST_BRIDGE.md,
+	// "where envelope"): {"__where": <condition incl. tenant scope, values
+	// as $1, $2, ...>, "__params": [<tenant value>, <where: values>],
+	// "__order": <ORDER BY list>}. The host binds __params; no run-time
+	// value is ever part of the SQL text.
 	string where_json_expr(string model_name, string dsl_body)
-		// The host appends `__where` verbatim and binds no parameters for
-		// it, so values are quoted in place here ("inline" part).
-		string expr = "\"{\\\"__where\\\":\" + json.dataToText(__" + model_name + "_cond_inline(" + query_where_expr(model_name, dsl_body, "inline") + "))"
+		string cond = "__" + model_name + "_cond(" + query_where_expr(model_name, dsl_body, "sql") + ")"
+		string params = "__frame_data_params(__" + model_name + "_tenant_param(), " + where_params_arg(model_name, dsl_body) + ")"
+		string expr = "\"{\\\"__where\\\":\" + json.dataToText(__frame_data_sql(" + cond + ", 0)) + " + clean_str(",\"__params\":") + " + " + params
 		string order_clause = extract_subblock(dsl_body, "order:")
 		if order_clause.length() > 0
 			expr = expr + " + " + clean_str(",\"__order\":") + " + json.dataToText(" + cols_expr(model_name, clean_str(parse_order_clause(order_clause))) + ")"
