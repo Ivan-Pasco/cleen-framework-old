@@ -24,12 +24,13 @@ start:
 
 	string lit_where = build_where_expr("name == \"O'Brien\"", "", "sql")
 	failures = failures + check(lit_where == "\"name = 'O''Brien'\"", "where: literal quote doubled")
-	// Run-time values are bound: `?` in the SQL, the value in "params";
-	// "inline" (paginate/cursor) quotes them in place.
+	// Run-time values are bound: `?` in the SQL, the value in "params".
+	// Fixed: also asserted an "inline" part that quoted values into the
+	// paginate/cursor `__where` text; HOST_BRIDGE.md now binds those values
+	// from `__params` (Decision 17), so there is no inline part any more.
 	failures = failures + check(build_where_expr("name == who", "", "sql") == "\"name = ?\"", "where: runtime value is a placeholder")
 	failures = failures + check(build_where_expr("name == who", "", "params") == "json.dataToText(who)", "where: runtime value is a param")
 	failures = failures + check(build_where_expr("name == \"x\"", "", "params") == "", "where: literal has no param")
-	failures = failures + check(build_where_expr("name == who", "", "inline").contains("(who).toString().replace(\"'\", \"''\")"), "where: inline value quoted")
 	failures = failures + check(build_where_expr("a == x and b in [y, \"k\"]", "", "params") == "json.dataToText(x) + \",\" + json.dataToText(y)", "where: params in placeholder order")
 	failures = failures + check(build_where_expr("a in [x, \"k\"]", "", "sql") == "\"a IN (?, 'k')\"", "where: in list placeholders")
 	// Parenthesised groups (DAT-Q009).
@@ -66,6 +67,14 @@ start:
 	failures = failures + check(query_expr("Post", "findOrFail", "").startsWith("__find_or_fail_as_Post("), "findOrFail helper")
 	failures = failures + check(query_expr("Post", "count", "") == "__Post_count(\"\", \"\")", "count helper")
 	failures = failures + check(query_expr("Post", "paginate", "paginate:\n\tpage: p\n\tperPage: 10").contains(", p, 10))"), "paginate: page/perPage")
+	// paginate:/cursor: where: values travel in `__params` and are bound by
+	// the host; the `__where` text has numbered placeholders, never values.
+	string pag_expr = query_expr("Post", "paginate", "where:\n\ttitle == t\n\tviews > minViews\npaginate:\n\tpage: 1\n\tperPage: 10")
+	failures = failures + check(pag_expr.contains("__frame_data_sql(__Post_cond(\"title = ?\" + \" AND \" + \"views > ?\"), 0)"), "paginate: where values are placeholders")
+	failures = failures + check(pag_expr.contains("\",\\\"__params\\\":\" + __frame_data_params(__Post_tenant_param(), json.dataToText(t) + \",\" + json.dataToText(minViews))"), "paginate: where values in __params")
+	failures = failures + check(pag_expr.contains(".replace(") == false, "paginate: no value quoted into SQL")
+	string cur_expr = query_expr("Post", "cursor", "where:\n\tauthor == who\ncursor:\n\tafter: c\n\tperPage: 5")
+	failures = failures + check(cur_expr.contains("__frame_data_params(__Post_tenant_param(), json.dataToText(who))") and cur_expr.contains(".replace(") == false, "cursor: where values in __params")
 	// Fixed: expected `, 5, c, "id")` — the cursor column goes through
 	// __Post_cols (DAT-M017 `as "column"`); this file was only type-checked
 	// before, so the stale expectation never ran.
