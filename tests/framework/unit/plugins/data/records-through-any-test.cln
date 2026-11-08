@@ -5,6 +5,9 @@
 // parameter, a `list<any>` response body) was encoded from its raw memory
 // (`{"":17179869251}`), and a null `first:` result boxed as an empty object.
 // The record must encode as its fields and still unbox to the same record.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 plugins:
 	frame.server
@@ -68,7 +71,8 @@ endpoints:
 		Database.save(b)
 
 		PostEntity posts = PostEntity()
-		Post last = posts.data.latest()
+		Post? foundLast = posts.data.latest()
+		Post last = foundLast!
 		string one = encode(last)
 		boolean ok_one = one == "{\"id\":2,\"title\":\"B\",\"viewCount\":50}"
 
@@ -82,7 +86,7 @@ endpoints:
 		Post back = unwrap(wrap(last))
 		boolean ok_back = back.title == "B" and back.viewCount == 50
 
-		Post missing = posts.data.titled("Z")
+		Post? missing = posts.data.titled("Z")
 		boolean ok_null = missing == null and encode(missing) == "null"
 
 		if ok_one and ok_list and ok_back and ok_null

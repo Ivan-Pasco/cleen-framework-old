@@ -1,5 +1,8 @@
 // Test: frame.data — transaction: block commits atomically.
 // SQLite :memory: — no external DB required.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -37,23 +40,27 @@ endpoints:
 		// Fixed: was `Account.update:` with set:/where:, frame-data.ebnf v2
 		// requires load-mutate-save via `Database.save(entity)` (DAT-S001).
 		transaction:
-			Account payer = Account.first:
+			Account? foundPayer = Account.first:
 				where:
 					owner == "alice"
+			Account payer = foundPayer!
 			payer.balance = 70
 			Database.save(payer)
-			Account payee = Account.first:
+			Account? foundPayee = Account.first:
 				where:
 					owner == "bob"
+			Account payee = foundPayee!
 			payee.balance = 80
 			Database.save(payee)
 
-		Account alice = Account.first:
+		Account? foundAlice = Account.first:
 			where:
 				owner == "alice"
-		Account bob = Account.first:
+		Account alice = foundAlice!
+		Account? foundBob = Account.first:
 			where:
 				owner == "bob"
+		Account bob = foundBob!
 		boolean ok_alice = alice.balance == 70
 		boolean ok_bob = bob.balance == 80
 

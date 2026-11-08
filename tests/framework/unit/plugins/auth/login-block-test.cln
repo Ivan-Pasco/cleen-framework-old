@@ -4,6 +4,9 @@
 // The login: statements look the attempt and the account up with frame.data
 // (the runner sends no request body, so the handler stores each attempt
 // first); auth.login() runs the flow.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 plugins:
 	frame.server
@@ -35,9 +38,10 @@ data Attempt:
 		string password
 
 login:
-	Attempt attempt = Attempt.first:
+	Attempt? foundAttempt = Attempt.first:
 		where:
 			id == 1
+	Attempt attempt = foundAttempt!
 	list<Account> found = Account.find:
 		where:
 			email == attempt.email
@@ -58,9 +62,10 @@ start:
 
 functions:
 	void setAttempt(string email, string pw)
-		Attempt a = Attempt.first:
+		Attempt? foundA = Attempt.first:
 			where:
 				id == 1
+		Attempt a = foundA!
 		a.email = email
 		a.password = pw
 		Database.save(a)

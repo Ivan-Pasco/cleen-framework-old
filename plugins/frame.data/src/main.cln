@@ -36,6 +36,7 @@ external:
 	integer _type_boolean(integer ctx)
 	integer _type_array(integer ctx, integer elem_type_handle)
 	integer _type_class_ref(integer ctx, string name)
+	integer _type_optional(integer ctx, integer inner_type_handle)
 	// Diagnostics (§5) and sticky-error context (§3.15)
 	integer _emit_error(integer ctx, integer severity, string code, string message, string span)
 	integer _ctx_set_error_context(integer ctx, string code, string message)
@@ -2197,7 +2198,7 @@ functions:
 	//   __M_cond(w)          w (columns resolved) with the tenant scope (DAT-I001)
 	//   __M_where(w)         " WHERE <cond>", or "" when there is no condition
 	//   __parse_as_M(json)   rows of a _db_query result as list<M>
-	//   __first_as_M(json)   first row or null (DAT-Q001)
+	//   __first_as_M(json)   first row or none (DAT-Q001)
 	//   __find_or_fail_as_M  first row or NOT_FOUND (DAT-Q002)
 	//   __M_count(w, p) / __M_exists(w, p)  (DAT-Q004 / DAT-Q003); p holds
 	//                        the bound where: values (comma-separated JSON)
@@ -2255,9 +2256,11 @@ functions:
 			return 1
 
 		string fa = "list<" + model_name + "> __fa_rows = __parse_as_" + model_name + "(__json)\n"
-		fa = fa + "if __fa_rows.length() == 0\n\treturn null\n"
+		fa = fa + "if __fa_rows.length() == 0\n\treturn none\n"
 		fa = fa + "return __fa_rows[0]\n"
-		if emit_fn(ctx, "__first_as_" + model_name, string_param(ctx, "__json"), _type_class_ref(ctx, model_name), fa) != 0
+		// `first` returns `M?`: none when no row matches (DAT-Q001); only a
+		// `T?` holds none (type-system.md §8).
+		if emit_fn(ctx, "__first_as_" + model_name, string_param(ctx, "__json"), _type_optional(ctx, _type_class_ref(ctx, model_name)), fa) != 0
 			return 1
 
 		string ff = "list<" + model_name + "> __ff_rows = __parse_as_" + model_name + "(__json)\n"
