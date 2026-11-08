@@ -1,7 +1,8 @@
 // Test: frame.auth — `jwt: enabled = false` turns JWT off.
 // Grammar: frame-auth.ebnf jwt_enabled_field
 // Regression: enabled = false was stored and never read; auth.jwt.sign kept
-// issuing tokens and auth.jwt.verify kept accepting them.
+// issuing tokens and auth.jwt.verify kept accepting them. auth.jwt.signRefresh
+// issues nothing either.
 
 plugins:
 	frame.server
@@ -24,11 +25,12 @@ endpoints:
 		boolean ok_sign = auth.jwt.sign("{\"sub\":7}") == ""
 		boolean ok_verify = auth.jwt.verify(minted) == ""
 		boolean ok_refresh = auth.jwt.refresh(minted) == ""
+		boolean ok_sign_refresh = auth.jwt.signRefresh("{\"sub\":7}") == ""
 
-		if ok_minted and ok_sign and ok_verify and ok_refresh
+		if ok_minted and ok_sign and ok_verify and ok_refresh and ok_sign_refresh
 			printl("PASS: auth-jwt-disabled")
 		else
-			printl("FAIL: auth-jwt-disabled minted=" + ok_minted.toString() + " sign=" + ok_sign.toString() + " verify=" + ok_verify.toString() + " refresh=" + ok_refresh.toString())
+			printl("FAIL: auth-jwt-disabled minted=" + ok_minted.toString() + " sign=" + ok_sign.toString() + " verify=" + ok_verify.toString() + " refresh=" + ok_refresh.toString() + " sign_refresh=" + ok_sign_refresh.toString())
 		return json({ok: true})
 
 start:

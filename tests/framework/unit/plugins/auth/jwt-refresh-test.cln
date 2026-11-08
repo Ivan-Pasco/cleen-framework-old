@@ -4,8 +4,8 @@
 // Fixed: the test refreshed an access token from auth.jwt.sign — exactly
 // the hole where any access token became a refreshTtlMinutes (30-day)
 // token. Only refresh tokens (typ "refresh") are refreshable; the test
-// mints one with the configured secret, since frame.auth has no call that
-// issues refresh tokens yet.
+// mints one with the configured secret, so the rotation is checked on its
+// own (auth.jwt.signRefresh has its own test, jwt-sign-refresh-test).
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:

@@ -257,6 +257,13 @@ functions:
 		if err != 0
 			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush jwt_refresh failed")
 
+		fn_h = build_jwt_sign_refresh(ctx)
+		if fn_h == 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "build_jwt_sign_refresh failed")
+		err = _batch_arrayPush(ctx, fns_arr, fn_h)
+		if err != 0
+			return plugin_error(ctx, "FRAME-AUTH-E002", "arrayPush jwt_signRefresh failed")
+
 		// Internal helpers used by session_create / session_setCookie /
 		// session_destroy (string assembly runs in the generated program).
 		fn_h = build_session_json_helper(ctx)
@@ -793,6 +800,16 @@ functions:
 		src = src + "_http_set_header(\"Set-Cookie\", __auth_build_refresh_cookie_header(rotated))\n"
 		src = src + "return __auth_jwt_issue(json.dataToText(json.get(data, \"claims\")), \"access\", __jwt_ttl)\n"
 		return source_helper(ctx, "jwt_refresh", "refreshToken:string", "string", src)
+
+	// 7a. jwt_signRefresh(claims: string) -> string — a refresh token (typ
+	// "refresh") for claims that expires refreshTtlMinutes from now. It is
+	// what auth.jwt.refresh accepts, once: its jti is consumed on first use
+	// (AUTH-J007 / AUTH-J009). The login: block's jwt flow issues the same
+	// token into the frame.refresh cookie.
+	integer build_jwt_sign_refresh(integer ctx)
+		string src = "if __jwt_enabled == false\n\treturn \"\"\n"
+		src = src + "return __auth_jwt_issue(claims, \"refresh\", __jwt_refresh_ttl)\n"
+		return source_helper(ctx, "jwt_signRefresh", "claims:string", "string", src)
 
 	// __auth_jwt_issue(claims, typ, ttlMinutes) -> string — a token of type
 	// typ that expires ttlMinutes from now.
@@ -1742,7 +1759,7 @@ functions:
 			src = src + "string __login_token = jwt_sign(__login_jwt_claims)\n"
 			src = src + "if __login_token == \"\"\n"
 			src = src + "\tconsole_warn(\"frame.auth: login failed: JWT is disabled (jwt: enabled = false)\")\n\treturn \"\"\n"
-			src = src + "_http_set_header(\"Set-Cookie\", __auth_build_refresh_cookie_header(__auth_jwt_issue(__login_jwt_claims, \"refresh\", __jwt_refresh_ttl)))\n"
+			src = src + "_http_set_header(\"Set-Cookie\", __auth_build_refresh_cookie_header(jwt_signRefresh(__login_jwt_claims)))\n"
 			src = src + "return __login_token\n"
 			return src
 		src = src + "if _req_cookie(__session_cookie) != \"\"\n\t_session_delete()\n"

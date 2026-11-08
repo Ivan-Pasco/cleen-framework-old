@@ -168,13 +168,14 @@ functions = [
   { name = "auth.session.get", signature = "auth.session.get()", description = "Get current session data (checks expiry)", maps_to = "_session_get", params = [], returns = "string" },
   { name = "auth.session.destroy", signature = "auth.session.destroy()", description = "End session and clear cookie", maps_to = "_auth_clear_session", params = [], returns = "boolean" },
   # auth.jwt.* wrappers resolve to the plugin-emitted helpers `jwt_sign`, `jwt_verify`,
-  # `jwt_refresh` (emitted by expand_block_typed → build_jwt_sign/verify/refresh in
+  # `jwt_refresh`, `jwt_signRefresh` (emitted by expand_block_typed → build_jwt_sign/verify/refresh in
   # src/main.cln). The helpers read the auth-block-configured
   # __jwt_secret / __jwt_alg locals and delegate to the _jwt_* bridges. Requires
   # compiler 0.33.14+ maps_to_helper support (see foundation team prompt c6682df8).
   { name = "auth.jwt.sign",    signature = "auth.jwt.sign(claims)",         description = "Sign an access token (typ \"access\", expires after ttlMinutes) with the configured secret and algorithm",  maps_to_helper = "jwt_sign",    params = ["string"], returns = "string" },
   { name = "auth.jwt.verify",  signature = "auth.jwt.verify(token)",        description = "Verify an access token and return its payload, or empty string when it is invalid, expired or a refresh token",  maps_to_helper = "jwt_verify",  params = ["string"], returns = "string" },
   { name = "auth.jwt.refresh", signature = "auth.jwt.refresh(refreshToken)", description = "Consume a refresh token (single use) and return a new access token; the rotated refresh token is set in the HttpOnly frame.refresh cookie. Returns empty string for an invalid, expired, replayed or non-refresh token", maps_to_helper = "jwt_refresh", params = ["string"], returns = "string" },
+  { name = "auth.jwt.signRefresh", signature = "auth.jwt.signRefresh(claims)", description = "Sign a refresh token (typ \"refresh\", expires after refreshTtlMinutes) with the configured secret and algorithm. auth.jwt.refresh accepts it once; auth.jwt.verify rejects it. Returns empty string when JWT is disabled", maps_to_helper = "jwt_signRefresh", params = ["string"], returns = "string" },
   # Emitted by the login: block (frame-auth.ebnf login_block).
   { name = "auth.login", signature = "auth.login()", description = "Run the login: block flow: verify the submitted password against the stored hash, then issue a session (default) or a JWT access token plus a refresh cookie. Returns the session id or access token, or empty string when the credentials are invalid", maps_to_helper = "__auth_login", params = [], returns = "string" },
   { name = "auth.hashPassword", signature = "auth.hashPassword(password)", description = "Hash password with Argon2id", maps_to = "_crypto_hash_password", params = ["string"], returns = "string" },

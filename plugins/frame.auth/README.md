@@ -68,8 +68,9 @@ On success:
   is created for `userId` with `claims` (with a new CSRF token) and its
   cookie is set; returns the session id.
 - `issue = "jwt"`: returns an access token (`auth.jwt.sign`) whose claims
-  are `claims` plus `"sub": "<userId>"`, and sets a refresh token in the
-  HttpOnly `frame.refresh` cookie for `auth.jwt.refresh`.
+  are `claims` plus `"sub": "<userId>"`, and sets a refresh token
+  (`auth.jwt.signRefresh` with the same claims) in the HttpOnly
+  `frame.refresh` cookie for `auth.jwt.refresh`.
 
 A statement may `return` early; `auth.login()` then returns that value.
 
@@ -105,6 +106,18 @@ endpoints:
 ```
 
 Rate-limit the login endpoint (AUTH-C002) with the server's rate limiting.
+
+## Tokens
+
+| Call | Returns |
+|---|---|
+| `auth.jwt.sign(claims)` | an access token (`typ` `"access"`), valid for `ttlMinutes` |
+| `auth.jwt.signRefresh(claims)` | a refresh token (`typ` `"refresh"`), valid for `refreshTtlMinutes` |
+| `auth.jwt.verify(token)` | the payload of a valid access token, `""` otherwise (a refresh token is refused) |
+| `auth.jwt.refresh(refreshToken)` | a new access token for the refresh token's claims, `""` when it is invalid, expired, already used or not a refresh token; the rotated refresh token goes to the `frame.refresh` cookie |
+
+A refresh token works once: `auth.jwt.refresh` consumes its `jti`. With
+`jwt: enabled = false` every call returns `""`.
 
 ## Permission Checks
 

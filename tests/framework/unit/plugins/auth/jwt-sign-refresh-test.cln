@@ -1,0 +1,63 @@
+// Test: frame.auth — auth.jwt.signRefresh(claims) issues a refresh token.
+// Requires server context (the helpers read the configured secret).
+// Semantic: AUTH-J005..J007, AUTH-J009, AUTH-J012
+// A refresh token carries typ "refresh", expires after refreshTtlMinutes,
+// is not an access token, and auth.jwt.refresh accepts it exactly once.
+// Before signRefresh existed an application could only get a refresh token
+// from the login: block's jwt flow (Ivan-Pasco/cleen-framework-old#19).
+
+plugins:
+	frame.server
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+	jwt:
+		secret = env.get("JWT_SECRET")
+		alg = "HS256"
+		ttlMinutes = 5
+		refreshTtlMinutes = 60
+
+endpoints:
+	GET "/test":
+		string refreshToken = auth.jwt.signRefresh("{\"sub\":\"user1\",\"role\":\"editor\"}")
+		boolean ok_issued = refreshToken.length() > 0
+
+		// Signed with the configured secret: the raw bridge verifies it.
+		string payload = jwt.verify(refreshToken, env.get("JWT_SECRET"), "HS256")
+		boolean ok_signed = payload.length() > 0
+		boolean ok_typ = payload.contains("\"typ\":\"refresh\"")
+		boolean ok_claims = payload.contains("\"sub\":\"user1\"") and payload.contains("\"role\":\"editor\"")
+		boolean ok_jti = json.get(json.textToData(payload), "jti").toString().length() == 32
+
+		// Expires after refreshTtlMinutes (60), not ttlMinutes (5).
+		integer exp = json.get(json.textToData(payload), "exp")
+		boolean ok_ttl = exp <= time.now() + 60 * 60 and exp > time.now() + 59 * 60
+
+		// A refresh token is not an access token.
+		boolean ok_not_access = auth.jwt.verify(refreshToken) == ""
+
+		// Refresh once: a new access token with the same claims.
+		string access = auth.jwt.refresh(refreshToken)
+		string accessPayload = auth.jwt.verify(access)
+		boolean ok_refreshed = access.length() > 0 and accessPayload.contains("\"typ\":\"access\"") and accessPayload.contains("\"sub\":\"user1\"")
+
+		// Single use: the same refresh token is refused the second time.
+		boolean ok_replay_rejected = auth.jwt.refresh(refreshToken) == ""
+
+		// Two calls give two tokens (each has its own jti).
+		boolean ok_distinct = auth.jwt.signRefresh("{\"sub\":\"user1\"}") != auth.jwt.signRefresh("{\"sub\":\"user1\"}")
+
+		if ok_issued and ok_signed and ok_typ and ok_claims and ok_jti and ok_ttl and ok_not_access and ok_refreshed and ok_replay_rejected and ok_distinct
+			printl("PASS: auth-jwt-sign-refresh")
+		else
+			printl("FAIL: auth-jwt-sign-refresh issued=" + ok_issued.toString() + " signed=" + ok_signed.toString() + " typ=" + ok_typ.toString() + " claims=" + ok_claims.toString() + " jti=" + ok_jti.toString() + " ttl=" + ok_ttl.toString() + " not_access=" + ok_not_access.toString() + " refreshed=" + ok_refreshed.toString() + " replay=" + ok_replay_rejected.toString() + " distinct=" + ok_distinct.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] auth-jwt-sign-refresh server ready")
