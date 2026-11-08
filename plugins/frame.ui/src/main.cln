@@ -3569,44 +3569,44 @@ functions:
 	// source), these escapes must be decoded first — otherwise the lexer sees
 	// a literal backslash and rejects it. Single-pass to avoid double-decoding
 	// `\\n` (escaped backslash followed by n) into a newline.
+	//
+	// The text between escapes is copied as whole slices and joined once at
+	// the end. Plugin memory is a bump allocator that never frees, so growing
+	// the result one character at a time (`result = result + ch`) allocated
+	// every prefix of the output: a 7 KB file cost ~25 MB, and assemble, which
+	// decodes every project file in several phases, ran a real site out of
+	// its 1 GB heap (malloc returned 0 and the plugin trapped).
 	string decode_json_string(string txt)
-		string result = ""
-		integer i = 0
 		integer n = txt.length()
-		while i < n
-			string ch = txt.substring(i, i + 1)
-			if ch == "\\" and i + 1 < n
-				string nx = txt.substring(i + 1, i + 2)
-				if nx == "n"
-					result = result + "\n"
-					i = i + 2
-				else
-					if nx == "t"
-						result = result + "\t"
-						i = i + 2
-					else
-						if nx == "r"
-							result = result + "\r"
-							i = i + 2
-						else
-							if nx == "\""
-								result = result + "\""
-								i = i + 2
-							else
-								if nx == "\\"
-									result = result + "\\"
-									i = i + 2
-								else
-									if nx == "/"
-										result = result + "/"
-										i = i + 2
-									else
-										result = result + ch
-										i = i + 1
+		integer bs = txt.indexOf("\\", 0)
+		if bs == -1
+			return txt
+		list<string> parts = []
+		integer seg_start = 0
+		while bs != -1 and bs + 1 < n
+			parts.add(txt.substring(seg_start, bs))
+			string nx = txt.substring(bs + 1, bs + 2)
+			seg_start = bs + 2
+			if nx == "n"
+				parts.add("\n")
+			else if nx == "t"
+				parts.add("\t")
+			else if nx == "r"
+				parts.add("\r")
+			else if nx == "\""
+				parts.add("\"")
+			else if nx == "\\"
+				parts.add("\\")
+			else if nx == "/"
+				parts.add("/")
 			else
-				result = result + ch
-				i = i + 1
-		return result
+				// Not an escape this decoder knows: keep the backslash and
+				// read the next character as ordinary text.
+				parts.add("\\")
+				seg_start = bs + 1
+			bs = txt.indexOf("\\", seg_start)
+		parts.add(txt.substring(seg_start, n))
+		return string.join(parts, "")
 
 	string parse_component_body(string body)
 		string before = ""

@@ -24,6 +24,7 @@ start:
 	test_routes_guards()
 	test_page_access()
 	test_head_links()
+	test_decode_json_string()
 
 functions:
 	// html: without var= builds __html and returns it (UI-P004).
@@ -209,3 +210,26 @@ functions:
 		assert(client.contains("out.indexOf(\"/frame-client.js\") == -1"))
 		assert(client.contains("<script src=\\\"/frame-client.js\\\" defer></script>"))
 
+	// decode_json_string turns the JSON-escaped file content assemble
+	// receives back into source text. Every escape it knows is decoded once,
+	// an unknown one keeps its backslash, and a site-sized file (~160 KB
+	// escaped, the shape of a page shell with many tab-indented lines)
+	// decodes in linear memory: building the result one character at a time
+	// allocated every prefix and ran the plugin heap out on a ~50-file site.
+	void test_decode_json_string()
+		assert(decode_json_string("plain") == "plain")
+		assert(decode_json_string("a\\nb\\tc\\r\\\"d\\\\e\\/f") == "a\nb\tc\r\"d\\e/f")
+		assert(decode_json_string("\\\\n") == "\\n")
+		assert(decode_json_string("x\\u0041") == "x\\u0041")
+		assert(decode_json_string("end\\") == "end\\")
+		string line = "\\t\\t<div class=\\\"card\\\">\{title\}</div>\\n"
+		string raw_line = "\t\t<div class=\"card\">\{title\}</div>\n"
+		string esc = line
+		integer doublings = 0
+		while doublings < 12
+			esc = esc + esc
+			doublings = doublings + 1
+		string raw = decode_json_string(esc)
+		assert(raw.length() == raw_line.length() * 4096)
+		assert(raw.startsWith(raw_line + raw_line))
+		assert(raw.endsWith(raw_line + raw_line))
