@@ -119,6 +119,14 @@ rejects('unknown particles sub-block', `\tparticles "p":\n\t\tspawn:\n\t\t\trate
 
 rejects('unknown path command', `\tpath "p":\n\t\tmoveTo x=0 y=0\n\t\tsplineTo x=1 y=1\n\n${DRAW}`, /unknown command 'splineTo x=1 y=1'/);
 
+accepts('quadTo path segment', `\tpath "q":\n\t\tmoveTo x=0 y=0\n\t\tquadTo cpX=5 cpY=5 x=10 y=0\n\n${DRAW}`);
+
+// --- canvas.drawPath (frame-canvas.ebnf §17, CVS-X006) --------------------
+
+accepts('canvas.drawPath naming a declared path', `${PATH}\n\tdraw:\n\t\tcanvas.drawPath "orbit" stroke=2 color="#ffffff"\n`);
+rejects('canvas.drawPath naming an undeclared path', `${PATH}\n\tdraw:\n\t\tcanvas.drawPath "ghost" stroke=2 color="#ffffff"\n`,
+  /canvas.drawPath "ghost" names no path declared.*CVS-X006/);
+
 // --- one canvasScene: per file (CVS-S011) ---------------------------------
 
 {

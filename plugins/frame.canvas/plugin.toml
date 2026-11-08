@@ -193,7 +193,8 @@ keywords = [
   # path keywords
   { name = "moveTo", description = "Move path pen to position (no colon): moveTo x= y=", context = "expression" },
   { name = "lineTo", description = "Straight line segment: lineTo x= y=", context = "expression" },
-  { name = "curveTo", description = "Cubic Bézier: curveTo x= y= cx= cy= (or cp1x= cp1y= cp2x= cp2y=)", context = "expression" },
+  { name = "curveTo", description = "Bézier segment: curveTo x= y= cx= cy= (one control point, quadratic) or cp1x= cp1y= cp2x= cp2y= (cubic)", context = "expression" },
+  { name = "quadTo", description = "Quadratic Bézier segment: quadTo cpX= cpY= x= y=", context = "expression" },
   { name = "arcTo", description = "Arc segment: arcTo x= y= radius= startAngle= endAngle=", context = "expression" },
   { name = "closePath", description = "Close the current path back to start", context = "expression" },
   { name = "closed", description = "Whether a path is automatically closed (true/false)", context = "config" },
@@ -303,6 +304,9 @@ functions = [
 
   # Drawing — layers
   { name = "on layer", signature = "on layer \"${name}\":\n\t// drawing commands", description = "Route draw calls to a named layer" },
+
+  # Drawing — named paths
+  { name = "canvas.drawPath", signature = "canvas.drawPath \"${name}\" stroke=${1} color=\"${color}\"", description = "Stroke a path declared with path \"name\": as a visible line" },
 
   # Drawing — immediate-mode path primitives (spec §17)
   { name = "canvas.beginPath", signature = "canvas.beginPath", description = "Start a new immediate-mode path. Pair with canvas.fill or canvas.stroke." },
