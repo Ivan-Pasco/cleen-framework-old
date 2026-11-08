@@ -53,6 +53,9 @@ external:
 	integer _batch_func(integer ctx, string name, integer params_array_handle, string return_type, integer body_array_handle)
 	integer _batch_spec(integer ctx, integer functions_array_handle)
 	integer _emit_helpers_batch(integer ctx, integer spec_handle_or_lp, integer flags)
+	// lifecycle.md §2.5 — state shared by every expansion of one build.
+	string _build_state_get(string key)
+	void _build_state_set(string key, string value)
 
 // ============================================================================
 // EXPORTS (plugin.toml [exports] and [lifecycle])
@@ -66,6 +69,17 @@ functions:
 
 	integer expand_block_typed(integer ctx, string block_name, string attrs_json, string body)
 		if block_name.startsWith("canvasScene")
+			// CVS-S011: one canvasScene: per file. Each scene compiles to its
+			// own module (scene.change loads the next scene's module), so a
+			// second scene in the same compilation is that rule broken — two
+			// scenes in one file, or two scene files compiled together. The
+			// compiler expands one block per call, so the scenes expanded so
+			// far are recorded in the build state.
+			string scene_id = scene_attr(attrs_json, scene_header(body), "id", "_canvas_0")
+			string earlier = _build_state_get("frame.canvas:scene")
+			if earlier != ""
+				return plugin_error(ctx, "FRAME-CANVAS-E411", "CVS-S011: there is exactly one canvasScene: per file — canvasScene id=\"" + scene_id + "\" follows canvasScene id=\"" + earlier + "\" in the same compilation. Put each scene in its own file in app/canvas/ and compile each scene file to its own module")
+			_build_state_set("frame.canvas:scene", scene_id)
 			return expand_canvas_scene(ctx, attrs_json, scene_header(body), scene_sections(body))
 		return plugin_error(ctx, "FRAME-CANVAS-E001", "frame.canvas does not expand block '" + block_name + "' (only canvasScene:)")
 
@@ -2613,7 +2627,7 @@ functions:
 // LINT (Contract 5 Phase C — FRAME-CANVAS-E040)
 // ============================================================================
 // Reports a canvasScene whose canvas.save / canvas.restore calls do not
-// balance (CVS-X007).
+// balance (CVS-X007) and a second canvasScene in one file (CVS-S011).
 // Spec: foundation/spec/framework/contracts/lint-extension.md §2.
 
 functions:
@@ -2689,11 +2703,25 @@ functions:
 			return "[]"
 		string blocks_json = _ast_list_blocks(handle_str.toInteger(), "canvasScene")
 		string diagnostics = ""
+		// Files seen so far, as "|file|" entries (CVS-S011).
+		string seen_files = "|"
 		integer scan = blocks_json.indexOf("{")
 		while scan != -1
 			integer obj_end = json_object_end(blocks_json, scan)
 			string entry = blocks_json.substring(scan, obj_end)
 			string content = json_string_field(entry, "content")
+			string file = json_string_field(entry, "file")
+			string scene_line = json_bare_field(entry, "line")
+			if scene_line.length() == 0
+				scene_line = "1"
+			if seen_files.indexOf("|" + file + "|") != -1
+				string d1 = "{\"code\":\"FRAME-CANVAS-E411\",\"severity\":\"error\",\"message\":\"A second canvasScene: in this file (CVS-S011: there is exactly one canvasScene: per file).\",\"location\":{\"file\":\"" + file + "\",\"line\":" + scene_line + ",\"column\":1},\"hint\":\"Move this scene to its own file in app/canvas/; scene.change and scene.push name scenes by file.\"}"
+				if diagnostics == ""
+					diagnostics = d1
+				else
+					diagnostics = diagnostics + "," + d1
+			else
+				seen_files = seen_files + file + "|"
 			integer saves = canvas_count_cmd(content, "save")
 			integer restores = canvas_count_cmd(content, "restore")
 			if saves != restores

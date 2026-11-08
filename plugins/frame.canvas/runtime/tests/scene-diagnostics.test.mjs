@@ -119,6 +119,34 @@ rejects('unknown particles sub-block', `\tparticles "p":\n\t\tspawn:\n\t\t\trate
 
 rejects('unknown path command', `\tpath "p":\n\t\tmoveTo x=0 y=0\n\t\tsplineTo x=1 y=1\n\n${DRAW}`, /unknown command 'splineTo x=1 y=1'/);
 
+// --- one canvasScene: per file (CVS-S011) ---------------------------------
+
+{
+  const file = join(work, `case${count++}.cln`);
+  const twoScenes = 'plugins:\n\tframe.canvas\n\ncanvasScene: id="menu" width=100 height=100\n\n\tdraw:\n\t\tcanvas.clear\n\n'
+    + 'canvasScene: id="game" width=100 height=100\n\n\tdraw:\n\t\tcanvas.clear\n';
+  writeFileSync(file, twoScenes);
+  const run = (args) => {
+    try {
+      return [true, String(execFileSync(compiler, args, { stdio: 'pipe' }))];
+    } catch (err) {
+      return [false, String(err.stdout || '') + String(err.stderr || '')];
+    }
+  };
+  const [built, out] = run(['compile', file, '-o', file.replace(/\.cln$/, '.wasm'), '--target', 'browser',
+    '--plugin-override', `frame.canvas=${pluginDir}`]);
+  if (built || !/CVS-S011/.test(out) || /already defined/.test(out)) {
+    failures++;
+    const lines = out.split('\n').filter((l) => /error/.test(l)).slice(0, 3).join(' | ');
+    console.log(`FAIL: two canvasScene: blocks in one file fail with CVS-S011, not a class clash — ${built ? 'compiled' : `got: ${lines}`}`);
+  }
+  const [, lintOut] = run(['lint', file, '--plugin-override', `frame.canvas=${pluginDir}`]);
+  if (!/FRAME-CANVAS-E411\] \S+:9:1 .*CVS-S011/.test(lintOut)) {
+    failures++;
+    console.log(`FAIL: cln lint reports the second canvasScene: at its line (CVS-S011) — got: ${lintOut.split('\n').filter((l) => /E411|error/.test(l)).slice(0, 2).join(' | ')}`);
+  }
+}
+
 rmSync(work, { recursive: true, force: true });
 if (failures > 0) {
   console.log('FAIL: frame.canvas scene diagnostics');
