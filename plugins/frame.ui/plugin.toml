@@ -295,10 +295,10 @@ functions = [
   { name = "_ui_filter_by_text", params = ["string", "string", "string", "string"], returns = "integer", description = "Filter elements by text search across name and description attributes", expand_strings = true, signature = "_ui_filter_by_text(selector, nameAttr, descAttr, query)", hosts = ["browser", "server"] },
 
   # IntersectionObserver
-  { name = "_ui_observe_visible", params = ["string", "string"], returns = "integer", description = "Add class to elements when they become visible (one-shot)", expand_strings = true, signature = "_ui_observe_visible(selector, className)", hosts = ["browser"] },
+  { name = "_ui_observe_visible", params = ["string", "string"], returns = "integer", description = "Add class to elements when they become visible (one-shot)", expand_strings = true, signature = "_ui_observe_visible(selector, className)", hosts = ["browser", "server"] },
 
   # Timers
-  { name = "_ui_set_timeout", params = ["string", "integer"], returns = "integer", description = "Call exported handler function by name after delay ms: handler name, delay_ms", expand_strings = true, signature = "_ui_set_timeout(handlerName, delayMs)", hosts = ["browser"] },
+  { name = "_ui_set_timeout", params = ["string", "integer"], returns = "integer", description = "Call exported handler function by name after delay ms: handler name, delay_ms", expand_strings = true, signature = "_ui_set_timeout(handlerName, delayMs)", hosts = ["browser", "server"] },
 
   # Stylesheet linking (auto-link for public/css/theme.css and public/css/components/<tag>.css)
   { name = "_ui_inject_head_link", params = ["string"], returns = "i32", description = "Inject <link rel=stylesheet href=...> into page <head>; deduplicated by href (browser: live DOM insertion; server: accumulate into response <head>)", expand_strings = true, signature = "_ui_inject_head_link(href)", hosts = ["browser", "server"] },
