@@ -224,8 +224,20 @@ run_test() {
     # get their handler bodies executed.
     if [ -n "$source_file" ] && [ -f "$source_file" ] && \
        grep -qE '(GET|POST|PUT|PATCH|DELETE|FEED)[[:space:]]+"/test"' "$source_file"; then
+        # A test can shape that request with header lines:
+        #   // test-request-header: Accept-Language: de   (repeatable)
+        #   // test-request-query: locale=es
+        local -a header_args=()
+        local header_line
+        while IFS= read -r header_line; do
+            header_args+=(-H "$header_line")
+        done < <(sed -n 's|^// test-request-header: ||p' "$source_file")
+        local query
+        query=$(sed -n 's|^// test-request-query: ||p' "$source_file" | head -1)
+        local test_url="http://127.0.0.1:$test_port/test"
+        [ -n "$query" ] && test_url="$test_url?$query"
         # FEED (server-sent events) is a GET whose response may stay open.
-        curl -sS --max-time 5 -o /dev/null "http://127.0.0.1:$test_port/test" 2>/dev/null || true
+        curl -sS --max-time 5 -o /dev/null ${header_args[@]+"${header_args[@]}"} "$test_url" 2>/dev/null || true
         wait_for_log "$server_log" "$server_pid" 'PASS:|FAIL:'
     elif [ -n "$source_file" ] && [ -f "$source_file" ] && \
          grep -qE 'LIVE[[:space:]]+"/test"' "$source_file"; then

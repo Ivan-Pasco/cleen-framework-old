@@ -11,36 +11,18 @@ plugins:
 	frame.server
 	frame.locale
 
+// detection = "header": each request's locale comes from its Accept-Language
+// header, matched against the translation files loaded from path (every
+// <tag>.json there, e.g. en.json, de.json, fr.json, es.json).
 locale:
 	default = "en"
 	fallback = "en"
 	detection = "header"
 	path = "app/i18n/translations"
 
-middleware LocaleDetect
-	functions:
-		Request handle(Request req)
-			string accept_lang = req.header("Accept-Language")
-			string lang = accept_lang
-			integer comma = accept_lang.indexOf(",")
-			if comma > 0
-				lang = accept_lang.slice(0, comma)
-			integer semi = lang.indexOf(";")
-			if semi > 0
-				lang = lang.slice(0, semi)
-			if lang == "de" or lang == "de-DE"
-				locale.set("de")
-			else if lang == "fr" or lang == "fr-FR"
-				locale.set("fr")
-			else if lang == "es" or lang == "es-ES" or lang == "es-MX"
-				locale.set("es")
-			else
-				locale.set("en")
-			return req
-
 endpoints:
 	// GET /api/dashboard — returns stats and prices formatted for the caller's locale.
-	// The locale is set per-request by LocaleDetect middleware before this handler runs.
+	// The request's locale was detected from its Accept-Language header.
 	GET "/api/dashboard":
 		// Fetch raw values from the data layer
 		number total_revenue = 184329.47       // from DB aggregation
@@ -73,15 +55,15 @@ endpoints:
 
 		string price_formatted = locale.formatCurrency(price, "USD", locale.current())
 
-		// locale.formatDate style "long"     — en: "June 2, 2025"   de: "2. Juni 2025"
-		// locale.formatDate style "short"    — en: "6/2/25"         de: "02.06.25"
-		// locale.formatDate style "relative" — "3 days ago" / "vor 3 Tagen" (locale-aware relative)
+		// locale.formatDate style "long"   — en: "June 2, 2025"   de: "2. Juni 2025"
+		// locale.formatDate style "medium" — en: "Jul 3, 2025"    de: "3 Juli 2025"
+		// (styles: short | medium | long | full)
 		string created_long = locale.formatDate(created_ts, "long", locale.current())
-		string updated_relative = locale.formatDate(updated_ts, "relative", locale.current())
+		string updated_medium = locale.formatDate(updated_ts, "medium", locale.current())
 
 		return json({
 			"id": product_id,
 			"price": price_formatted,
 			"createdAt": created_long,
-			"updatedAt": updated_relative
+			"updatedAt": updated_medium
 		})

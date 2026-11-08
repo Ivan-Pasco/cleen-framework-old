@@ -101,6 +101,9 @@ if not Database.save(user)
 // app/canvas/particles.cln (excerpt)
 canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
 
+	layers:
+		layer "particles" z=0
+
 	state:
 		number frameCount = 0.0
 

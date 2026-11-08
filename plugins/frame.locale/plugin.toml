@@ -32,8 +32,9 @@ module_helpers_are_roots = true
 module_helpers = "emit_module_helpers_typed"
 
 # Note on [[artifacts]]: frame.locale does NOT produce a locales.json at
-# build time. Translation files are loaded at runtime by _i18n_load calls
-# emitted into start: by expand_locale_typed().
+# build time. Translation files are loaded at runtime by the _i18n_configure
+# call emitted into start: by expand_locale_typed(), which loads every
+# <tag>.json of the locale: block's path.
 
 [handles]
 blocks = ["locale"]
@@ -49,6 +50,8 @@ get_keywords = "get_keywords"
 # compute and run on every host. `_i18n_load` reads translation tables from
 # disk at startup, which is server/native-only — browsers receive translations
 # bundled or via api.* fetches, not from a local filesystem path.
+# `_i18n_configure` (also server-only) applies a locale: block: default and
+# fallback locales, detection strategy, and every translation file of the path.
 [bridge]
 functions = [
   { name = "_i18n_t", params = ["string", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
@@ -59,6 +62,7 @@ functions = [
   { name = "_i18n_format_currency", params = ["number", "string", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
   { name = "_i18n_format_date", params = ["number", "string", "string"], returns = "string", expand_strings = true, hosts = ["all"] },
   { name = "_i18n_load", params = ["string", "string"], returns = "void", expand_strings = true, hosts = ["server"] },
+  { name = "_i18n_configure", params = ["string", "string", "string", "string"], returns = "void", expand_strings = true, hosts = ["server"] },
 ]
 
 [language]
@@ -67,8 +71,8 @@ keywords = [
   { name = "locale", description = "Locale configuration block", context = "top-level" },
   { name = "default", description = "Default locale BCP 47 tag", context = "locale" },
   { name = "fallback", description = "Fallback locale", context = "locale" },
-  { name = "detection", description = "Locale detection strategy: header|cookie|query|manual", context = "locale" },
-  { name = "path", description = "Path to translation files", context = "locale" },
+  { name = "detection", description = "How a request picks its locale: header (Accept-Language, default) | cookie (cl_locale) | query (?locale=) | manual (only locale.set)", context = "locale" },
+  { name = "path", description = "Folder of the translation files; every <tag>.json in it is loaded", context = "locale" },
 ]
 types = [
   { name = "Locale", description = "BCP 47 locale identifier string" },
@@ -101,6 +105,14 @@ functions = [
   { clean_name = "locale.formatNumber", bridge_name = "_i18n_format_number" },
   { clean_name = "locale.formatCurrency", bridge_name = "_i18n_format_currency" },
   { clean_name = "locale.formatDate", bridge_name = "_i18n_format_date" },
+  # i18n.* names are aliases of the same functions (frame-locale.ebnf).
+  { clean_name = "i18n.t", bridge_name = "_i18n_t" },
+  { clean_name = "i18n.tc", bridge_name = "_i18n_t_count" },
+  { clean_name = "i18n.locale", bridge_name = "_i18n_locale" },
+  { clean_name = "i18n.setLocale", bridge_name = "_i18n_set_locale" },
+  { clean_name = "i18n.formatNumber", bridge_name = "_i18n_format_number" },
+  { clean_name = "i18n.formatCurrency", bridge_name = "_i18n_format_currency" },
+  { clean_name = "i18n.formatDate", bridge_name = "_i18n_format_date" },
 ]
 
 [ai]

@@ -24,7 +24,7 @@ const SUITE = 'frame.canvas frame pipeline';
 requireCompiler(SUITE);
 quietRuntimeLogs();
 
-const canvases = ['rate', 'bg', 'nobg', 'layers', 'clearing', 'cam', 'camlayers', 'shake'].map((id) => makeCanvas(id));
+const canvases = ['rate', 'bg', 'nobg', 'layers', 'clearing', 'cam', 'camlayers', 'shake', 'paths'].map((id) => makeCanvas(id));
 const page = installPage(canvases);
 const { CleanCanvasLoader } = loadRuntime();
 const result = checker();
@@ -150,6 +150,33 @@ function runFrames(n, t0 = 1000) {
   clr.ctx.log.length = 0;
   runFrames(1, 8000);
   check(JSON.stringify(fills(clr.ctx)) === '["#111111","#kept"]', `canvas.clear resets every layer buffer of the frame (got ${JSON.stringify(fills(clr.ctx))})`);
+}
+
+// ---------------------------------------------------------------------------
+// canvas.drawPath strokes a declared path (frame-canvas.ebnf §11, §17)
+// ---------------------------------------------------------------------------
+
+{
+  const el = page.canvases.get('paths');
+  await startScene('id="paths" width=100 height=100', `\tpath "wave":
+\t\tmoveTo x=0 y=50
+\t\tquadTo cpX=25 cpY=0 x=50 y=50
+\t\tcurveTo x=100 y=50 cp1x=60 cp1y=90 cp2x=90 cp2y=90
+\t\tclosed = true
+
+\tdraw:
+\t\tcanvas.clear
+\t\tcanvas.drawPath "wave" stroke=3 color="#00ff00"`);
+  el.ctx.log.length = 0;
+  runFrames(1, 9000);
+  const calls = el.ctx.log.filter((e) => e[0] === 'call').map((e) => `${e[1]}(${e[2].join(',')})`);
+  const at = calls.indexOf('moveTo(0,50)');
+  const segs = at === -1 ? [] : calls.slice(at, at + 5);
+  check(JSON.stringify(segs) === JSON.stringify(['moveTo(0,50)', 'quadraticCurveTo(25,0,50,50)', 'bezierCurveTo(60,90,90,90,100,50)', 'closePath()', 'stroke()']),
+    `canvas.drawPath replays the path (moveTo, quadTo, curveTo, closed) and strokes it (got ${JSON.stringify(segs)})`);
+  const sets = el.ctx.log.filter((e) => e[0] === 'set');
+  check(sets.some((e) => e[1] === 'strokeStyle' && e[2] === '#00ff00') && sets.some((e) => e[1] === 'lineWidth' && e[2] === 3),
+    'canvas.drawPath strokes with its color= and stroke= width');
 }
 
 // ---------------------------------------------------------------------------

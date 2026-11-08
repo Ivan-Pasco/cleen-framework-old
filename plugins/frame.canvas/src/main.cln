@@ -91,7 +91,7 @@ functions:
 		return ""
 
 	string get_keywords()
-		return "[\"canvasScene\",\"assets\",\"layers\",\"state\",\"animSprite\",\"particles\",\"tween\",\"timeline\",\"animState\",\"path\",\"gradient\",\"customEase\",\"camera\",\"init\",\"draw\",\"onFrame\",\"onPointerDown\",\"onPointerMove\",\"onPointerUp\",\"onKeyDown\",\"onKeyUp\",\"onExit\",\"onPause\",\"onResume\",\"param\",\"image\",\"spritesheet\",\"sound\",\"music\",\"font\",\"src\",\"frameWidth\",\"frameHeight\",\"cols\",\"rows\",\"layer\",\"z\",\"on\",\"canvas\",\"clear\",\"circle\",\"rect\",\"line\",\"triangle\",\"ellipse\",\"text\",\"sprite\",\"save\",\"restore\",\"translate\",\"rotate\",\"scale\",\"beginPath\",\"moveTo\",\"lineTo\",\"curveTo\",\"cubicTo\",\"arc\",\"arcTo\",\"closePath\",\"closed\",\"fill\",\"stroke\",\"group\",\"clip\",\"alpha\",\"shadow\",\"blur\",\"glow\",\"blendMode\",\"sheet\",\"frames\",\"fps\",\"loop\",\"duration\",\"ease\",\"repeat\",\"yoyo\",\"delay\",\"along\",\"orient\",\"onComplete\",\"from\",\"to\",\"at\",\"after\",\"overlap\",\"gap\",\"together\",\"stagger\",\"initial\",\"transitions\",\"when\",\"emitter\",\"overLifetime\",\"forces\",\"lifetime\",\"speed\",\"angle\",\"gravity\",\"drag\",\"wind\",\"turbulence\",\"attractor\",\"rate\",\"burst\",\"linear\",\"radial\",\"stop\",\"followX\",\"followY\",\"smoothing\",\"deadzoneWidth\",\"deadzoneHeight\",\"boundsX\",\"boundsY\",\"boundsWidth\",\"boundsHeight\",\"zoom\",\"play\",\"pause\",\"resume\",\"seek\",\"start\",\"emit\",\"animate\",\"audio\",\"volume\",\"pitch\",\"fadeOut\",\"crossfade\",\"masterVolume\",\"input\",\"collision\",\"scene\",\"change\",\"changeTo\",\"push\",\"pop\",\"set\",\"get\",\"transition\",\"page\",\"value\",\"deltaTime\",\"time\",\"force\",\"current\",\"setPosition\",\"setZoom\",\"shake\",\"intensity\",\"color\",\"gradient\",\"filled\",\"radius\",\"radiusX\",\"radiusY\",\"width\",\"height\",\"cornerRadius\",\"fromX\",\"fromY\",\"toX\",\"toY\",\"size\",\"align\",\"baseline\",\"opacity\",\"tint\",\"tintStrength\",\"flipX\",\"flipY\",\"scaleX\",\"scaleY\",\"rotation\",\"anchorX\",\"anchorY\",\"offsetX\",\"offsetY\",\"mode\",\"path\"]"
+		return "[\"canvasScene\",\"assets\",\"layers\",\"state\",\"animSprite\",\"particles\",\"tween\",\"timeline\",\"animState\",\"path\",\"gradient\",\"customEase\",\"camera\",\"init\",\"draw\",\"onFrame\",\"onPointerDown\",\"onPointerMove\",\"onPointerUp\",\"onKeyDown\",\"onKeyUp\",\"onExit\",\"onPause\",\"onResume\",\"param\",\"image\",\"spritesheet\",\"sound\",\"music\",\"font\",\"src\",\"frameWidth\",\"frameHeight\",\"cols\",\"rows\",\"layer\",\"z\",\"on\",\"canvas\",\"clear\",\"circle\",\"rect\",\"line\",\"triangle\",\"ellipse\",\"text\",\"sprite\",\"save\",\"restore\",\"translate\",\"rotate\",\"scale\",\"beginPath\",\"moveTo\",\"lineTo\",\"curveTo\",\"quadTo\",\"cubicTo\",\"drawPath\",\"arc\",\"arcTo\",\"closePath\",\"closed\",\"fill\",\"stroke\",\"group\",\"clip\",\"alpha\",\"shadow\",\"blur\",\"glow\",\"blendMode\",\"sheet\",\"frames\",\"fps\",\"loop\",\"duration\",\"ease\",\"repeat\",\"yoyo\",\"delay\",\"along\",\"orient\",\"onComplete\",\"from\",\"to\",\"at\",\"after\",\"overlap\",\"gap\",\"together\",\"stagger\",\"initial\",\"transitions\",\"when\",\"emitter\",\"overLifetime\",\"forces\",\"lifetime\",\"speed\",\"angle\",\"gravity\",\"drag\",\"wind\",\"turbulence\",\"attractor\",\"rate\",\"burst\",\"linear\",\"radial\",\"stop\",\"followX\",\"followY\",\"smoothing\",\"deadzoneWidth\",\"deadzoneHeight\",\"boundsX\",\"boundsY\",\"boundsWidth\",\"boundsHeight\",\"zoom\",\"play\",\"pause\",\"resume\",\"seek\",\"start\",\"emit\",\"animate\",\"audio\",\"volume\",\"pitch\",\"fadeOut\",\"crossfade\",\"masterVolume\",\"input\",\"collision\",\"scene\",\"change\",\"changeTo\",\"push\",\"pop\",\"set\",\"get\",\"transition\",\"page\",\"value\",\"deltaTime\",\"time\",\"force\",\"current\",\"setPosition\",\"setZoom\",\"shake\",\"intensity\",\"color\",\"gradient\",\"filled\",\"radius\",\"radiusX\",\"radiusY\",\"width\",\"height\",\"cornerRadius\",\"fromX\",\"fromY\",\"toX\",\"toY\",\"size\",\"align\",\"baseline\",\"opacity\",\"tint\",\"tintStrength\",\"flipX\",\"flipY\",\"scaleX\",\"scaleY\",\"rotation\",\"anchorX\",\"anchorY\",\"offsetX\",\"offsetY\",\"mode\",\"path\"]"
 
 // ============================================================================
 // ASSEMBLE HOOK
@@ -1240,6 +1240,12 @@ functions:
 			return bcc2(ctx, "_canvas_fill_path", cv, av(ctx, ia, "color", black))
 		if cmd == "stroke"
 			return bcc3(ctx, "_canvas_stroke_path", cv, av(ctx, ia, "color", black), av(ctx, ia, "width", "1.0"))
+
+		// canvas.drawPath "name" [stroke=] [color=] (§17): strokes a path
+		// declared with `path "name":` (§11) as a visible line.
+		if cmd == "drawPath"
+			string path_attrs = after_quoted(ia)
+			return bcc4(ctx, "_canvas_draw_named_path", cv, sl(ctx, first_quoted(ia, 0)), av(ctx, path_attrs, "stroke", "1.0"), av(ctx, path_attrs, "color", black))
 		return 0
 
 	// canvas.sprite "name" x= y= [clip= | state= | sheet= clip=] [options]
@@ -2672,6 +2678,10 @@ functions:
 			string grad = first_quoted(get_iexpr(attrs, "gradient"), 0)
 			if grad != "" and scene_declares(body, "gradient", grad) == false
 				return "gradient \"" + grad + "\" is not declared in this scene; declare it at scene level with `gradient \"" + grad + "\" linear|radial ...:` (CVS-D007)"
+			if t.startsWith("canvas.drawPath ")
+				string drawn_path = first_quoted(t, 0)
+				if scene_declares(body, "path", drawn_path) == false
+					return "canvas.drawPath \"" + drawn_path + "\" names no path declared in this scene; declare it at scene level with `path \"" + drawn_path + "\":` (paths are scene-local, CVS-X006)"
 			if t.startsWith("canvas.clip ")
 				string clip_path = first_quoted(get_iexpr(attrs, "path"), 0)
 				if clip_path != "" and scene_declares(body, "path", clip_path) == false
@@ -2690,6 +2700,11 @@ functions:
 					return "canvas.sprite \"" + sheet + "\" is not a `spritesheet` asset declared in assets: — the sprite names the asset, not a file path (CVS-D009)"
 				if state_name_src.startsWith("\"") and scene_declares(body, "animState", first_quoted(state_name_src, 0)) == false
 					return "canvas.sprite state=" + state_name_src + " names no animState declared in this scene (CVS-A005)"
+			return ""
+		if t.startsWith("on layer ")
+			string layer = first_quoted(t, 0)
+			if declares_layer(extract_scene_subblock(body, "layers"), layer) == false
+				return "on layer \"" + layer + "\" names no layer declared in layers: — declare it as `layer \"" + layer + "\" z=N` (CVS-D005: draw calls go only to declared layers, and layer names are case-sensitive)"
 			return ""
 		string name = first_quoted(t, 0)
 		if name == ""
@@ -2712,6 +2727,18 @@ functions:
 			if scene_declares(body, "particles", name) == false
 				return "particles \"" + name + "\" is not declared in this scene; emitters are declared at scene level and triggered by name (CVS-P005)"
 		return ""
+
+	// True when layers: declares `layer "name" z=N` (exact, case-sensitive
+	// match, CVS-D005).
+	boolean declares_layer(string layers_body, string name)
+		integer p = 0
+		while p < layers_body.length()
+			integer le = scene_line_end(layers_body, p)
+			string t = layers_body.substring(p, le).trim()
+			if line_key(t) == "layer" and first_quoted(t, 0) == name
+				return true
+			p = le + 1
+		return false
 
 	// Kind (image, spritesheet, sound, music, font) of asset `name` in assets:, or "".
 	string asset_kind(string assets_body, string name)

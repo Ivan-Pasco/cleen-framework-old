@@ -44,7 +44,10 @@ and a random `JWT_SECRET` unless they are already set.
 2. `clean-server output/<name>.wasm --port $CLEEN_TEST_PORT` is started.
 3. If the source declares an endpoint at `"/test"` (`GET`, `POST`, ...,
    `FEED`), the runner requests it once the server is listening; a
-   `LIVE "/test"` endpoint is opened with a WebSocket handshake.
+   `LIVE "/test"` endpoint is opened with a WebSocket handshake. Lines
+   `// test-request-header: Name: value` (repeatable) and
+   `// test-request-query: key=value&...` add request headers and a query
+   string to that request.
 4. The verdict comes from the server output: any `FAIL:` line fails the
    test; otherwise a `PASS:` line passes it; no verdict line is a failure.
 

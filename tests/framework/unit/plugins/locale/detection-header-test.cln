@@ -1,0 +1,46 @@
+// Test: frame.locale — detection = "header" picks the Accept-Language locale
+// Spec: foundation/spec/framework/grammar/frame-locale.ebnf §1 (locale_block,
+//       detection_strategy); HOST_BRIDGE.md _i18n_configure.
+//
+// The locale: block loads every <tag>.json of its path (en, fr, de, es here —
+// not only the default and the fallback). The /test request carries all three
+// locale sources; the detection strategy decides which one counts.
+// test-request-header: Accept-Language: de-DE,de;q=0.9
+// test-request-header: Cookie: theme=dark; cl_locale=fr
+// test-request-query: locale=es
+
+plugins:
+	frame.locale
+	frame.server
+
+locale:
+	default = "en"
+	fallback = "fr"
+	detection = "header"
+	path = "tests/framework/unit/plugins/locale/translations"
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		string got_current = locale.current()
+		if got_current != "de"
+			printl("FAIL: current: expected de, got " + got_current)
+			failures = failures + 1
+		string got_hello = t("hello", "{}")
+		if got_hello != "Hallo"
+			printl("FAIL: hello: expected Hallo, got " + got_hello)
+			failures = failures + 1
+		// A key missing from de comes from the default (en), then the fallback (fr).
+		string got_bye = t("bye", "{}")
+		if got_bye != "Goodbye"
+			printl("FAIL: bye: expected Goodbye, got " + got_bye)
+			failures = failures + 1
+		string got_only_fr = t("only_fr", "{}")
+		if got_only_fr != "Seulement en français"
+			printl("FAIL: only_fr: expected Seulement en français, got " + got_only_fr)
+			failures = failures + 1
+		if failures == 0
+			printl("PASS: locale-detection-header")
+		else
+			printl("FAIL: locale-detection-header")
+		return json({locale: locale.current()})
