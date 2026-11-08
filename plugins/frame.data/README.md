@@ -9,18 +9,28 @@ the spec — this file only orients you:
 
 ## Databases
 
-frame.data supports **SQLite** and **PostgreSQL** only. The server picks the
-database from `DATABASE_URL` (or `clean-server --database`):
+frame.data supports **SQLite**, **PostgreSQL** and **MySQL 8.0+**. The
+server picks the database from `DATABASE_URL` (or `clean-server --database`):
 
 | Database | URL |
 |---|---|
 | SQLite | `sqlite:app.db`, `sqlite::memory:` |
 | PostgreSQL | `postgres://user:pass@host/db`, `postgresql://...` |
+| MySQL 8.0+ | `mysql://user:pass@host:3306/db` |
 
-MySQL and MariaDB are not supported: the generated SQL uses `$n`
-placeholders and `INSERT ... RETURNING`, which MySQL does not accept.
-clean-server refuses to start with a `mysql://` (or any other) URL and
-names the supported databases.
+The plugin generates one SQL dialect (`$n` placeholders, `INSERT ...
+RETURNING`, `CREATE INDEX IF NOT EXISTS`, `SERIAL` keys). On MySQL,
+clean-server translates each statement before it runs (spec:
+`foundation/spec/platform/HOST_BRIDGE.md` §Database, "SQL dialect"), so
+models, queries, pagination, transactions and migrations work unchanged.
+On MySQL a `string` field that is the key or `unique` becomes
+`VARCHAR(255)`, and an index on a `string` column keys its first 255
+characters. MariaDB is not supported.
+
+Run the frame.data tests on MySQL with
+`FRAMEWORK_TEST_MYSQL_URL=mysql://user:pass@host:port
+scripts/run-framework-tests.sh unit/plugins/data` (each test gets a fresh
+database).
 
 ## Data models
 
