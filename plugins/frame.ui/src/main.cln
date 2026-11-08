@@ -1237,6 +1237,13 @@ functions:
 		string fallback_html = decode_json_string(extract_json_field_escaped(parsed, "fallback"))
 		// Sections that become methods (events:, functions:).
 		string section_text = remove_state_dot(before_html + "\n" + after_html)
+		// computed: fields become methods; their reads in the template and
+		// the handlers become calls (frame-ui.ebnf computed_section).
+		string computed = computed_entries(component_section_lines(section_text, "computed"))
+		string computed_names = computed_name_list(computed)
+		section_text = call_computed(remove_section(section_text, "computed"), computed_names)
+		if template_error_code(section_text) != ""
+			return template_error(ctx, template_error_code(section_text))
 		// state: and inputs: entries both become class fields, so the render
 		// body and handlers can reference them by bare name.
 		string input_lines = component_section_lines(before_html, "inputs")
@@ -1279,7 +1286,7 @@ functions:
 			if fallback_html != ""
 				string escaped_fb = escape_attr_text(fallback_html)
 				render_body_source = render_body_source + append_stmt("__html", "\"<div data-component='" + name + "' data-fallback='" + escaped_fb + "'>\"")
-			string markup = template_strip_state(strip_block_indent(html_content))
+			string markup = template_call_computed(template_strip_state(strip_block_indent(html_content)), computed_names)
 			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, "{}", false)
 			if fallback_html != ""
 				render_body_source = render_body_source + append_stmt("__html", "\"</div>\"")
@@ -1314,6 +1321,11 @@ functions:
 		string function_methods = component_section_methods(ctx, section_text, "functions")
 		if function_methods != ""
 			methods_json = methods_json + "," + function_methods
+		string computed_json = computed_methods(ctx, computed, computed_names)
+		if template_error_code(computed_json) != ""
+			return template_error(ctx, template_error_code(computed_json))
+		if computed_json != ""
+			methods_json = methods_json + "," + computed_json
 		// client_init calls onMount() on every hydrated component
 		// (lifecycle.md §3.3); declaring it is optional.
 		if tag != "" and client != "off" and methods_json.indexOf("\"name\":\"onMount\"") == -1
@@ -1877,6 +1889,314 @@ functions:
 		return result
 
 // ============================================================================
+// COMPUTED FIELDS
+// ============================================================================
+// A component's `computed:` section (frame-ui.ebnf computed_section) declares
+// derived values: `name = expression`, or `type name = expression` to give the
+// value a type (`any` otherwise). Each one becomes a method of the component
+// class that returns the expression, and every read of the name in the
+// template and in the events: / functions: handlers becomes a call of that
+// method — so a read always sees the current state. A computed value is
+// read-only: assigning it is FRAME-UI-E010; computed values that depend on
+// each other in a cycle are FRAME-UI-E011.
+
+functions:
+	// The computed: lines as "name\ttype\texpression\n" entries. A line
+	// without `= expression` gives an entry with an empty expression.
+	string computed_entries(string lines)
+		string result = ""
+		string remaining = lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string t = line.trim()
+			if t.length() > 0
+				string left = t
+				string expr = ""
+				integer eq = t.indexOf("=")
+				if eq != -1
+					left = t.substring(0, eq).trim()
+					expr = t.substring(eq + 1, t.length()).trim()
+				string name = left
+				string type_name = "any"
+				integer sp = left.lastIndexOf(" ")
+				if sp != -1
+					type_name = left.substring(0, sp).trim()
+					name = left.substring(sp + 1, left.length()).trim()
+				result = result + name + "\t" + type_name + "\t" + expr + "\n"
+		return result
+
+	// ",a,b," — the names of the computed entries.
+	string computed_name_list(string entries)
+		string result = ","
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			result = result + entry.substring(0, entry.indexOf("\t")) + ","
+		return result
+
+	// Field `index` (0 name, 1 type, 2 expression) of one computed entry.
+	string computed_part(string entry, integer index)
+		integer t1 = entry.indexOf("\t")
+		integer t2 = entry.indexOf("\t", t1 + 1)
+		if index == 0
+			return entry.substring(0, t1)
+		if index == 1
+			return entry.substring(t1 + 1, t2)
+		return entry.substring(t2 + 1, entry.length())
+
+	// The first non-blank character of s at or after pos ("" at the end).
+	string next_code_char(string s, integer pos)
+		integer i = pos
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch != " " and ch != "\t"
+				return ch
+			i = i + 1
+		return ""
+
+	// Index of the first non-blank character of s at or after pos.
+	integer next_code_index(string s, integer pos)
+		integer i = pos
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch != " " and ch != "\t"
+				return i
+			i = i + 1
+		return s.length()
+
+	// Clean code with every read of a computed name (`names` is ",a,b,")
+	// turned into a call of its method: `total` → `total()`,
+	// `this.total` → `this.total()`. String literal text is left alone,
+	// except its `{...}` interpolations. An assignment to a computed name
+	// leaves the E010 marker in the result.
+	string call_computed(string code, string names)
+		if names == ","
+			return code
+		string result = ""
+		integer i = 0
+		integer n = code.length()
+		while i < n
+			string c = code.substring(i, i + 1)
+			if c == "\""
+				// String literal: copy it, rewriting only its interpolations.
+				result = result + c
+				i = i + 1
+				boolean in_str = true
+				while in_str and i < n
+					string sc = code.substring(i, i + 1)
+					if sc == "\\" and i + 1 < n
+						result = result + code.substring(i, i + 2)
+						i = i + 2
+					else if sc == "\""
+						result = result + sc
+						i = i + 1
+						in_str = false
+					else if sc == "{"
+						integer close = matching_brace(code, i)
+						if close == -1
+							result = result + code.substring(i, n)
+							i = n
+						else
+							result = result + "{" + call_computed(code.substring(i + 1, close), names) + "}"
+							i = close + 1
+					else
+						result = result + sc
+						i = i + 1
+			else if is_ident_char(c) and (c < "0" or c > "9")
+				integer id_at = i
+				while i < n and is_ident_char(code.substring(i, i + 1))
+					i = i + 1
+				string ident = code.substring(id_at, i)
+				boolean is_ref = names.indexOf("," + ident + ",") != -1
+				if is_ref and id_at > 0
+					string before = code.substring(id_at - 1, id_at)
+					if is_ident_char(before)
+						is_ref = false
+					else if before == "."
+						// Only `this.name` is the component's own field.
+						is_ref = id_at >= 5 and code.substring(id_at - 5, id_at) == "this."
+						if is_ref and id_at > 5
+							is_ref = is_ident_char(code.substring(id_at - 6, id_at - 5)) == false and code.substring(id_at - 6, id_at - 5) != "."
+				if is_ref
+					string after = next_code_char(code, i)
+					if after == "("
+						is_ref = false
+					else if after == "="
+						integer eq_at = next_code_index(code, i)
+						if next_code_char(code, eq_at + 1) != "="
+							return template_error_marker("E010") + "\n"
+				result = result + ident
+				if is_ref
+					result = result + "()"
+			else
+				result = result + c
+				i = i + 1
+		return result
+
+	// The attribute name written before the quote at quote_pos inside a
+	// tag (`cl-if="..."` → "cl-if"), or "" when the quote is not a value.
+	string attr_name_before(string html, integer quote_pos)
+		integer i = quote_pos - 1
+		while i >= 0 and is_tag_space(html.substring(i, i + 1))
+			i = i - 1
+		if i < 0 or html.substring(i, i + 1) != "="
+			return ""
+		i = i - 1
+		while i >= 0 and is_tag_space(html.substring(i, i + 1))
+			i = i - 1
+		integer name_end = i + 1
+		boolean in_name = true
+		while in_name and i >= 0
+			string ch = html.substring(i, i + 1)
+			if is_tag_space(ch) or ch == "<" or ch == "\"" or ch == "'"
+				in_name = false
+			else
+				i = i - 1
+		return html.substring(i + 1, name_end)
+
+	// call_computed applied where a template holds code: `{...}`
+	// interpolations and the values of cl-if, cl-show and cl-iterate.
+	string template_call_computed(string html, string names)
+		if names == ","
+			return html
+		string result = ""
+		integer i = 0
+		integer n = html.length()
+		boolean in_tag = false
+		while i < n
+			string c = html.substring(i, i + 1)
+			if c == "{"
+				integer close = matching_brace(html, i)
+				if close == -1
+					result = result + html.substring(i, n)
+					i = n
+				else
+					result = result + "{" + call_computed(html.substring(i + 1, close), names) + "}"
+					i = close + 1
+			else if in_tag and (c == "\"" or c == "'")
+				integer end_quote = html.indexOf(c, i + 1)
+				if end_quote == -1
+					result = result + html.substring(i, n)
+					i = n
+				else
+					string value = html.substring(i + 1, end_quote)
+					string attr = attr_name_before(html, i)
+					if attr == "cl-if" or attr == "cl-show" or attr == "cl-iterate"
+						value = call_computed(value, names)
+					result = result + c + value + c
+					i = end_quote + 1
+			else
+				if c == "<"
+					in_tag = true
+				else if c == ">"
+					in_tag = false
+				result = result + c
+				i = i + 1
+		return result
+
+	// The text without the lines of its `<section_name>:` section (the
+	// header line and the lines nested under it).
+	string remove_section(string text, string section_name)
+		string result = ""
+		boolean in_section = false
+		integer section_indent = 0
+		string remaining = text
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = ""
+			if nl == -1
+				line = remaining
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string trimmed = line.trim()
+			if in_section and trimmed.length() > 0 and leading_tabs(line) <= section_indent
+				in_section = false
+			if not in_section
+				if trimmed == section_name + ":"
+					in_section = true
+					section_indent = leading_tabs(line)
+				else
+					result = result + line + "\n"
+		return result
+
+	// True when computed `name` reaches itself through the expressions of
+	// the computed entries (a dependency cycle).
+	boolean computed_in_cycle(string entries, string names, string name)
+		string visited = ","
+		string frontier = "," + name + ","
+		integer guard = 0
+		while frontier != "," and guard < 1000
+			guard = guard + 1
+			integer cut = frontier.indexOf(",", 1)
+			string current = frontier.substring(1, cut)
+			frontier = frontier.substring(cut, frontier.length())
+			string remaining = entries
+			while remaining.length() > 0
+				integer nl = remaining.indexOf("\n")
+				string entry = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+				if computed_part(entry, 0) == current
+					string called = call_computed(computed_part(entry, 2), names)
+					string other_names = names.substring(1, names.length())
+					while other_names.length() > 0
+						integer oc = other_names.indexOf(",")
+						string other = other_names.substring(0, oc)
+						other_names = other_names.substring(oc + 1, other_names.length())
+						if other != "" and computed_calls(called, other)
+							if other == name
+								return true
+							if visited.indexOf("," + other + ",") == -1
+								visited = visited + other + ","
+								frontier = frontier + other + ","
+		return false
+
+	// True when code (after call_computed) calls computed `name`.
+	boolean computed_calls(string code, string name)
+		integer pos = code.indexOf(name + "()")
+		while pos != -1
+			boolean starts = pos == 0
+			if not starts
+				string before = code.substring(pos - 1, pos)
+				starts = is_ident_char(before) == false and (before != "." or (pos >= 5 and code.substring(pos - 5, pos) == "this."))
+			if starts
+				return true
+			pos = code.indexOf(name + "()", pos + 1)
+		return false
+
+	// Class-spec method entries for the computed fields, "" when there are
+	// none, or the E010 / E011 marker.
+	string computed_methods(integer ctx, string entries, string names)
+		string result = ""
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			string name = computed_part(entry, 0)
+			string expr = call_computed(remove_state_dot(computed_part(entry, 2)), names)
+			if expr.trim() == "" or is_plain_identifier(name) == false
+				return template_error_marker("E012")
+			if template_error_code(expr) != ""
+				return expr
+			if computed_in_cycle(entries, names, name)
+				return template_error_marker("E011")
+			integer bh = _emit_stmt_from_source(ctx, "return " + expr + "\n", 0)
+			if result != ""
+				result = result + ","
+			result = result + spec_method_inline_bh(name, "[]", computed_part(entry, 1), bh)
+		return result
+
+// ============================================================================
 // HTML → CLEAN STATEMENTS
 // ============================================================================
 // One emitter serves every HTML source frame.ui compiles: `html:` blocks,
@@ -2256,6 +2576,10 @@ functions:
 	//   E003  an attribute frame-ui.ebnf does not allow
 	//   E004  a <script> element (UI-C001)
 	//   E005  an unknown cl-validate rule (UI-B012)
+	//   E010  an assignment to (or cl-bind of) a computed value
+	//   E011  computed values that depend on each other in a cycle
+	//   E012  a malformed computed: line
+	//   E013  cl-bind naming no state / inputs field of the component
 	string template_error_marker(string code)
 		return "__FRAME_UI_" + code + "__"
 
@@ -2267,7 +2591,7 @@ functions:
 
 	// The code of the first template error marker in source, "" when none.
 	string template_error_code(string source)
-		list<string> codes = ["E003", "E004", "E005"]
+		list<string> codes = ["E003", "E004", "E005", "E010", "E011", "E012", "E013"]
 		integer i = 0
 		while i < codes.length()
 			if source.indexOf(template_error_marker(codes[i])) != -1
@@ -2280,6 +2604,14 @@ functions:
 			return plugin_error(ctx, "FRAME-UI-E004", "<script> is not allowed in frame.ui templates (frame-ui-semantics UI-C001). Page logic goes in Clean: a companion load() for data, functions: handlers wired with onclick=\"name\" and the ui.* bridges for DOM updates.")
 		if code == "E005"
 			return plugin_error(ctx, "FRAME-UI-E005", "unknown cl-validate rule (frame-ui-semantics UI-B012). Supported rules: required, email.")
+		if code == "E010"
+			return plugin_error(ctx, "FRAME-UI-E010", "a computed value is read-only: it cannot be assigned or bound with cl-bind (frame-ui.ebnf computed_section). Change the state it is computed from instead.")
+		if code == "E011"
+			return plugin_error(ctx, "FRAME-UI-E011", "computed values depend on each other in a cycle (frame-ui.ebnf computed_section). A computed value may read other computed values only when none of them reads it back.")
+		if code == "E012"
+			return plugin_error(ctx, "FRAME-UI-E012", "a computed: line must be `name = expression` or `type name = expression` (frame-ui.ebnf computed_field).")
+		if code == "E013"
+			return plugin_error(ctx, "FRAME-UI-E013", "cl-bind must name a state: or inputs: field of the component (frame-ui-semantics UI-B005), for example cl-bind=\"name\" for `string name = \"\"`.")
 		return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
 
 	// Add display:none to an attribute fragment, inside an existing style

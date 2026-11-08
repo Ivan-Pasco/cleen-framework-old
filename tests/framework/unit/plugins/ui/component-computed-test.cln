@@ -1,0 +1,47 @@
+// Test: frame.ui — component computed: section.
+// Spec: frame-ui.ebnf §1.5 computed_section / computed_field
+// (`identifier = expression`); a typed `type name = expression` line gives
+// the value a type. A computed value is derived from the component's state
+// and inputs and is re-evaluated when read, so each instance shows the value
+// for its own inputs. Computed values read other computed values, are read
+// in the template ({...}, cl-if) and in functions: methods.
+// Regression: the computed: section was dropped, so reading a computed
+// field failed with SEM007.
+
+plugins:
+	frame.ui
+
+component: tag="ui-cart"
+	state:
+		integer price = 3
+		integer qty = 2
+		string name = "tea"
+	inputs:
+		discount: integer = 0
+	computed:
+		total = price * qty
+		integer net = total - discount
+		label = name + "!"
+	functions:
+		string summary()
+			return "net " + net.toString() + " of " + this.total.toString()
+
+	html:
+		<p>{label} {total}/{net} <b cl-if="net > 3">big</b>{summary()}</p>
+
+page CartPage:
+	<div>
+		<ui-cart></ui-cart>
+		<ui-cart discount="4"></ui-cart>
+	</div>
+
+start:
+	CartPage page = CartPage()
+	string out = page.render()
+	string want = "<div><p>tea! 6/6 <b>big</b>net 6 of 6</p><p>tea! 6/2 net 2 of 6</p></div>"
+	if out == want
+		printl("PASS: ui-component-computed")
+	else
+		printl("FAIL: ui-component-computed")
+		printl("  Expected: " + want)
+		printl("  Actual:   " + out)
