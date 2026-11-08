@@ -3,23 +3,29 @@
 endpoints:
 	GET "/api/profile" [user, admin]:
 		integer userId = auth.userId()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, role: user.role}})
 
 	PUT "/api/profile" [user, admin]:
 		integer userId = auth.userId()
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		user.name = data.name.toString()
 		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"profile updated\"}")

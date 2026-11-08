@@ -5,18 +5,18 @@ endpoints:
 	POST "/api/register":
 		string body = body()
 		any bodyData = json.tryTextToData(body)
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
 		any nameField = bodyData.name
 		any emailField = bodyData.email
 		any passwordField = bodyData.password
 
-		if nameField == null
+		if nameField == none
 			return badRequest("Name required")
-		if emailField == null
+		if emailField == none
 			return badRequest("Email required")
-		if passwordField == null
+		if passwordField == none
 			return badRequest("Password required")
 
 		string name = nameField.toString()

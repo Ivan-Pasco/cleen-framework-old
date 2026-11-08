@@ -7,11 +7,14 @@ endpoints:
 
 	PUT "/api/me" [user, admin]:
 		integer userId = auth.userId()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		user.name = body()
 		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"profile updated\"}")

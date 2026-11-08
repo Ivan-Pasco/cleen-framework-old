@@ -3,15 +3,18 @@
 endpoints:
 	DELETE "/api/admin/user" [admin]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		if data.id == null
+		if data.id == none
 			return badRequest("User id is required")
 		integer userId = data.id.toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		Database.delete(user)
 		return jsonResponse("{\"ok\": true}")

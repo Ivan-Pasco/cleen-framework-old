@@ -16,7 +16,7 @@ endpoints:
 		integer todoId = param("id").toInteger()
 		integer userId = auth.userId()
 
-		Todo item = Todo.first:
+		Todo? item = Todo.first:
 			where:
 				id == todoId
 				owner_id == userId
@@ -27,11 +27,11 @@ endpoints:
 
 	POST "/todos" [user, admin]:
 		any bodyData = json.tryTextToData(body())
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
 		any titleField = bodyData.title
-		if titleField == null
+		if titleField == none
 			return badRequest("Title is required")
 
 		Todo item = Todo()
@@ -41,11 +41,11 @@ endpoints:
 		item.owner_id = auth.userId()
 
 		any descField = json.get(bodyData, "description")
-		if descField != null
+		if descField != none
 			item.details = descField.toString()
 
 		any prioField = bodyData.priority
-		if prioField != null
+		if prioField != none
 			item.priority = prioField.toInteger()
 
 		Database.save(item)
@@ -56,12 +56,15 @@ endpoints:
 		integer todoId = param("id").toInteger()
 		integer userId = auth.userId()
 
-		Todo item = Todo.first:
+		Todo? foundItem = Todo.first:
 			where:
 				id == todoId
 				owner_id == userId
 		onError:
 			return notFound()
+		if foundItem == none
+			return notFound()
+		Todo item = foundItem!
 
 		Database.delete(item)
 
@@ -71,12 +74,15 @@ endpoints:
 		integer todoId = param("id").toInteger()
 		integer userId = auth.userId()
 
-		Todo item = Todo.first:
+		Todo? foundItem = Todo.first:
 			where:
 				id == todoId
 				owner_id == userId
 		onError:
 			return notFound()
+		if foundItem == none
+			return notFound()
+		Todo item = foundItem!
 
 		if item.completed == 1
 			item.completed = 0

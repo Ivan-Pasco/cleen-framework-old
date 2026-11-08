@@ -8,7 +8,7 @@ endpoints:
 
 	GET "/api/articles/:slug":
 		string articleSlug = param("slug")
-		Article article = Article.first:
+		Article? article = Article.first:
 			where:
 				slug == articleSlug
 		onError:

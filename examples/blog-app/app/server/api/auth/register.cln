@@ -3,9 +3,9 @@
 endpoints:
 	POST "/api/auth/register":
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		if data.email == null or data.password == null or data.name == null
+		if data.email == none or data.password == none or data.name == none
 			return badRequest("Email, password, and name are required")
 		string newEmail = data.email.toString()
 		boolean taken = User.exists:

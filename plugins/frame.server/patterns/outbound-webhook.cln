@@ -39,9 +39,10 @@ functions:
 	// Deliver one pending webhook (called by a background job, not a request
 	// handler). Sign the payload so recipients can verify authenticity.
 	integer deliver_webhook(integer delivery_id)
-		WebhookDelivery delivery = WebhookDelivery.first:
+		WebhookDelivery? foundDelivery = WebhookDelivery.first:
 			where:
 				id == delivery_id
+		WebhookDelivery delivery = foundDelivery!
 
 		string headers = "{\"Content-Type\":\"application/json\",\"X-Webhook-Signature\":\"" + delivery.signature + "\"}"
 		http.postWithHeaders(delivery.target_url, delivery.payload, headers)

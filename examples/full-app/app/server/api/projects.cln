@@ -14,7 +14,7 @@ endpoints:
 
 	GET "/api/projects/:id" [user, admin]:
 		integer projectId = param("id").toInteger()
-		Project project = Project.first:
+		Project? project = Project.first:
 			where:
 				id == projectId
 		onError:
@@ -23,21 +23,27 @@ endpoints:
 
 	PUT "/api/projects/:id" [user, admin]:
 		integer projectId = param("id").toInteger()
-		Project project = Project.first:
+		Project? foundProject = Project.first:
 			where:
 				id == projectId
 		onError:
 			return notFound()
+		if foundProject == none
+			return notFound()
+		Project project = foundProject!
 		project.name = body()
 		Database.save(project)
 		return jsonResponse("{\"ok\": true, \"message\": \"project updated\", \"id\": " + projectId.toString() + "}")
 
 	DELETE "/api/projects/:id" [user, admin]:
 		integer projectId = param("id").toInteger()
-		Project project = Project.first:
+		Project? foundProject = Project.first:
 			where:
 				id == projectId
 		onError:
 			return notFound()
+		if foundProject == none
+			return notFound()
+		Project project = foundProject!
 		Database.delete(project)
 		return jsonResponse("{\"ok\": true, \"message\": \"project deleted\", \"id\": " + projectId.toString() + "}")

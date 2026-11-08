@@ -3,10 +3,13 @@
 endpoints:
 	DELETE "/api/comments/:id" [user, admin]:
 		integer commentId = param("id").toInteger()
-		Comment comment = Comment.first:
+		Comment? foundComment = Comment.first:
 			where:
 				id == commentId
 		onError:
 			return notFound()
+		if foundComment == none
+			return notFound()
+		Comment comment = foundComment!
 		Database.delete(comment)
 		return jsonResponse("{\"ok\": true, \"message\": \"comment deleted\", \"id\": " + commentId.toString() + "}")

@@ -80,10 +80,10 @@ login:
 	any form = json.tryTextToData(body())
 	string loginEmail = ""
 	string submitted = ""
-	if form != null
-		if form.email != null
+	if form != none
+		if form.email != none
 			loginEmail = form.email.toString()
-		if form.password != null
+		if form.password != none
 			submitted = form.password.toString()
 	list<User> found = User.find:
 		where:

@@ -26,10 +26,10 @@ login:
 	any bodyData = json.tryTextToData(body())
 	string loginEmail = ""
 	string submitted = ""
-	if bodyData != null
-		if bodyData.email != null
+	if bodyData != none
+		if bodyData.email != none
 			loginEmail = bodyData.email.toString()
-		if bodyData.password != null
+		if bodyData.password != none
 			submitted = bodyData.password.toString()
 	list<User> found = User.find:
 		where:

@@ -10,7 +10,7 @@ endpoints:
 
 	POST "/api/users" [admin]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
 		User user = User()
 		user.name = data.name.toString()

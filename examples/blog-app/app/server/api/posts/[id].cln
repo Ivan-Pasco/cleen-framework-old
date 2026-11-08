@@ -3,7 +3,7 @@
 endpoints:
 	GET "/api/posts/:id":
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? post = Post.first:
 			where:
 				id == postId
 		onError:
@@ -12,27 +12,33 @@ endpoints:
 
 	PUT "/api/posts/:id" [user, admin, editor]:
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? foundPost = Post.first:
 			where:
 				id == postId
 		onError:
 			return notFound()
+		if foundPost == none
+			return notFound()
+		Post post = foundPost!
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		if data.title != null
+		if data.title != none
 			post.title = data.title.toString()
-		if data.content != null
+		if data.content != none
 			post.content = data.content.toString()
 		Database.save(post)
 		return jsonResponse("{\"ok\": true}")
 
 	DELETE "/api/posts/:id" [user, admin, editor]:
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? foundPost = Post.first:
 			where:
 				id == postId
 		onError:
 			return notFound()
+		if foundPost == none
+			return notFound()
+		Post post = foundPost!
 		Database.delete(post)
 		return jsonResponse("{\"ok\": true}")

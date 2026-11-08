@@ -3,30 +3,39 @@
 endpoints:
 	GET "/api/users/:id" [admin]:
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		return json({ok: true, user: {id: user.id, name: user.name, email: user.email, role: user.role, active: user.active}})
 
 	PUT "/api/users/:id" [admin]:
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		user.name = body()
 		Database.save(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"user updated\", \"id\": " + userId.toString() + "}")
 
 	DELETE "/api/users/:id" [admin]:
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 		Database.delete(user)
 		return jsonResponse("{\"ok\": true, \"message\": \"user deleted\", \"id\": " + userId.toString() + "}")

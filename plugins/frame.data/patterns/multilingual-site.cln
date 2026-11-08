@@ -38,11 +38,11 @@ functions:
 		Article article = Article.findOrFail:
 			where:
 				slug == slug
-		ArticleTranslation translation = ArticleTranslation.first:
+		ArticleTranslation? translation = ArticleTranslation.first:
 			where:
 				articleId == article.id
 				locale == locale
-		if translation == null
+		if translation == none
 			translation = englishTranslation(article.id)
 		return translation
 
@@ -54,12 +54,12 @@ functions:
 
 	// Update the existing translation or create it.
 	boolean saveTranslation(integer articleId, string locale, string title, string body)
-		ArticleTranslation translation = ArticleTranslation.first:
+		ArticleTranslation? existing = ArticleTranslation.first:
 			where:
 				articleId == articleId
 				locale == locale
-		if translation == null
-			translation = ArticleTranslation()
+		ArticleTranslation translation = existing default ArticleTranslation()
+		if existing == none
 			translation.articleId = articleId
 			translation.locale = locale
 		translation.title = title

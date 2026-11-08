@@ -8,7 +8,7 @@ endpoints:
 
 	GET "/api/posts/:slug":
 		string postSlug = param("slug")
-		Post post = Post.first:
+		Post? post = Post.first:
 			where:
 				slug == postSlug
 		onError:

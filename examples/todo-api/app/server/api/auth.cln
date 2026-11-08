@@ -4,23 +4,23 @@
 endpoints:
 	POST "/auth/register":
 		any bodyData = json.tryTextToData(body())
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
 		any emailField = bodyData.email
 		any passwordField = bodyData.password
 		any nameField = bodyData.name
 
-		if emailField == null
+		if emailField == none
 			return badRequest("Email required")
-		if passwordField == null
+		if passwordField == none
 			return badRequest("Password required")
 
 		User user = User()
 		user.email = emailField.toString()
 		user.password_hash = auth.hashPassword(passwordField.toString())
 		user.name = ""
-		if nameField != null
+		if nameField != none
 			user.name = nameField.toString()
 		user.role = "user"
 		Database.save(user)

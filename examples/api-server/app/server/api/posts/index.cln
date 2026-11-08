@@ -10,7 +10,7 @@ endpoints:
 
 	POST "/api/posts" [user, admin]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
 		Post post = Post()
 		post.user_id = auth.userId()

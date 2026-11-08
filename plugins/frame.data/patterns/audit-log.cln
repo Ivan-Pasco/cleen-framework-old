@@ -63,11 +63,12 @@ functions:
 
 	// Status at a point in time: the last event at or before it.
 	string statusAt(integer orderId, integer pointInTime)
-		OrderEvent event = OrderEvent.first:
+		OrderEvent? foundEvent = OrderEvent.first:
 			where:
 				orderId == orderId
 				occurredAt <= pointInTime
 			order: occurredAt desc
-		if event == null
+		if foundEvent == none
 			return "unknown"
+		OrderEvent event = foundEvent!
 		return event.newStatus

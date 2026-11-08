@@ -4,11 +4,14 @@ endpoints:
 	GET "/api/todos/:id":
 		integer todoId = param("id").toInteger()
 
-		Todo item = Todo.first:
+		Todo? foundItem = Todo.first:
 			where:
 				id == todoId
 		onError:
 			return notFound()
+		if foundItem == none
+			return notFound()
+		Todo item = foundItem!
 
 		return json(item)
 
@@ -16,24 +19,27 @@ endpoints:
 		integer todoId = param("id").toInteger()
 
 		any bodyData = json.tryTextToData(body())
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
-		Todo item = Todo.first:
+		Todo? foundItem = Todo.first:
 			where:
 				id == todoId
 		onError:
 			return notFound()
+		if foundItem == none
+			return notFound()
+		Todo item = foundItem!
 
 		any titleField = bodyData.title
 		any descField = json.get(bodyData, "description")
 		any completedField = bodyData.completed
 
-		if titleField != null
+		if titleField != none
 			item.title = titleField.toString()
-		if descField != null
+		if descField != none
 			item.details = descField.toString()
-		if completedField != null
+		if completedField != none
 			item.completed = completedField.toInteger()
 
 		Database.save(item)
@@ -43,11 +49,14 @@ endpoints:
 	DELETE "/api/todos/:id":
 		integer todoId = param("id").toInteger()
 
-		Todo item = Todo.first:
+		Todo? foundItem = Todo.first:
 			where:
 				id == todoId
 		onError:
 			return notFound()
+		if foundItem == none
+			return notFound()
+		Todo item = foundItem!
 
 		Database.delete(item)
 

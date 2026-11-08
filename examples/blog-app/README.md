@@ -115,21 +115,25 @@ Reads use the query DSL; writes load an entity and go through `Database.save` / 
 endpoints:
 	GET "/api/posts/:id":
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? post = Post.first:
 			where:
 				id == postId
 		onError:
+			return notFound()
+		if post == none
 			return notFound()
 		return json({ok: true, post: post})
 
 	DELETE "/api/posts/:id" [user, admin, editor]:
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? post = Post.first:
 			where:
 				id == postId
 		onError:
 			return notFound()
-		Database.delete(post)
+		if post == none
+			return notFound()
+		Database.delete(post!)
 		return jsonResponse("{\"ok\": true}")
 ```
 
