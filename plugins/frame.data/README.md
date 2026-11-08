@@ -7,6 +7,21 @@ the spec — this file only orients you:
 - Semantics (DAT-* rules): `foundation/spec/framework/frame-data-semantics.md`
 - `db.*` functions: `foundation/spec/stdlib-reference.md` §9
 
+## Databases
+
+frame.data supports **SQLite** and **PostgreSQL** only. The server picks the
+database from `DATABASE_URL` (or `clean-server --database`):
+
+| Database | URL |
+|---|---|
+| SQLite | `sqlite:app.db`, `sqlite::memory:` |
+| PostgreSQL | `postgres://user:pass@host/db`, `postgresql://...` |
+
+MySQL and MariaDB are not supported: the generated SQL uses `$n`
+placeholders and `INSERT ... RETURNING`, which MySQL does not accept.
+clean-server refuses to start with a `mysql://` (or any other) URL and
+names the supported databases.
+
 ## Data models
 
 ```clean
