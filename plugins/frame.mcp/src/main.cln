@@ -46,16 +46,13 @@ external:
 // V3 LIFECYCLE SLOTS
 // ============================================================================
 // typed-emission.md §7. frame.mcp emits everything from expand_block_typed;
-// the module/server/request slots have nothing to contribute.
+// the module and server slots have nothing to contribute.
 
 functions:
 	integer emit_module_helpers_typed(integer ctx, string ctx_json)
 		return 0
 
 	integer emit_server_init_typed(integer ctx, string ctx_json)
-		return 0
-
-	integer emit_per_request_typed(integer ctx, string ctx_json)
 		return 0
 
 // ============================================================================

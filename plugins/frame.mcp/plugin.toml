@@ -19,14 +19,13 @@ expansion_version = "3.0.0"
 emission_ops_hash = "60d06836a7068ee66a330e8c26ca59bc47cc44991b4f31d56e95e06c707eeaf0"
 
 [lifecycle]
-# Plugin Contracts v3 — typed-emission.md §7. All three slots MUST be typed
+# Plugin Contracts v3 — typed-emission.md §7. Both slots MUST be typed
 # variants under atomic-migration. frame.mcp emits its helpers, handlers,
 # dispatcher and transport loop from expand_block_typed, so these slots
 # contribute nothing and return 0.
 module_helpers_are_roots = true
 module_helpers = "emit_module_helpers_typed"
 server_init = "emit_server_init_typed"
-per_request = "emit_per_request_typed"
 
 [exports]
 # v3 typed entry point — typed-emission.md §2.2.
