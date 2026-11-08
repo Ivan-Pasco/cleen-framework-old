@@ -1,0 +1,75 @@
+// Test: frame.auth — login: block with issue = "jwt".
+// Grammar: frame-auth.ebnf login_block (login_field_clause)
+// Semantic: AUTH-J002, AUTH-J011, AUTH-D004, AUTH-C007
+// A successful login answers with an access token (typ "access", signed for
+// ttlMinutes) whose claims are the login: claims plus sub = userId; a wrong
+// password answers "". The refresh token goes to the frame.refresh response
+// cookie, which a handler cannot read back.
+
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	jwt:
+		secret = env.get("JWT_SECRET")
+		ttlMinutes = 5
+		refreshTtlMinutes = 60
+
+data Attempt:
+	fields:
+		integer id primary generated
+		string password
+
+login:
+	Attempt attempt = Attempt.first:
+		where:
+			id == 1
+	string stored = crypto.hashPassword("s3cret")
+	password = attempt.password
+	hash = stored
+	userId = 42
+	claims = "{ \"role\": \"user\" }"
+	issue = "jwt"
+
+start:
+	printl("[boot] auth-login-jwt server ready")
+
+functions:
+	void setAttempt(string pw)
+		Attempt a = Attempt.first:
+			where:
+				id == 1
+		a.password = pw
+		Database.save(a)
+
+endpoints:
+	GET "/test":
+		Attempt.migrate()
+		Attempt first = Attempt()
+		first.password = ""
+		Database.save(first)
+
+		setAttempt("wrong")
+		boolean ok_wrong = auth.login() == ""
+
+		setAttempt("s3cret")
+		string token = auth.login()
+		string payload = auth.jwt.verify(token)
+		boolean ok_token = token.length() > 0 and payload.length() > 0
+		boolean ok_typ = payload.contains("\"typ\":\"access\"")
+		boolean ok_claims = payload.contains("\"claims\":\{\"sub\":\"42\",\"role\":\"user\"\}")
+		integer exp = json.get(json.textToData(payload), "exp")
+		boolean ok_ttl = exp <= time.now() + 5 * 60 and exp > time.now() + 4 * 60
+		// No session: a JWT login does not set the session cookie.
+		boolean ok_no_session = not auth.isAuthenticated()
+
+		if ok_wrong and ok_token and ok_typ and ok_claims and ok_ttl and ok_no_session
+			printl("PASS: auth-login-jwt")
+		else
+			printl("FAIL: auth-login-jwt wrong=" + ok_wrong.toString() + " token=" + ok_token.toString() + " typ=" + ok_typ.toString() + " claims=" + ok_claims.toString() + " ttl=" + ok_ttl.toString() + " no_session=" + ok_no_session.toString() + " payload=" + payload)
+		return json({ok: true})

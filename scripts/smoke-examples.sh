@@ -160,6 +160,8 @@ flow_todo_api() {
     local c
     c="$(curl -s -i -m 10 -X POST "http://127.0.0.1:$PORT/auth/login" -d '{"email":"ann@example.com","password":"correct-horse-1"}' | cookie_from)"
     if [ -n "$c" ]; then ok "login sets a session cookie"; else bad "login sets no session cookie"; fi
+    expect 401 POST /auth/login -d '{"email":"ann@example.com","password":"wrong-password"}'
+    expect 401 POST /auth/login -d '{"email":"bob@example.com","password":"correct-horse-1"}'
     expect 200 GET /auth/me -H "Cookie: $c"
     expect 200 GET /todos -H "Cookie: $c"
     expect '401|403' GET /admin/users -H "Cookie: $c"

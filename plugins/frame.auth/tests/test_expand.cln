@@ -10,7 +10,8 @@ start:
 	test_keywords()
 	test_subblock_extraction()
 	test_config_values()
-	test_login_block_is_rejected()
+	test_login_block_validation()
+	test_login_clauses()
 	test_string_escaping()
 	test_jwt_validation()
 	test_session_validation()
@@ -47,10 +48,32 @@ functions:
 		assert(get_config_value(jwt, "secret", "") == "JWT_SECRET")
 		assert(get_config_value(jwt, "alg", "HS256") == "HS512")
 
-	void test_login_block_is_rejected()
-		// login: is not implemented in this version: it fails the build
-		// instead of expanding to nothing.
-		assert(validate_block("login", "{\"model\": \"User\"}", "\temailField = \"email\"\n").contains("login: is not supported in this version"))
+	void test_login_block_validation()
+		// frame-auth.ebnf login_block: password, hash and userId are required.
+		string ok_body = "password = form.password\nhash = stored  // \"\" when unknown\nuserId = u.id\n"
+		assert(validate_block("login", "", ok_body) == "")
+		assert(validate_block("login", "", ok_body + "claims = \"\{\}\"\nissue = \"jwt\"\n") == "")
+		assert(validate_block("login", "", "password = p\nhash = h\n").contains("login: missing userId"))
+		assert(validate_block("login", "", "string p = \"x\"\n").contains("missing password hash userId"))
+		assert(validate_block("login", "", ok_body + "password = other\n").contains("password is set more than once"))
+		assert(validate_block("login", "", ok_body + "issue = \"oauth\"\n").contains("issue must be \"session\" or \"jwt\""))
+		assert(validate_block("login", "", ok_body + "claims = a +\n\tb\n").contains("the value of claims must be on one line"))
+		assert(validate_block("login", "", ok_body + "claims =   // nothing\n").contains("claims has no value"))
+
+	void test_login_clauses()
+		// A field is `name = value`; `name == value` and other names are statements.
+		assert(login_field_name("password = x") == "password")
+		assert(login_field_name("userId=1") == "userId")
+		assert(login_field_name("hash == x") == "")
+		assert(login_field_name("hashed = x") == "")
+		assert(login_field_name("string password = x") == "")
+		// A statement clause runs to the last line indented under it.
+		string body = "if u == null\n\treturn \"\"\n\n// note\nhash = h\n"
+		assert(login_clause_end(body, 0, 0) == body.indexOf("\n\n"))
+		assert(login_base_indent("\t\tpassword = p\n\t\t\tx\n") == 2)
+		// The value of a field is the line after `=` without its comment.
+		string line = "claims = \"\{\}\"   // none\n"
+		assert(line.substring(login_value_start(line, 0), login_value_end(line, 0)) == "\"\{\}\"")
 
 	void test_string_escaping()
 		assert(escape_string_literal("a\"b\\c") == "a\\\"b\\\\c")

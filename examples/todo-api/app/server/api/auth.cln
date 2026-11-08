@@ -27,35 +27,12 @@ endpoints:
 
 		return jsonResponse("{\"ok\":true,\"message\":\"User registered\",\"id\":" + user.id.toString() + "}")
 
+	// The login: block in app/auth/auth.cln reads the credentials and
+	// checks them; auth.login() returns "" when they are wrong.
 	POST "/auth/login":
-		any bodyData = json.tryTextToData(body())
-		if bodyData == null
-			return badRequest("Invalid JSON")
-
-		any emailField = bodyData.email
-		any passwordField = bodyData.password
-
-		if emailField == null
-			return badRequest("Email required")
-		if passwordField == null
-			return badRequest("Password required")
-
-		string loginEmail = emailField.toString()
-		string password = passwordField.toString()
-
-		User user = User.first:
-			where:
-				email == loginEmail
-		onError:
+		if auth.login() == ""
 			return unauthorized()
-
-		if not auth.verifyPassword(password, user.password_hash)
-			return unauthorized()
-
-		// auth.setSession stores the session and sets the session cookie.
-		auth.setSession("{\"user_id\":" + user.id.toString() + ",\"role\":\"" + user.role + "\"}")
-
-		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, role: user.role}})
+		return jsonResponse("{\"ok\":true,\"user\":" + auth.getCurrentUser() + "}")
 
 	POST "/auth/logout" [user, admin]:
 		auth.session.destroy()

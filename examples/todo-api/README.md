@@ -15,7 +15,7 @@ todo-api/
 ├── main.cln                    # Package manifest (target: server)
 ├── app/
 │   ├── auth/
-│   │   └── auth.cln            # Session + role configuration (auth: block)
+│   │   └── auth.cln            # Session + role configuration (auth: block) and the login: flow
 │   ├── data/
 │   │   └── models/             # User, Todo, Category, TodoCategory data blocks
 │   └── server/
@@ -131,4 +131,5 @@ To compile, start and request every route in one step, run `./scripts/smoke-exam
 
 - `DATABASE_URL` - database connection string, e.g. `sqlite::memory:` or `sqlite:///tmp/todo.db`
 - `--port` - port passed to `clean-server` (the example declares `server: port: 3000`)
-- Session settings live in `app/auth/auth.cln` (`auth: session:`); JWT is disabled
+- Session settings live in `app/auth/auth.cln` (`auth: session:`), next to the
+  `login:` block that `POST /auth/login` runs with `auth.login()`; JWT is disabled

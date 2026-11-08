@@ -1,0 +1,102 @@
+// Test: frame.auth — login: block with session issuance.
+// Grammar: frame-auth.ebnf login_block (login_field_clause, statement)
+// Semantic: AUTH-S002, AUTH-S011, AUTH-C003, AUTH-C007, AUTH-I009
+// The login: statements look the attempt and the account up with frame.data
+// (the runner sends no request body, so the handler stores each attempt
+// first); auth.login() runs the flow.
+
+plugins:
+	frame.server
+	frame.data
+	frame.auth
+
+server:
+	port: 3400
+
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+	roles:
+		admin: ["*"]
+		user: ["post.read"]
+
+data Account:
+	fields:
+		integer id primary generated
+		string email required
+		string passwordHash required
+		string role
+
+data Attempt:
+	fields:
+		integer id primary generated
+		string email
+		string password
+
+login:
+	Attempt attempt = Attempt.first:
+		where:
+			id == 1
+	list<Account> found = Account.find:
+		where:
+			email == attempt.email
+	string stored = ""
+	integer foundId = 0
+	string foundRole = ""
+	if found.length() > 0
+		stored = found[0].passwordHash
+		foundId = found[0].id
+		foundRole = found[0].role
+	password = attempt.password   // the submitted password
+	hash = stored
+	userId = foundId
+	claims = "{\"role\":\"" + foundRole + "\"}"
+
+start:
+	printl("[boot] auth-login-block server ready")
+
+functions:
+	void setAttempt(string email, string pw)
+		Attempt a = Attempt.first:
+			where:
+				id == 1
+		a.email = email
+		a.password = pw
+		Database.save(a)
+
+endpoints:
+	GET "/test":
+		Account.migrate()
+		Attempt.migrate()
+		Account acc = Account()
+		acc.email = "ann@example.com"
+		acc.passwordHash = auth.hashPassword("correct-horse")
+		acc.role = "admin"
+		Database.save(acc)
+		Attempt first = Attempt()
+		first.email = ""
+		first.password = ""
+		Database.save(first)
+
+		// A wrong password and an unknown user both fail and start no session.
+		setAttempt("ann@example.com", "wrong")
+		boolean ok_wrong = auth.login() == ""
+		setAttempt("bob@example.com", "correct-horse")
+		boolean ok_unknown = auth.login() == ""
+		boolean ok_anon = not auth.isAuthenticated()
+
+		// The right password starts a session for the account, with its claims.
+		setAttempt("ann@example.com", "correct-horse")
+		string sid = auth.login()
+		boolean ok_sid = sid.length() == 64
+		boolean ok_authed = auth.isAuthenticated() and auth.hasRole("admin")
+		string user = auth.getCurrentUser()
+		boolean ok_user = user.contains("\"userId\":" + acc.id.toString()) and user.contains("\"role\":\"admin\"")
+		boolean ok_can = auth.can(user, "post.delete")
+
+		if ok_wrong and ok_unknown and ok_anon and ok_sid and ok_authed and ok_user and ok_can
+			printl("PASS: auth-login-block")
+		else
+			printl("FAIL: auth-login-block wrong=" + ok_wrong.toString() + " unknown=" + ok_unknown.toString() + " anon=" + ok_anon.toString() + " sid=" + ok_sid.toString() + " authed=" + ok_authed.toString() + " user=" + ok_user.toString() + " can=" + ok_can.toString())
+		return json({ok: true})

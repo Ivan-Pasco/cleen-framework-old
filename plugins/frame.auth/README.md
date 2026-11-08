@@ -43,21 +43,68 @@ protected: role="admin"
 
 ### login
 
-Generates login and registration handlers.
+Declares the login flow (frame-auth.ebnf `login_block`). It needs the
+`auth:` block and emits one function that a login endpoint calls as
+`auth.login()`. One `login:` block per program.
 
-**Attributes:**
-- `model` (required) - User model name
-- `email` (optional, default: "email") - Email field name
-- `password` (optional, default: "password_hash") - Password hash field name
+The body runs in source order: statements (read the request, look the user
+up) and these settings, each a one-line expression:
+
+| Setting | Type | |
+|---|---|---|
+| `password` | string | the submitted password (required) |
+| `hash` | string | the stored `auth.hashPassword` hash, `""` when there is no such user (required) |
+| `userId` | integer | the user's id (required) |
+| `claims` | string | the claims JSON object (default `"{}"`) |
+| `issue` | `"session"` or `"jwt"` | what a successful login issues (default `"session"`) |
+
+`auth.login()` verifies the password (an unknown user is checked against a
+dummy hash, so it costs the same as a wrong password; an empty password
+fails). A failure is logged
+as `[WARN] frame.auth: login failed: INVALID_CREDENTIALS` and returns `""`.
+On success:
+
+- `issue = "session"`: the request's old session is deleted, a new session
+  is created for `userId` with `claims` (with a new CSRF token) and its
+  cookie is set; returns the session id.
+- `issue = "jwt"`: returns an access token (`auth.jwt.sign`) whose claims
+  are `claims` plus `"sub": "<userId>"`, and sets a refresh token in the
+  HttpOnly `frame.refresh` cookie for `auth.jwt.refresh`.
+
+A statement may `return` early; `auth.login()` then returns that value.
 
 **Example:**
 ```clean
-login: model="User"
+login:
+	any form = json.tryTextToData(body())
+	string loginEmail = ""
+	string submitted = ""
+	if form != null
+		if form.email != null
+			loginEmail = form.email.toString()
+		if form.password != null
+			submitted = form.password.toString()
+	list<User> found = User.find:
+		where:
+			email == loginEmail
+	string stored = ""
+	integer id = 0
+	if found.length() > 0
+		stored = found[0].passwordHash
+		id = found[0].id
+	password = submitted
+	hash = stored
+	userId = id
+	claims = "{\"role\":\"user\"}"
+
+endpoints:
+	POST "/auth/login":
+		if auth.login() == ""
+			return unauthorized()
+		return json({ok: true})
 ```
 
-This generates:
-- `_login(email, password)` - Returns `{ok: true, token, user}` or `{ok: false, error}`
-- `_register(email, password)` - Creates user and returns token
+Rate-limit the login endpoint (AUTH-C002) with the server's rate limiting.
 
 ## Permission Checks
 
