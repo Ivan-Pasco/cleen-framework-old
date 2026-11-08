@@ -82,7 +82,14 @@
 	let currentEventTarget = null;
 	const componentRegistry = new Map();
 	const slotStore = new Map();
-	const stateStore = new Map();
+	// The state store (_ui_set_state / _ui_get_state, ui.setState /
+	// ui.getState) is also the page store of frame.canvas's page.set /
+	// page.get (CVS-I003): it is published as window.__cleanRuntime.pageState,
+	// and adopted when the canvas runtime published one first.
+	const stateStore = (typeof window !== 'undefined' && window.__cleanRuntime && window.__cleanRuntime.pageState instanceof Map)
+		? window.__cleanRuntime.pageState
+		: new Map();
+	if (typeof window !== 'undefined' && window.__cleanRuntime) window.__cleanRuntime.pageState = stateStore;
 	const registeredEventTypes = new Set();
 	const eventHandlers = new Map(); // "selector\0eventType" -> [handlerIdx, ...]
 	let loadedPages = null;            // lazy Map<path, html>

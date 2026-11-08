@@ -192,6 +192,16 @@ flow_complete_demo() {
     if echo "$body" | grep -q 'ann@example.com'; then ok "dashboard lists the registered user"; else bad "dashboard does not list the registered user"; fi
     body="$(curl -s -m 10 "http://127.0.0.1:$PORT/api/users")"
     if echo "$body" | grep -q 'password_hash'; then bad "GET /api/users exposes password_hash"; else ok "GET /api/users hides password_hash"; fi
+    # The home page's <canvas data-scene> gets frame.canvas's runtime, which
+    # the build emits and the server serves.
+    body="$(curl -s -m 10 "http://127.0.0.1:$PORT/")"
+    if echo "$body" | grep -q "<script src='/frame-canvas-bridge.js'></script><script src='/frame-canvas.js'></script>"; then
+        ok "the canvas page loads the canvas runtime"
+    else
+        bad "the canvas page does not load the canvas runtime"
+    fi
+    expect 200 GET /frame-canvas-bridge.js
+    expect 200 GET /frame-canvas.js
 }
 
 flow_html_first() {

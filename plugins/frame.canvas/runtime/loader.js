@@ -90,10 +90,14 @@
         if (sectionId === 0) {
           const name = _readWasmString(bytes, ref);
           if (name === 'clean:memory') {
-            // Format: initial_pages:ULEB128, max_pages:ULEB128 (tier string may follow; ignored here)
-            const initial = _readULEB128(bytes, ref);
-            const max = _readULEB128(bytes, ref);
-            fromCustom = { initial, max, source: 'clean:memory' };
+            // MEMORY_POLICY.md: a JSON object { tier, initial_pages,
+            // max_pages }.
+            const text = new TextDecoder().decode(bytes.subarray(ref.offset, sectionEnd));
+            const decl = JSON.parse(text);
+            if (Number.isInteger(decl.initial_pages) && decl.initial_pages > 0) {
+              const max = Number.isInteger(decl.max_pages) && decl.max_pages >= decl.initial_pages ? decl.max_pages : null;
+              fromCustom = { initial: decl.initial_pages, max, source: 'clean:memory' };
+            }
           }
         } else if (sectionId === 2) {
           const count = _readULEB128(bytes, ref);
@@ -152,17 +156,26 @@
     return resolved.href;
   }
 
+  // The skeleton has the shape frame.ui's runtime creates (registerEnv for
+  // companion scripts, pageState for page.set / page.get), so whichever
+  // runtime starts first, the other finds what it needs.
   function registerCleanRuntime(statsProvider) {
     if (typeof window === 'undefined') return;
     if (!window.__cleanRuntime) {
       window.__cleanRuntime = {
+        _pendingEnv: {},
         _providers: [],
+        pageState: new Map(),
+        registerEnv(obj) {
+          if (obj && typeof obj === 'object') Object.assign(this._pendingEnv, obj);
+        },
         memoryStats() {
           const p = this._providers[this._providers.length - 1];
           return p ? p() : null;
         }
       };
     }
+    if (!Array.isArray(window.__cleanRuntime._providers)) window.__cleanRuntime._providers = [];
     window.__cleanRuntime._providers.push(statsProvider);
   }
 
@@ -441,7 +454,16 @@
       if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status}`);
       }
-      const wasmBuffer = await response.arrayBuffer();
+      return this.instantiate(await response.arrayBuffer(), options);
+    }
+
+    /**
+     * Instantiate module bytes with the canvas bridge and stdlib imports
+     * @param {ArrayBuffer|Uint8Array} wasmBuffer - Module bytes
+     * @param {Object} options - Load options (memoryPages, memoryMaxPages)
+     * @returns {Promise<CleanCanvasApp>} Application instance
+     */
+    async instantiate(wasmBuffer, options = {}) {
 
       // Resolve initial/max pages per MEMORY_POLICY.md §6.2:
       //   1. Caller override (options.memoryPages)
@@ -1588,6 +1610,367 @@
     }
   }
 
+  // ============================================================================
+  // SCENE MANAGER
+  // ============================================================================
+  // A canvas app is a stack of scenes (CVS-S001, CVS-S002). Each scene file
+  // compiles to its own module, and scene "Name" is the module Name.wasm next
+  // to the first scene's module (scene.change "levels/Two" -> levels/Two.wasm).
+  // A fresh module per scene is what makes scene.change start the next scene
+  // with its declared state (CVS-S001, CVS-S012), while scene.push keeps the
+  // covered scene, state and all, running underneath (CVS-S007).
+  //
+  // The manager runs one frame loop for the whole stack: every scene runs its
+  // frame, only the top scene receives input, and the recorded frames are
+  // composited bottom to top on each page canvas — through the changeTo
+  // transition while one runs. Scene requests made by a frame or a handler
+  // run after it returns.
+
+  const TRANSITIONS = new Set(['instant', 'fadeOut', 'fade', 'crossfade', 'slideLeft', 'slideRight', 'slideUp', 'slideDown']);
+
+  function sceneNameOf(url) {
+    const path = new URL(url).pathname;
+    const file = path.slice(path.lastIndexOf('/') + 1);
+    return decodeURIComponent(file.replace(/\.wasm$/i, ''));
+  }
+
+  class CleanCanvasScenes {
+    /**
+     * @param {Object} options - Load options for every scene module, plus
+     *   `fetchBytes(url) -> Promise<ArrayBuffer>` to replace fetch()
+     */
+    constructor(options = {}) {
+      this.options = options;
+      this.stack = [];            // CleanCanvasLoader per scene, bottom -> top
+      this.params = new Map();    // scene.set values for the next scene's init:
+      this.modules = new Map();   // url -> Promise<ArrayBuffer>
+      this.baseUrl = null;
+      this.transition = null;     // { from, kind, duration, start } while one runs
+      this.queue = Promise.resolve();
+      this.running = new Set();   // bridges whose frame loop was requested
+      this.rafId = 0;
+      this.hidden = false;
+      this.paused = false;
+      this.lastError = null;
+      this._loop = this._loop.bind(this);
+      this.fetchBytes = options.fetchBytes || (async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
+        return response.arrayBuffer();
+      });
+      // CVS-S009: a hidden tab pauses the top scene, showing it resumes it.
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', () => this.setHidden(!!document.hidden));
+      }
+    }
+
+    get top() {
+      return this.stack.length ? this.stack[this.stack.length - 1] : null;
+    }
+
+    /** URL of the module of scene `name`. */
+    sceneUrl(name) {
+      return sameOriginModuleUrl(`${name}.wasm`, this.baseUrl);
+    }
+
+    /**
+     * Load and instantiate the first scene from `url`.
+     * @returns {Promise<CleanCanvasApp>}
+     */
+    async open(url) {
+      const href = typeof location !== 'undefined' && location.href ? sameOriginModuleUrl(url, location.href) : url;
+      this.baseUrl = href;
+      const loader = await this._instantiate(sceneNameOf(href), href);
+      this._push(loader);
+      return new CleanCanvasApp(loader);
+    }
+
+    async _instantiate(name, url) {
+      if (!this.modules.has(url)) this.modules.set(url, this.fetchBytes(url));
+      const bytes = await this.modules.get(url);
+      const loader = new CleanCanvasLoader();
+      loader.bridge.manager = this;
+      loader.bridge.composited = true;
+      loader.bridge.sceneName = name;
+      loader.scenes = this;
+      await loader.instantiate(bytes.slice ? bytes.slice(0) : bytes, this.options);
+      return loader;
+    }
+
+    // Put `loader` on top of the stack; it alone receives input.
+    _push(loader) {
+      for (const below of this.stack) below.bridge.inputActive = false;
+      loader.bridge.inputActive = true;
+      this.stack.push(loader);
+    }
+
+    // Run the scene's start: (canvas, registrations, state, init:). The
+    // scene.set values were for this init: — they are dropped after it.
+    _start(loader) {
+      try {
+        new CleanCanvasApp(loader).start();
+      } finally {
+        this.params.clear();
+      }
+    }
+
+    // Take `loader` out of the frame loop and release its canvases' input.
+    _stop(loader) {
+      this.running.delete(loader.bridge);
+      loader.bridge.inputActive = false;
+      loader.destroy();
+    }
+
+    /** Called by a bridge: scene.change / changeTo / push / pop. */
+    request(bridge, req) {
+      if (!this.stack.some((l) => l.bridge === bridge)) return -1;
+      if (req.op === 'pop' && this.stack.length <= 1) {
+        // CVS-X009: the stack keeps its last scene.
+        console.error('[CleanCanvas] scene.pop: no scene was pushed — the stack keeps its last scene (CVS-X009)');
+        return -1;
+      }
+      if (req.op !== 'pop' && !req.name) return -1;
+      this.queue = this.queue
+        .then(() => this._run(req))
+        .catch((err) => {
+          this.lastError = err;
+          console.error(`[CleanCanvas] scene.${req.op}${req.name ? ` "${req.name}"` : ''} failed:`, err);
+        });
+      return 0;
+    }
+
+    /** Resolves once every scene request made so far has run. */
+    settled() {
+      return this.queue;
+    }
+
+    async _run(req) {
+      if (req.op === 'change') return this._change(req);
+      if (req.op === 'push') return this._pushScene(req.name);
+      if (req.op === 'pop') return this._pop();
+      return undefined;
+    }
+
+    // scene.change / changeTo: every scene of the stack exits (CVS-S001,
+    // CVS-S002, CVS-S008) and the named scene starts as the only one. What
+    // was on screen stays there until it is ready, then the transition runs.
+    async _change(req) {
+      const from = this._snapshot();
+      const leaving = this.stack.slice().reverse();
+      this.stack = [];
+      for (const loader of leaving) {
+        loader.bridge._fireLifecycle('exit');
+        this._stop(loader);
+      }
+      this.transition = { from, kind: 'hold', duration: 0, start: 0 };
+      this._ensureLoop();
+      const url = this.sceneUrl(req.name);
+      let loader;
+      try {
+        loader = await this._instantiate(req.name, url);
+      } catch (err) {
+        this.transition = null;
+        throw err;
+      }
+      this._push(loader);
+      const kind = TRANSITIONS.has(req.transition) ? req.transition : 'instant';
+      if (!TRANSITIONS.has(req.transition)) {
+        console.error(`[CleanCanvas] scene.changeTo: unknown transition "${req.transition}" — expected ${[...TRANSITIONS].join(', ')}`);
+      }
+      this.transition = kind === 'instant' || !(req.duration > 0)
+        ? null
+        : { from, kind: kind === 'fade' ? 'fadeOut' : kind, duration: req.duration, start: null };
+      this._start(loader);
+    }
+
+    // scene.push: the named scene starts on top; the covered scene keeps
+    // running underneath without input and gets onPause (CVS-S007).
+    async _pushScene(name) {
+      const loader = await this._instantiate(name, this.sceneUrl(name));
+      const covered = this.top;
+      if (covered) covered.bridge._fireLifecycle('pause');
+      this._push(loader);
+      this._start(loader);
+    }
+
+    // scene.pop: the top scene exits (CVS-S008); the one below gets input
+    // back and onResume.
+    _pop() {
+      if (this.stack.length <= 1) {
+        console.error('[CleanCanvas] scene.pop: no scene was pushed — the stack keeps its last scene (CVS-X009)');
+        return;
+      }
+      const leaving = this.stack.pop();
+      leaving.bridge._fireLifecycle('exit');
+      this._stop(leaving);
+      const uncovered = this.top;
+      uncovered.bridge.inputActive = true;
+      uncovered.bridge._fireLifecycle('resume');
+      this._ensureLoop();
+    }
+
+    /** Called by a bridge from _canvas_init. */
+    canvasCreated(bridge, canvasId) {
+      void bridge;
+      void canvasId;
+    }
+
+    /** Called by a bridge from _canvas_request_frame. */
+    requestFrames(bridge, canvasId) {
+      if (!bridge.frameCanvases) bridge.frameCanvases = new Set();
+      bridge.frameCanvases.add(canvasId);
+      this.running.add(bridge);
+      this._ensureLoop();
+    }
+
+    cancelFrames(bridge) {
+      this.running.delete(bridge);
+    }
+
+    /** Stop or restart the frame loop for a hidden / shown tab (CVS-S009). */
+    setHidden(hidden) {
+      if (hidden === this.hidden) return;
+      this.hidden = hidden;
+      const top = this.top;
+      if (top) top.bridge._fireLifecycle(hidden ? 'pause' : 'resume');
+      if (hidden) this._cancelLoop();
+      else this._ensureLoop();
+    }
+
+    pause() {
+      this.paused = true;
+      this._cancelLoop();
+    }
+
+    resume() {
+      this.paused = false;
+      this._ensureLoop();
+    }
+
+    _ensureLoop() {
+      if (this.rafId || this.hidden || this.paused) return;
+      if (this.running.size === 0 && !this.transition) return;
+      this.rafId = requestAnimationFrame(this._loop) || -1;
+    }
+
+    _cancelLoop() {
+      if (this.rafId > 0) cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+
+    _loop(timestamp) {
+      this.rafId = 0;
+      if (this.hidden || this.paused) return;
+      this.frame(timestamp);
+      this._ensureLoop();
+    }
+
+    /** One frame of the stack at `timestamp` (ms). */
+    frame(timestamp) {
+      let drew = false;
+      for (const loader of this.stack.slice()) {
+        const bridge = loader.bridge;
+        if (!this.running.has(bridge) || !bridge.frameCanvases) continue;
+        for (const id of bridge.frameCanvases) {
+          if (bridge._tick(id, timestamp)) drew = true;
+        }
+      }
+      if (drew || this.transition) this.composite(timestamp);
+    }
+
+    // Recorded frames per page canvas: [{ bridge, entry, frame }] bottom to top.
+    _snapshot() {
+      const byElement = new Map();
+      for (const loader of this.stack) {
+        const bridge = loader.bridge;
+        for (const [, entry] of bridge.canvases) {
+          if (!byElement.has(entry.element)) byElement.set(entry.element, []);
+          byElement.get(entry.element).push({ bridge, entry, frame: entry.lastFrame });
+        }
+      }
+      return byElement;
+    }
+
+    /** Draw the stack's latest frames (and the running transition). */
+    composite(timestamp) {
+      const current = this._snapshot();
+      const tr = this.transition;
+      const elements = new Set(current.keys());
+      if (tr) for (const el of tr.from.keys()) elements.add(el);
+      const draw = (list, ctx, matrix, alpha) => {
+        for (const item of list || []) item.bridge._replayFrame(item.entry, item.frame, ctx, matrix, alpha);
+      };
+      let done = true;
+      for (const element of elements) {
+        const to = current.get(element) || [];
+        const from = tr ? tr.from.get(element) || [] : [];
+        const any = to[0] || from[0];
+        const ctx = any.entry.real;
+        const w = any.entry.width;
+        const h = any.entry.height;
+        if (!tr || (from.length === 0 && tr.kind !== 'hold')) {
+          draw(to, ctx, [1, 0, 0, 1, 0, 0], 1);
+          continue;
+        }
+        if (tr.kind === 'hold') {
+          draw(from, ctx, [1, 0, 0, 1, 0, 0], 1);
+          done = false;
+          continue;
+        }
+        if (tr.start === null) tr.start = timestamp;
+        const t = Math.max(0, Math.min(1, (timestamp - tr.start) / (tr.duration * 1000)));
+        if (t >= 1) {
+          draw(to, ctx, [1, 0, 0, 1, 0, 0], 1);
+          continue;
+        }
+        done = false;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.restore();
+        const I = [1, 0, 0, 1, 0, 0];
+        const shift = (x, y) => [1, 0, 0, 1, x, y];
+        switch (tr.kind) {
+          case 'fadeOut': {
+            // The old scene fades to black, then the new one fades in.
+            const dark = t < 0.5 ? t * 2 : (1 - t) * 2;
+            draw(t < 0.5 ? from : to, ctx, I, 1);
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.globalAlpha = Math.max(0, Math.min(1, dark));
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, w, h);
+            ctx.restore();
+            break;
+          }
+          case 'crossfade':
+            draw(from, ctx, I, 1);
+            draw(to, ctx, I, t);
+            break;
+          case 'slideLeft':
+            draw(from, ctx, shift(-w * t, 0), 1);
+            draw(to, ctx, shift(w * (1 - t), 0), 1);
+            break;
+          case 'slideRight':
+            draw(from, ctx, shift(w * t, 0), 1);
+            draw(to, ctx, shift(-w * (1 - t), 0), 1);
+            break;
+          case 'slideUp':
+            draw(from, ctx, shift(0, -h * t), 1);
+            draw(to, ctx, shift(0, h * (1 - t)), 1);
+            break;
+          case 'slideDown':
+            draw(from, ctx, shift(0, h * t), 1);
+            draw(to, ctx, shift(0, -h * (1 - t)), 1);
+            break;
+          default:
+            draw(to, ctx, I, 1);
+        }
+      }
+      if (tr && done) this.transition = null;
+    }
+  }
+
   /**
    * Clean Canvas Application instance
    */
@@ -1624,9 +2007,14 @@
     pause() {
       if (!this.paused) {
         this.paused = true;
-        const bridge = this.loader.bridge;
-        for (const [frameId, rafId] of bridge.animationFrames) {
-          cancelAnimationFrame(rafId);
+        if (this.loader.scenes) {
+          this.loader.scenes.pause();
+        } else {
+          const bridge = this.loader.bridge;
+          for (const [, rafId] of bridge.animationFrames) {
+            if (rafId) cancelAnimationFrame(rafId);
+          }
+          bridge.animationFrames.clear();
         }
         console.log('[CleanCanvas] Paused');
       }
@@ -1639,12 +2027,15 @@
     resume() {
       if (this.paused) {
         this.paused = false;
-        const bridge = this.loader.bridge;
-        const imports = bridge.getImports(this.loader.memory);
-
-        // Re-request animation frames for all canvases
-        for (const canvasId of bridge.canvases.keys()) {
-          imports.env._canvas_request_frame(canvasId);
+        if (this.loader.scenes) {
+          this.loader.scenes.resume();
+        } else {
+          const bridge = this.loader.bridge;
+          const imports = bridge.getImports(this.loader.memory);
+          // Re-request animation frames for all canvases
+          for (const canvasId of bridge.canvases.keys()) {
+            imports.env._canvas_request_frame(canvasId);
+          }
         }
         console.log('[CleanCanvas] Resumed');
       }
@@ -1774,15 +2165,34 @@
      * @returns {Promise<CleanCanvasApp>} Application instance
      */
     async load(url, options = {}) {
-      const loader = new CleanCanvasLoader();
-      const app = await loader.load(url, options);
+      const scenes = new CleanCanvasScenes(options);
+      const app = await scenes.open(url);
 
       // Auto-start unless disabled
       if (options.autoStart !== false) {
-        app.start();
+        scenes._start(app.loader);
       }
 
       return app;
+    },
+
+    /**
+     * Start every page canvas that names its scene module with data-scene
+     * (`<canvas id="game" data-scene="/game/Menu.wasm">`). Runs by itself
+     * when this script is on a page.
+     */
+    boot(root) {
+      const scope = root || (typeof document !== 'undefined' ? document : null);
+      if (!scope || typeof scope.querySelectorAll !== 'function') return [];
+      const started = [];
+      for (const el of scope.querySelectorAll('canvas[data-scene]')) {
+        if (el.__cleanCanvasScene) continue;
+        el.__cleanCanvasScene = true;
+        started.push(CleanCanvas.load(el.getAttribute('data-scene')).catch((err) => {
+          console.error(`[CleanCanvas] canvas#${el.id} data-scene="${el.getAttribute('data-scene')}" did not start:`, err);
+        }));
+      }
+      return started;
     },
 
     /**
@@ -1809,11 +2219,19 @@
     window.CleanCanvas = CleanCanvas;
     window.CleanCanvasLoader = CleanCanvasLoader;
     window.CleanCanvasApp = CleanCanvasApp;
+    window.CleanCanvasScenes = CleanCanvasScenes;
+    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => CleanCanvas.boot(), { once: true });
+      } else {
+        CleanCanvas.boot();
+      }
+    }
   }
 
   // Export for module systems
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { CleanCanvas, CleanCanvasLoader, CleanCanvasApp };
+    module.exports = { CleanCanvas, CleanCanvasLoader, CleanCanvasApp, CleanCanvasScenes };
   }
 
 })();
