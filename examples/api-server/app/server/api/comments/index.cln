@@ -8,7 +8,7 @@ endpoints:
 
 	POST "/api/comments" [user, admin]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
 		Comment comment = Comment()
 		comment.user_id = auth.userId()

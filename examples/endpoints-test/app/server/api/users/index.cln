@@ -7,7 +7,7 @@ endpoints:
 	POST "/api/users":
 		string body = body()
 		any bodyData = json.tryTextToData(body)
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
 		return jsonResponse("{\"ok\":true,\"message\":\"User created\"}")

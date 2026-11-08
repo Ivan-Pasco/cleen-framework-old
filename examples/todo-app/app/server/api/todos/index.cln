@@ -9,11 +9,11 @@ endpoints:
 
 	POST "/api/todos":
 		any bodyData = json.tryTextToData(body())
-		if bodyData == null
+		if bodyData == none
 			return badRequest("Invalid JSON")
 
 		any titleField = bodyData.title
-		if titleField == null
+		if titleField == none
 			return badRequest("Title is required")
 
 		Todo item = Todo()
@@ -22,7 +22,7 @@ endpoints:
 		item.completed = 0
 
 		any descField = json.get(bodyData, "description")
-		if descField != null
+		if descField != none
 			item.details = descField.toString()
 
 		Database.save(item)

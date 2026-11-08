@@ -77,10 +77,12 @@ From `app/server/api/articles.cln`:
 list<Article> articles = Article.find:
 	order: created_at desc
 
-Article article = Article.first:
+Article? article = Article.first:
 	where:
 		slug == articleSlug
 onError:
+	return notFound()
+if article == none
 	return notFound()
 ```
 

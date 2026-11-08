@@ -3,15 +3,18 @@
 endpoints:
 	POST "/api/login":
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
 		string loginEmail = data.email.toString()
 		string password = data.password.toString()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				email == loginEmail
 		onError:
 			return jsonResponse("{\"ok\": false, \"error\": \"invalid credentials\"}")
+		if foundUser == none
+			return jsonResponse("{\"ok\": false, \"error\": \"invalid credentials\"}")
+		User user = foundUser!
 		if not auth.verifyPassword(password, user.password_hash)
 			return jsonResponse("{\"ok\": false, \"error\": \"invalid credentials\"}")
 		// auth.setSession stores the session and sets the session cookie.

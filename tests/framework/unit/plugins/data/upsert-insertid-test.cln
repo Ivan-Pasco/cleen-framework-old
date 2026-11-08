@@ -1,4 +1,7 @@
 // Test: frame.data — insert returning the new id + upsert (insert-or-update).
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -36,7 +39,7 @@ endpoints:
 		// `Database.save(entity)` inside one transaction (DAT-Q015).
 		// Upsert on same email must UPDATE (not insert a new row).
 		transaction:
-			User existing = User.first:
+			User? existing = User.first:
 				where:
 					email == "alice@example.com"
 			if existing == null
@@ -45,20 +48,22 @@ endpoints:
 				created.name = "Alicia"
 				Database.save(created)
 			else
-				existing.name = "Alicia"
-				Database.save(existing)
+				User found = existing!
+				found.name = "Alicia"
+				Database.save(found)
 
 		integer count = User.count
 		boolean ok_dedup = count == 1
 
-		User row = User.first:
+		User? foundRow = User.first:
 			where:
 				email == "alice@example.com"
+		User row = foundRow!
 		boolean ok_updated = row.name == "Alicia"
 
 		// Upsert on new email must INSERT.
 		transaction:
-			User bobRow = User.first:
+			User? bobRow = User.first:
 				where:
 					email == "bob@example.com"
 			if bobRow == null
@@ -67,8 +72,9 @@ endpoints:
 				bob.name = "Bob"
 				Database.save(bob)
 			else
-				bobRow.name = "Bob"
-				Database.save(bobRow)
+				User found = bobRow!
+				found.name = "Bob"
+				Database.save(found)
 		integer countAfter = User.count
 		boolean ok_insert = countAfter == 2
 

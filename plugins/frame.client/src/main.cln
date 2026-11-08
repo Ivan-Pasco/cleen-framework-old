@@ -580,7 +580,7 @@ functions:
 // LOAD: BLOCK — V3 TYPED EXPANSION
 // ============================================================================
 // Emits:
-//   state: { loading: boolean = true, loadError: string = "", <varN>: any = null, ... }
+//   state: { loading: boolean = true, loadError: string = "", <varN>: any = none, ... }
 //   functions: { void __load_<varN>() { __url = ...; later __res = api.get(__url);
 //                  if __res.ok { varN = __res.json(at) } else { loadError = ...; [onerror()] }
 //                  __load_<varN+1>() — or loading = false after the last one } }
@@ -609,7 +609,7 @@ functions:
 			return 1
 
 		// ---- Emit state: block ----
-		// Fields: boolean loading = true, string loadError = "", any <var> = null per decl
+		// Fields: boolean loading = true, string loadError = "", any <var> = none per decl
 		integer bool_t = _type_boolean(ctx)
 		if bool_t == 0
 			_emit_error(ctx, 2, "FRAME-CLIENT-E002", "failed to build boolean type handle", "{\"source\":\"plugin\"}")
@@ -650,10 +650,10 @@ functions:
 				if any_t == 0
 					_emit_error(ctx, 2, "FRAME-CLIENT-E006", "failed to build any type handle for " + var_name, "{\"source\":\"plugin\"}")
 					return 1
-				// `null` is a literal, not a name: parse the fixed fragment.
-				integer null_expr = _emit_expr_from_source(ctx, "null", 0)
+				// `none` is a literal, not a name: parse the fixed fragment.
+				integer null_expr = _emit_expr_from_source(ctx, "none", 0)
 				if null_expr == 0
-					_emit_error(ctx, 2, "FRAME-CLIENT-E007", "failed to build null ident for " + var_name, "{\"source\":\"plugin\"}")
+					_emit_error(ctx, 2, "FRAME-CLIENT-E007", "failed to build the none literal for " + var_name, "{\"source\":\"plugin\"}")
 					return 1
 				state_fields = state_fields + ",{\"name\":\"" + var_name + "\",\"type_handle\":" + any_t.toString() + ",\"default_expr_handle\":" + null_expr.toString() + "}"
 

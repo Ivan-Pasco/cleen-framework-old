@@ -10,9 +10,9 @@ endpoints:
 
 	POST "/api/posts" [user, admin, editor]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		if data.title == null or data.content == null or data.slug == null
+		if data.title == none or data.content == none or data.slug == none
 			return badRequest("Title, content, and slug are required")
 		Post post = Post()
 		post.author_id = auth.userId()

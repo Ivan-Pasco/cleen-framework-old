@@ -46,7 +46,7 @@ endpoints:
 		if not auth.isAuthenticated()
 			return unauthorized()
 		any form = json.tryTextToData(req.form())
-		if form == null or form.display_name == null
+		if form == none or form.display_name == none
 			return badRequest("display_name is required")
 		string displayName = form.display_name.toString()
 		return json({saved: true, display_name: displayName})

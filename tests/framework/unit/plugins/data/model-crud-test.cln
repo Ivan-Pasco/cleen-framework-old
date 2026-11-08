@@ -1,5 +1,8 @@
 // Test: frame.data — save (insert) / count / first / save (update) / delete roundtrip.
 // SQLite :memory: (test default). Server-shaped: runner drives /test.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -32,9 +35,10 @@ endpoints:
 		integer count = User.count
 		boolean ok_count = count == 1
 
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				email == "alice@example.com"
+		User user = foundUser!
 		boolean ok_first = user.name == "Alice"
 
 		// Fixed: was `User.update:` with set:/where:, frame-data.ebnf v2
@@ -42,9 +46,10 @@ endpoints:
 		user.name = "Alicia"
 		Database.save(user)
 
-		User updated = User.first:
+		User? foundUpdated = User.first:
 			where:
 				email == "alice@example.com"
+		User updated = foundUpdated!
 		boolean ok_update = updated.name == "Alicia"
 
 		// Fixed: was `User.delete:` with where:, frame-data.ebnf v2 requires

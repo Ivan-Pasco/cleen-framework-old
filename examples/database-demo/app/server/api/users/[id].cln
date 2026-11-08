@@ -1,35 +1,38 @@
 // Single user API
 // Fixed: was `User.update:` / `User.delete:` block mutations, frame-data.ebnf
 // v2 requires load-mutate-save and `Database.delete(entity)` (DAT-S001,
-// DAT-S003). `first` returns the record or null (DAT-Q001).
+// DAT-S003). `first` returns the record or none (DAT-Q001).
 
 endpoints:
 	GET "/api/users/:id":
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
-		if user == null
+		if foundUser == none
 			return notFound()
+		User user = foundUser!
 		return jsonResponse("\{\"ok\": true, \"user\": " + json.dataToText(user) + "\}")
 
 	PUT "/api/users/:id":
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
-		if user == null
+		if foundUser == none
 			return notFound()
+		User user = foundUser!
 		user.name = body()
 		Database.save(user)
 		return jsonResponse("\{\"ok\": true, \"message\": \"user updated\", \"id\": " + userId.toString() + "\}")
 
 	DELETE "/api/users/:id":
 		integer userId = param("id").toInteger()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
-		if user == null
+		if foundUser == none
 			return notFound()
+		User user = foundUser!
 		Database.delete(user)
 		return jsonResponse("\{\"ok\": true, \"message\": \"user deleted\", \"id\": " + userId.toString() + "\}")

@@ -7,17 +7,20 @@ endpoints:
 
 	PUT "/api/me" [user, admin]:
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
 		integer userId = auth.userId()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
-		if data.name != null
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
+		if data.name != none
 			user.name = data.name.toString()
-		if data.bio != null
+		if data.bio != none
 			user.bio = data.bio.toString()
 		Database.save(user)
 		return json({ok: true, user: {id: user.id, email: user.email, name: user.name, bio: user.bio, role: user.role}})

@@ -16,7 +16,7 @@ endpoints:
 
 	GET "/api/tasks/:id" [user, admin]:
 		integer taskId = param("id").toInteger()
-		Task task = Task.first:
+		Task? task = Task.first:
 			where:
 				id == taskId
 		onError:
@@ -25,21 +25,27 @@ endpoints:
 
 	PUT "/api/tasks/:id" [user, admin]:
 		integer taskId = param("id").toInteger()
-		Task task = Task.first:
+		Task? foundTask = Task.first:
 			where:
 				id == taskId
 		onError:
 			return notFound()
+		if foundTask == none
+			return notFound()
+		Task task = foundTask!
 		task.status = body()
 		Database.save(task)
 		return jsonResponse("{\"ok\": true, \"message\": \"task updated\", \"id\": " + taskId.toString() + "}")
 
 	DELETE "/api/tasks/:id" [user, admin]:
 		integer taskId = param("id").toInteger()
-		Task task = Task.first:
+		Task? foundTask = Task.first:
 			where:
 				id == taskId
 		onError:
 			return notFound()
+		if foundTask == none
+			return notFound()
+		Task task = foundTask!
 		Database.delete(task)
 		return jsonResponse("{\"ok\": true, \"message\": \"task deleted\", \"id\": " + taskId.toString() + "}")

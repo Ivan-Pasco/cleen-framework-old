@@ -6,6 +6,9 @@
 // A `generated` string/uuid key is a UUID v4 assigned on the first save; a
 // `primary` key without `generated` is supplied by the caller.
 // SQLite :memory: (test default). Server-shaped: runner drives /test.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 plugins:
 	frame.server
@@ -47,13 +50,14 @@ endpoints:
 			failures = failures + 1
 
 		// find by the string key.
-		Token found = Token.first:
+		Token? foundRow = Token.first:
 			where:
 				id == first_id
-		if found == null
+		if foundRow == null
 			printl("FAIL: first: by uuid key found nothing")
 			failures = failures + 1
 		else
+			Token found = foundRow!
 			if found.label != "first" or found.id != first_id
 				printl("FAIL: uuid row not hydrated")
 				failures = failures + 1

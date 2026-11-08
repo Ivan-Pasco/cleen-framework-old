@@ -3,7 +3,7 @@
 endpoints:
 	GET "/api/posts/:id":
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? post = Post.first:
 			where:
 				id == postId
 		onError:
@@ -13,13 +13,16 @@ endpoints:
 	PUT "/api/posts/:id" [user, admin]:
 		integer postId = param("id").toInteger()
 		any data = json.tryTextToData(body())
-		if data == null
+		if data == none
 			return badRequest("Invalid JSON")
-		Post post = Post.first:
+		Post? foundPost = Post.first:
 			where:
 				id == postId
 		onError:
 			return notFound()
+		if foundPost == none
+			return notFound()
+		Post post = foundPost!
 		if post.user_id != auth.userId()
 			return unauthorized()
 		post.content = data.content.toString()
@@ -28,11 +31,14 @@ endpoints:
 
 	DELETE "/api/posts/:id" [user, admin]:
 		integer postId = param("id").toInteger()
-		Post post = Post.first:
+		Post? foundPost = Post.first:
 			where:
 				id == postId
 		onError:
 			return notFound()
+		if foundPost == none
+			return notFound()
+		Post post = foundPost!
 		if post.user_id != auth.userId()
 			return unauthorized()
 		Database.delete(post)

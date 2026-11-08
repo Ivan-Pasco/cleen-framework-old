@@ -3,6 +3,9 @@
 // (where: right-hand side is any expression).
 // Regression: a string field holding `"` broke the INSERT params JSON (the
 // row stored 0), and a where: value holding `'` broke the generated SQL.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 plugins:
 	frame.server
@@ -30,15 +33,15 @@ endpoints:
 		Database.save(b)
 
 		string who = "O'Brien"
-		Person byVar = Person.first:
+		Person? byVar = Person.first:
 			where:
 				name == who
-		boolean ok_var = byVar != null and byVar.note == "say \"hi\" \\ done"
+		boolean ok_var = byVar != null and byVar!.note == "say \"hi\" \\ done"
 
-		Person byLit = Person.first:
+		Person? byLit = Person.first:
 			where:
 				name == "O'Brien"
-		boolean ok_lit = byLit != null and byLit.id == a.id
+		boolean ok_lit = byLit != null and byLit!.id == a.id
 
 		// A value that would end the SQL string early must stay a value.
 		string attack = "x' OR '1'='1"
@@ -48,8 +51,9 @@ endpoints:
 		boolean ok_inject = leaked == 0
 
 		// Update path keeps the quotes too.
-		byVar.note = "it's \"fine\""
-		Database.save(byVar)
+		Person toUpdate = byVar!
+		toUpdate.note = "it's \"fine\""
+		Database.save(toUpdate)
 		Person again = Person.findOrFail:
 			where:
 				id == a.id

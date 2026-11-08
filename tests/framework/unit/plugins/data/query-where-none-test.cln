@@ -1,0 +1,54 @@
+// Test: frame.data — `== none` / `!= none` in where: become IS NULL / IS NOT NULL.
+// Spec: frame-data.ebnf §5.1 (comparison_operator), 03-lexical-structure.md
+// "None Literal" (`none` is the standard spelling, `null` its alias).
+// Regression: only the `null` spelling was recognised, so `id != none` bound
+// a parameter and compared `id <> NULL`, which no row satisfies.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Item:
+	fields:
+		integer id primary generated
+		string label required
+
+start:
+	printl("[boot] data-query-where-none server ready")
+
+endpoints:
+	GET "/test":
+		Item.migrate()
+		Item a = Item()
+		a.label = "a"
+		Database.save(a)
+		Item b = Item()
+		b.label = "b"
+		Database.save(b)
+
+		integer present = Item.count:
+			where:
+				id != none
+		integer absent = Item.count:
+			where:
+				id == none
+		integer presentAlias = Item.count:
+			where:
+				id != null
+		list<Item> listed = Item.find:
+			where:
+				id != none
+
+		boolean ok_present = present == 2
+		boolean ok_absent = absent == 0
+		boolean ok_alias = presentAlias == 2
+		boolean ok_find = listed.length() == 2
+
+		if ok_present and ok_absent and ok_alias and ok_find
+			printl("PASS: data-query-where-none")
+		else
+			printl("FAIL: data-query-where-none present=" + present.toString() + " absent=" + absent.toString() + " alias=" + presentAlias.toString() + " find=" + listed.length().toString())
+		return json({ok: true})

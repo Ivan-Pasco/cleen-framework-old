@@ -11,9 +11,9 @@ endpoints:
 	// Form post from register.html (application/x-www-form-urlencoded).
 	POST "/register":
 		any form = json.tryTextToData(req.form())
-		if form == null
+		if form == none
 			return badRequest("Invalid form")
-		if form.username == null or form.email == null or form.password == null or form.password_confirm == null
+		if form.username == none or form.email == none or form.password == none or form.password_confirm == none
 			return badRequest("All fields are required")
 
 		string username = form.username.toString()

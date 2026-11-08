@@ -15,11 +15,14 @@ endpoints:
 		if userId <= 0
 			return badRequest("User ID required")
 
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId
 		onError:
 			return notFound()
+		if foundUser == none
+			return notFound()
+		User user = foundUser!
 
 		// Delete the user's todos first, then the user
 		list<Todo> owned = Todo.find:

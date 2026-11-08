@@ -82,13 +82,13 @@ functions:
 
 	// Write path: update the field translation or create it.
 	boolean saveField(integer pageId, integer languageId, string fieldKey, string fieldValue)
-		PageField field = PageField.first:
+		PageField? existing = PageField.first:
 			where:
 				pageId == pageId
 				languageId == languageId
 				fieldKey == fieldKey
-		if field == null
-			field = PageField()
+		PageField field = existing default PageField()
+		if existing == none
 			field.pageId = pageId
 			field.languageId = languageId
 			field.fieldKey = fieldKey

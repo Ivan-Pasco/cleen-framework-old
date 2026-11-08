@@ -15,18 +15,18 @@ endpoints:
 
 	POST "/api/users":
 		any body = json.tryTextToData(body())
-		if body == null
+		if body == none
 			return badRequest("Invalid JSON")
 
 		any emailField = body.email
 		any usernameField = body.username
 		any passwordField = body.password
 
-		if emailField == null
+		if emailField == none
 			return badRequest("Email is required")
-		if usernameField == null
+		if usernameField == none
 			return badRequest("Username is required")
-		if passwordField == null
+		if passwordField == none
 			return badRequest("Password is required")
 
 		string email = emailField.toString()
@@ -50,12 +50,13 @@ endpoints:
 		if userId == ""
 			return badRequest("User ID required")
 
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId.toInteger()
 
-		if user == null
+		if foundUser == none
 			return notFound()
+		User user = foundUser!
 
 		return json({ "id": user.id, "email": user.email, "username": user.username, "is_active": user.is_active })
 
@@ -63,36 +64,40 @@ endpoints:
 		string userId = param("id")
 		// Fixed: was a `User.delete:` block; frame-data v2 deletes a loaded
 		// entity with `Database.delete(entity)` (DAT-S001).
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				id == userId.toInteger()
-		if user == null
+		if foundUser == none
 			return notFound()
+		User user = foundUser!
 		Database.delete(user)
 		return json({ "ok": true, "message": "User deleted" })
 
 	POST "/api/users/login":
 		any body = json.tryTextToData(body())
-		if body == null
+		if body == none
 			return badRequest("Invalid JSON")
 
 		any emailField = body.email
 		any passwordField = body.password
 
-		if emailField == null
+		if emailField == none
 			return badRequest("Email required")
-		if passwordField == null
+		if passwordField == none
 			return badRequest("Password required")
 
 		string loginEmail = emailField.toString()
 		string password = passwordField.toString()
 
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				email == loginEmail
 				is_active == true
 		onError:
 			return unauthorized()
+		if foundUser == none
+			return unauthorized()
+		User user = foundUser!
 
 		if not auth.verifyPassword(password, user.password_hash)
 			return unauthorized()

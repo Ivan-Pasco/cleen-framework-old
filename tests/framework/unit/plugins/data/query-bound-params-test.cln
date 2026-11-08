@@ -5,6 +5,9 @@
 // Regression: run-time values were quoted into the SQL text and every query
 // sent "[]" params; having: put Clean variable names into the SQL text and
 // did not double `'` in string literals.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 plugins:
 	frame.server
@@ -62,10 +65,10 @@ endpoints:
 		integer n_q = Person.count:
 			where:
 				name == q
-		Person by_d = Person.first:
+		Person? by_d = Person.first:
 			where:
 				name == d
-		boolean ok_marks = n_q == 1 and by_d != null and by_d.age == 20
+		boolean ok_marks = n_q == 1 and by_d != null and by_d!.age == 20
 		// A literal with `?` next to a bound value.
 		integer n_mix = Person.count:
 			where:

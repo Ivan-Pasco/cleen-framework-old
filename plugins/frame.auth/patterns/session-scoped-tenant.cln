@@ -33,14 +33,17 @@ data Project:
 endpoints:
 	POST "/auth/login":
 		any data = json.tryTextToData(req.body())
-		if data == null or data.email == null or data.password == null
+		if data == none or data.email == none or data.password == none
 			return badRequest("email and password are required")
 		string address = data.email.toString()
-		User user = User.first:
+		User? foundUser = User.first:
 			where:
 				email == address
 		onError:
 			return unauthorized()
+		if foundUser == none
+			return unauthorized()
+		User user = foundUser!
 		if not auth.verifyPassword(data.password.toString(), user.password_hash)
 			return unauthorized()
 		// The tenant id goes into the session claims — never trusted from the
@@ -57,7 +60,7 @@ endpoints:
 	// tenantId is filled from the session on insert, whatever the request says.
 	POST "/projects" [user, admin]:
 		any data = json.tryTextToData(req.body())
-		if data == null or data.name == null
+		if data == none or data.name == none
 			return badRequest("name is required")
 		Project project = Project()
 		project.name = data.name.toString()

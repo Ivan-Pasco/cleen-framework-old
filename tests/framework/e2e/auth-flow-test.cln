@@ -1,4 +1,7 @@
 // E2E: full auth flow — hash password, sign JWT, set session, log out.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 // Fixed: was unescaped `{` / `}` inside JSON string literals, grammar.ebnf §1.6
 // reads `{...}` in a string as interpolation; literal braces are `\{` / `\}`.
@@ -52,9 +55,10 @@ endpoints:
 		boolean ok_register = uid > 0
 
 		// Login: fetch by email, verify password, set session.
-		User u = User.first:
+		User? foundU = User.first:
 			where:
 				email == "alice@example.com"
+		User u = foundU!
 		boolean ok_verify = crypto.verifyPassword("hunter2", u.passwordHash)
 		auth.setSession("\{\"user_id\":" + uid.toString() + ",\"role\":\"user\"\}")
 		boolean ok_auth = auth.isAuthenticated() and auth.userId() == uid

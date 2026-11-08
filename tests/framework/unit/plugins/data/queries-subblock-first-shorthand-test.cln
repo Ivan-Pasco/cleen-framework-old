@@ -2,6 +2,9 @@
 // Regression guard for dashboard #543847a2 (FRAME-DATA-DSL-NO-USABLE-PATH-3012):
 // `return first:` inside a queries: method body must resolve its receiver to
 // the enclosing model, not fail with SYN001 on the plugin-emitted fragment.
+// Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
+// none (type-system.md §8), so a `first` result is held in a `T?` and
+// unwrapped with `!` before its fields are used.
 
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
@@ -22,7 +25,7 @@ data Page:
 		boolean is_active
 
 	queries:
-		Page bySlug(string s)
+		Page? bySlug(string s)
 			return first:
 				where:
 					slug == s
@@ -60,8 +63,8 @@ endpoints:
 		Database.save(gone)
 
 		PageEntity pages = PageEntity()
-		Page found = pages.data.bySlug("hello")
-		Page missing = pages.data.bySlug("gone")
+		Page? found = pages.data.bySlug("hello")
+		Page? missing = pages.data.bySlug("gone")
 
 		boolean ok = found != null and missing == null
 		if ok
