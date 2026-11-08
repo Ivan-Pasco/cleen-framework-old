@@ -7,5 +7,5 @@ package: CompleteDemo
     shared: [app/ui, app/server, app/data]
 
     target: server
-        plugins: [frame.ui, frame.server, frame.data, frame.auth]
+        plugins: [frame.ui, frame.server, frame.data, frame.auth, frame.canvas]
         entry: app/ui/web/pages/index.html

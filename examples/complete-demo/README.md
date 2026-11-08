@@ -23,7 +23,7 @@ complete-demo/
 └── public/css/style.css
 ```
 
-`main.cln` limits the server build to `shared: [app/ui, app/server, app/data]`, so `app/canvas/` is not part of the server build.
+`main.cln` limits the server build to `shared: [app/ui, app/server, app/data]`, so `app/canvas/` is not part of the server build. frame.canvas is still in its plugin list: the build then emits the canvas runtime (`frame-canvas-bridge.js`, `frame-canvas.js`) next to the server module, and clean-server serves both.
 
 ## Build and Run
 
@@ -47,6 +47,8 @@ The canvas scene is built on its own, because every frame.canvas bridge function
 ```bash
 ~/.cleen/bin/cln compile app/canvas/particles.cln -o public/particles.wasm
 ```
+
+The pages name that module on their canvas, `<canvas id="particles" ... data-scene="/public/particles.wasm">`; frame.ui adds the canvas runtime's two script tags to such a page, and the runtime starts the scene. The page itself has no script of its own.
 
 ## Endpoints
 
@@ -109,4 +111,4 @@ canvasScene: id="particles" width=800 height=400 fps=60 background="#0d1117"
 			canvas.circle x=400 y=200 radius=20 color="#ffffff30"
 ```
 
-The scene draws into the page's `<canvas id="particles">` element.
+The scene draws into the page's `<canvas id="particles">` element (its `id=`), which names the module with `data-scene=`.

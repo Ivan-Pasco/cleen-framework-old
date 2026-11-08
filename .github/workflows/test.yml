@@ -108,6 +108,7 @@ jobs:
           node plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs
           node plugins/frame.canvas/runtime/tests/frame-pipeline.test.mjs
           node plugins/frame.canvas/runtime/tests/scene-stack.test.mjs
+          node plugins/frame.canvas/runtime/tests/page-bridge.test.mjs
 
       - name: frame.ui runtime tests (node)
         run: |

@@ -42,6 +42,33 @@ get_keywords = "get_keywords"
 # deferred (needs DSL-aware walk beyond a token-boundary content scan).
 # Spec: foundation/spec/framework/contracts/lint-extension.md §2.
 lint = "lint_project"
+# assemble.md — records build_state["frame.canvas.loaded"], so frame.ui adds
+# the canvas runtime (the two [[artifacts]] below) to the pages whose
+# <canvas> names a scene module with data-scene=.
+assemble = "assemble_typed"
+
+# Plugin Contracts v2 — foundation/spec/framework/contracts/artifacts.md §4.2.
+# The browser runtime of canvas scenes, copied next to the build output and
+# served at /frame-canvas-bridge.js and /frame-canvas.js (bridge first).
+# frame.ui adds both to a page with a <canvas data-scene="<module>.wasm">;
+# the loader starts that scene and runs its scene stack (runtime/README.md).
+[[artifacts]]
+name            = "frame-canvas-bridge.js"
+purpose         = "static_asset"
+static_path     = "runtime/canvas-bridge.js"
+output_relative = "{output_dir}/frame-canvas-bridge.js"
+required_when   = "always"
+public          = true
+content_type    = "application/javascript"
+
+[[artifacts]]
+name            = "frame-canvas.js"
+purpose         = "static_asset"
+static_path     = "runtime/loader.js"
+output_relative = "{output_dir}/frame-canvas.js"
+required_when   = "always"
+public          = true
+content_type    = "application/javascript"
 
 [handles]
 # Only canvasScene is a top-level block the compiler expands directly.

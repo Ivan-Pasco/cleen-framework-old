@@ -2177,6 +2177,25 @@
     },
 
     /**
+     * Start every page canvas that names its scene module with data-scene
+     * (`<canvas id="game" data-scene="/game/Menu.wasm">`). Runs by itself
+     * when this script is on a page.
+     */
+    boot(root) {
+      const scope = root || (typeof document !== 'undefined' ? document : null);
+      if (!scope || typeof scope.querySelectorAll !== 'function') return [];
+      const started = [];
+      for (const el of scope.querySelectorAll('canvas[data-scene]')) {
+        if (el.__cleanCanvasScene) continue;
+        el.__cleanCanvasScene = true;
+        started.push(CleanCanvas.load(el.getAttribute('data-scene')).catch((err) => {
+          console.error(`[CleanCanvas] canvas#${el.id} data-scene="${el.getAttribute('data-scene')}" did not start:`, err);
+        }));
+      }
+      return started;
+    },
+
+    /**
      * Create a new loader instance (for advanced use)
      */
     createLoader() {
@@ -2201,6 +2220,13 @@
     window.CleanCanvasLoader = CleanCanvasLoader;
     window.CleanCanvasApp = CleanCanvasApp;
     window.CleanCanvasScenes = CleanCanvasScenes;
+    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => CleanCanvas.boot(), { once: true });
+      } else {
+        CleanCanvas.boot();
+      }
+    }
   }
 
   // Export for module systems

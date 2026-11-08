@@ -94,6 +94,19 @@ functions:
 		return "[\"canvasScene\",\"assets\",\"layers\",\"state\",\"animSprite\",\"particles\",\"tween\",\"timeline\",\"animState\",\"path\",\"gradient\",\"customEase\",\"camera\",\"init\",\"draw\",\"onFrame\",\"onPointerDown\",\"onPointerMove\",\"onPointerUp\",\"onKeyDown\",\"onKeyUp\",\"onExit\",\"onPause\",\"onResume\",\"param\",\"image\",\"spritesheet\",\"sound\",\"music\",\"font\",\"src\",\"frameWidth\",\"frameHeight\",\"cols\",\"rows\",\"layer\",\"z\",\"on\",\"canvas\",\"clear\",\"circle\",\"rect\",\"line\",\"triangle\",\"ellipse\",\"text\",\"sprite\",\"save\",\"restore\",\"translate\",\"rotate\",\"scale\",\"beginPath\",\"moveTo\",\"lineTo\",\"curveTo\",\"cubicTo\",\"arc\",\"arcTo\",\"closePath\",\"closed\",\"fill\",\"stroke\",\"group\",\"clip\",\"alpha\",\"shadow\",\"blur\",\"glow\",\"blendMode\",\"sheet\",\"frames\",\"fps\",\"loop\",\"duration\",\"ease\",\"repeat\",\"yoyo\",\"delay\",\"along\",\"orient\",\"onComplete\",\"from\",\"to\",\"at\",\"after\",\"overlap\",\"gap\",\"together\",\"stagger\",\"initial\",\"transitions\",\"when\",\"emitter\",\"overLifetime\",\"forces\",\"lifetime\",\"speed\",\"angle\",\"gravity\",\"drag\",\"wind\",\"turbulence\",\"attractor\",\"rate\",\"burst\",\"linear\",\"radial\",\"stop\",\"followX\",\"followY\",\"smoothing\",\"deadzoneWidth\",\"deadzoneHeight\",\"boundsX\",\"boundsY\",\"boundsWidth\",\"boundsHeight\",\"zoom\",\"play\",\"pause\",\"resume\",\"seek\",\"start\",\"emit\",\"animate\",\"audio\",\"volume\",\"pitch\",\"fadeOut\",\"crossfade\",\"masterVolume\",\"input\",\"collision\",\"scene\",\"change\",\"changeTo\",\"push\",\"pop\",\"set\",\"get\",\"transition\",\"page\",\"value\",\"deltaTime\",\"time\",\"force\",\"current\",\"setPosition\",\"setZoom\",\"shake\",\"intensity\",\"color\",\"gradient\",\"filled\",\"radius\",\"radiusX\",\"radiusY\",\"width\",\"height\",\"cornerRadius\",\"fromX\",\"fromY\",\"toX\",\"toY\",\"size\",\"align\",\"baseline\",\"opacity\",\"tint\",\"tintStrength\",\"flipX\",\"flipY\",\"scaleX\",\"scaleY\",\"rotation\",\"anchorX\",\"anchorY\",\"offsetX\",\"offsetY\",\"mode\",\"path\"]"
 
 // ============================================================================
+// ASSEMBLE HOOK
+// ============================================================================
+// assemble.md: runs once per (package) build, before any block is expanded.
+// frame.canvas injects no source; it records that it is part of the build,
+// so frame.ui adds the canvas runtime (this plugin's [[artifacts]]) to the
+// pages whose <canvas> names a scene module with data-scene=.
+
+functions:
+	integer assemble_typed(integer ctx, string ctx_json)
+		_build_state_set("frame.canvas.loaded", "1")
+		return 0
+
+// ============================================================================
 // SMALL BUILDERS
 // ============================================================================
 

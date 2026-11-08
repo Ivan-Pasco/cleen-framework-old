@@ -117,11 +117,12 @@ functions:
 		// </head>. When the build includes frame.client, a page that loads the
 		// browser runtime (/loader.js, which clean-server adds to pages with
 		// hydration islands) also gets frame.client's /frame-client.js right
-		// after it.
+		// after it. With frame.canvas in the build, a page with a <canvas
+		// data-scene="..."> gets the canvas runtime.
 		integer hl_p_page = _type_string(ctx)
 		integer hl_r_str = _type_string(ctx)
 		string hl_params = "[{\"name\":\"page\",\"type_handle\":" + hl_p_page.toString() + "}]"
-		ui_helper_function(ctx, "_ui_head_links", hl_params, hl_r_str, head_links_body(_build_state_get("frame.ui.has_styles") == "1", _build_state_get("frame.client.loaded") == "1"), 1)
+		ui_helper_function(ctx, "_ui_head_links", hl_params, hl_r_str, head_links_with_canvas(head_links_body(_build_state_get("frame.ui.has_styles") == "1", _build_state_get("frame.client.loaded") == "1"), _build_state_get("frame.canvas.loaded") == "1"), 1)
 		_ctx_clear_error(ctx)
 		return 0
 
@@ -144,6 +145,24 @@ functions:
 			b = b + "\t\tinteger insert_at = loader_end + 9\n"
 			b = b + "\t\tout = out.substring(0, insert_at) + \"<script src=\\\"/frame-client.js\\\" defer></script>\" + out.substring(insert_at, out.length())\n"
 		return b + "return out\n"
+
+	// `body` (a head_links_body) that also gives a page with a <canvas
+	// data-scene="..."> frame.canvas's runtime when frame.canvas is in the
+	// build: the scripts go once, before </body>, and start that scene.
+	string head_links_with_canvas(string body, boolean has_canvas)
+		if has_canvas == false
+			return body
+		string b = body.substring(0, body.length() - 11)
+		b = b + "if out.indexOf(\"data-scene=\") != -1 and out.indexOf(\"/frame-canvas.js\") == -1\n"
+		b = b + "\tinteger body_end = out.indexOf(\"</body>\")\n"
+		b = b + "\tif body_end == -1\n"
+		b = b + "\t\tbody_end = out.length()\n"
+		b = b + "\tout = out.substring(0, body_end) + \"" + canvas_runtime_scripts() + "\" + out.substring(body_end, out.length())\n"
+		return b + "return out\n"
+
+	// The script tags of frame.canvas's runtime, as Clean string-literal text.
+	string canvas_runtime_scripts()
+		return "<script src='/frame-canvas-bridge.js'></script><script src='/frame-canvas.js'></script>"
 
 	// Body source of the _ui_attr_get helper (see emit_ui_helpers_typed):
 	// the decoded string value of key `name` in the JSON object `attrs`, or
@@ -390,6 +409,10 @@ functions:
 			// the runtime, which waits for them before instantiating the WASM.
 			if _build_state_get("frame.client.loaded") == "1"
 				render_code = render_code + append_stmt("html", "\"<script src='/frame-client.js'></script>\"")
+		// A <canvas data-scene="..."> is started by frame.canvas's runtime
+		// (its [[artifacts]]: the bridge, then the loader).
+		if _build_state_get("frame.canvas.loaded") == "1" and html.indexOf("data-scene=") != -1
+			render_code = render_code + append_stmt("html", "\"" + canvas_runtime_scripts() + "\"")
 		string page_name = path_to_class_name(path)
 		expand_page_typed(ctx, page_name, path, layout, auth, roles, render_code, companion_json)
 		_ctx_clear_error(ctx)
