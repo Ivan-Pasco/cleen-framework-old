@@ -303,7 +303,7 @@ functions = [
   { name = "canvas.blendMode", signature = "canvas.blendMode mode=\"${multiply}\":\n\t// drawing commands", description = "Apply blend mode to all drawing inside the block (multiply, screen, overlay, …)" },
 
   # Drawing — layers
-  { name = "on layer", signature = "on layer \"${name}\":\n\t// drawing commands", description = "Route draw calls to a named layer" },
+  { name = "on layer", signature = "on layer \"${name}\":\n\t// drawing commands", description = "Route draw calls to a layer declared in layers: (an undeclared name is a compile error, CVS-D005)" },
 
   # Drawing — named paths
   { name = "canvas.drawPath", signature = "canvas.drawPath \"${name}\" stroke=${1} color=\"${color}\"", description = "Stroke a path declared with path \"name\": as a visible line" },

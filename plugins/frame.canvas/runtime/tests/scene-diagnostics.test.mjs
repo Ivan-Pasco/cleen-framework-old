@@ -127,6 +127,17 @@ accepts('canvas.drawPath naming a declared path', `${PATH}\n\tdraw:\n\t\tcanvas.
 rejects('canvas.drawPath naming an undeclared path', `${PATH}\n\tdraw:\n\t\tcanvas.drawPath "ghost" stroke=2 color="#ffffff"\n`,
   /canvas.drawPath "ghost" names no path declared.*CVS-X006/);
 
+// --- on layer names a declared layer (CVS-D005) ---------------------------
+
+const LAYERS = `\tlayers:\n\t\tlayer "hud" z=10\n`;
+accepts('on layer naming a declared layer', `${LAYERS}\n\tdraw:\n\t\ton layer "hud":\n\t\t\tcanvas.clear\n`);
+rejects('on layer naming an undeclared layer', `${LAYERS}\n\tdraw:\n\t\ton layer "fx":\n\t\t\tcanvas.clear\n`,
+  /on layer "fx" names no layer declared in layers:.*CVS-D005/);
+rejects('layer names are case-sensitive', `${LAYERS}\n\tdraw:\n\t\ton layer "HUD":\n\t\t\tcanvas.clear\n`,
+  /on layer "HUD" names no layer declared in layers:.*CVS-D005/);
+rejects('on layer in a scene without layers:', `\tonFrame: param="dt"\n\t\ton layer "hud":\n\t\t\tcanvas.clear\n`,
+  /on layer "hud" names no layer declared in layers:.*CVS-D005/);
+
 // --- one canvasScene: per file (CVS-S011) ---------------------------------
 
 {

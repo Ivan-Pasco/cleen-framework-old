@@ -2701,6 +2701,11 @@ functions:
 				if state_name_src.startsWith("\"") and scene_declares(body, "animState", first_quoted(state_name_src, 0)) == false
 					return "canvas.sprite state=" + state_name_src + " names no animState declared in this scene (CVS-A005)"
 			return ""
+		if t.startsWith("on layer ")
+			string layer = first_quoted(t, 0)
+			if declares_layer(extract_scene_subblock(body, "layers"), layer) == false
+				return "on layer \"" + layer + "\" names no layer declared in layers: — declare it as `layer \"" + layer + "\" z=N` (CVS-D005: draw calls go only to declared layers, and layer names are case-sensitive)"
+			return ""
 		string name = first_quoted(t, 0)
 		if name == ""
 			return ""
@@ -2722,6 +2727,18 @@ functions:
 			if scene_declares(body, "particles", name) == false
 				return "particles \"" + name + "\" is not declared in this scene; emitters are declared at scene level and triggered by name (CVS-P005)"
 		return ""
+
+	// True when layers: declares `layer "name" z=N` (exact, case-sensitive
+	// match, CVS-D005).
+	boolean declares_layer(string layers_body, string name)
+		integer p = 0
+		while p < layers_body.length()
+			integer le = scene_line_end(layers_body, p)
+			string t = layers_body.substring(p, le).trim()
+			if line_key(t) == "layer" and first_quoted(t, 0) == name
+				return true
+			p = le + 1
+		return false
 
 	// Kind (image, spritesheet, sound, music, font) of asset `name` in assets:, or "".
 	string asset_kind(string assets_body, string name)

@@ -18,6 +18,11 @@ start:
 
 canvasScene: id="demo" width=200 height=100 fps=30 background="#000000"
 
+	// Fixed: `on layer "shapes"` drew to an undeclared layer; draw calls go
+	// only to layers declared in layers: (CVS-D005).
+	layers:
+		layer "shapes" z=10
+
 	state:
 		number frameCount = 0.0
 
