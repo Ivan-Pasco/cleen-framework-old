@@ -1907,7 +1907,7 @@
 			http_enable_cookies:     (_b) => 0,
 			http_set_user_agent:     (_ptr, _len) => 0,
 
-			// ========== _crypto_* bridges (SHA-256/512, HMAC, random, password) ==========
+			// ========== _crypto_* bridges (SHA-256/512, HMAC, random) ==========
 			// The frame.auth 'crypto' namespace lowers to these bridges. Real
 			// synchronous implementations are required — see the SHA-256/512
 			// and HMAC helpers at the top of the IIFE.
@@ -1928,24 +1928,9 @@
 			},
 			_crypto_random_hex:   (count) => writeString(cryptoRandomHex(count)),
 			_crypto_random_bytes: (count) => writeString(cryptoRandomBase64(count)),
-			// Deterministic browser-side password digest — bcrypt is not
-			// available synchronously in the browser. Uses salt|sha256(salt|pw)
-			// as an encode-once format compatible with verify below. Not
-			// intended for production password storage in a browser context.
-			_crypto_hash_password: (ptr, len) => {
-				const pw = readString(ptr, len);
-				const salt = cryptoRandomHex(16);
-				return writeString(salt + '$' + sha256Hex(salt + pw));
-			},
-			_crypto_verify_password: (pwPtr, pwLen, hashPtr, hashLen) => {
-				const pw = readString(pwPtr, pwLen);
-				const stored = readString(hashPtr, hashLen);
-				const dollar = stored.indexOf('$');
-				if (dollar < 0) return 0;
-				const salt = stored.slice(0, dollar);
-				const digest = stored.slice(dollar + 1);
-				return sha256Hex(salt + pw) === digest ? 1 : 0;
-			},
+			// No _crypto_hash_password / _crypto_verify_password: password hashing
+			// is bcrypt and server-only (function-registry.toml hosts = ["server"]),
+			// so a browser build that calls it fails at compile time.
 
 			// ========== legacy _json_encode / _json_decode (browser-side) ==========
 			// _json_encode round-trips through JSON.parse/stringify so the

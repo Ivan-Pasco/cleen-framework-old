@@ -194,6 +194,16 @@ async function main() {
 		}
 	});
 
+	await test('password hashing is not a browser bridge (server-only bcrypt)', async () => {
+		// function-registry.toml: _crypto_hash_password / _crypto_verify_password
+		// are hosts = ["server"]; a browser build calling them fails at compile
+		// time, so the runtime must not offer a different (non-bcrypt) hash.
+		const { imports } = await boot('<div id="src">x</div><div id="num">1</div><div id="out"></div>', stringsWasm);
+		const env = imports().env;
+		eq(typeof env._crypto_hash_password, 'undefined', 'env._crypto_hash_password');
+		eq(typeof env._crypto_verify_password, 'undefined', 'env._crypto_verify_password');
+	});
+
 	await test('list.push_f64 never writes past the list capacity', async () => {
 		const { win, imports } = await boot('<div id="src">x</div><div id="num">1</div><div id="out"></div>', stringsWasm);
 		const rt = win.__cleanRuntime;

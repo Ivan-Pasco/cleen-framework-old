@@ -67,8 +67,8 @@ functions = [
   { name = "_crypto_random_bytes", params = ["i32"], returns = "ptr", description = "Generate random bytes (base64 encoded)", hosts = ["all"] },
 
   # Crypto - Password Hashing (Argon2/bcrypt) — portable Layer 2
-  { name = "_crypto_hash_password", params = ["string"], returns = "ptr", description = "Hash password using Argon2id", expand_strings = true, hosts = ["all"] },
-  { name = "_crypto_verify_password", params = ["string", "string"], returns = "boolean", description = "Verify password against hash (1=match, 0=no match)", expand_strings = true, hosts = ["all"] },
+  { name = "_crypto_hash_password", params = ["string"], returns = "ptr", description = "Hash password using Argon2id", expand_strings = true, hosts = ["server"] },
+  { name = "_crypto_verify_password", params = ["string", "string"], returns = "boolean", description = "Verify password against hash (1=match, 0=no match)", expand_strings = true, hosts = ["server"] },
 
   # Crypto - General Hashing (portable Layer 2)
   { name = "_crypto_hash_sha256", params = ["string"], returns = "ptr", description = "SHA-256 hash", expand_strings = true, hosts = ["all"] },
