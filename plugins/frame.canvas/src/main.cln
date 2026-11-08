@@ -11,8 +11,10 @@
 //     _anim_states_update when the scene needs them;
 //   - _frame_callback(__cv), the per-frame entry point the browser runtime
 //     calls: it runs _on_frame, the animState transitions, the camera
-//     follow, then _draw;
-//   - statements in start: — canvas creation, asset / layer / handler
+//     follow, then _draw (inside _camera_apply / _camera_reset when the
+//     scene has a camera), then _canvas_present (the frame is complete: a
+//     recorded frame is composited, layers in z order);
+//   - statements in start: — canvas creation, fps= and background=, asset / layer / handler
 //     registration, then one block holding the state variables, every
 //     animation registration, the camera setup and the init: body, and
 //     finally _canvas_request_frame (the runtime loop is continuous, so it is
@@ -540,11 +542,12 @@ functions:
 	// bridges (canvas runtime _easeIdToName order). Unknown names are linear.
 	integer ease_id(string name)
 		string n = name.replace("\"", "")
-		if n == "easeInCubic"
+		// The CSS-style names (spec §21 "Smooth") are the cubic curves.
+		if n == "easeInCubic" or n == "easeIn"
 			return 1
-		if n == "easeOutCubic"
+		if n == "easeOutCubic" or n == "easeOut"
 			return 2
-		if n == "easeInOutCubic"
+		if n == "easeInOutCubic" or n == "easeInOut"
 			return 3
 		if n == "easeInQuad"
 			return 4
@@ -915,7 +918,7 @@ functions:
 					close_scopes(ctx, body_arr, open)
 					_batch_arrayPush(ctx, body_arr, us(ctx, "return"))
 				else if child.trim().length() == 0
-					_batch_arrayPush(ctx, body_arr, us(ctx, t))
+					_batch_arrayPush(ctx, body_arr, us(ctx, typed_get_statement(t)))
 				else if t.startsWith("while ")
 					integer w_arr = _batch_arrayNew(ctx)
 					scene_expand_block(ctx, w_arr, child, state_body, open)
@@ -1105,8 +1108,13 @@ functions:
 		boolean outline = get_iexpr(ia, "filled") == "false"
 
 		if cmd == "clear"
+			// Without color= the scene's background= colour, else black
+			// (CVS-L003, frame-canvas.ebnf §2).
 			if get_iexpr(ia, "color") == ""
-				return bcc1(ctx, "_canvas_clear", cv)
+				string scene_bg = _build_state_get("frame.canvas:background")
+				if scene_bg == ""
+					return bcc1(ctx, "_canvas_clear", cv)
+				return bcc2(ctx, "_canvas_clear_color", cv, ue(ctx, scene_bg))
 			return bcc2(ctx, "_canvas_clear_color", cv, av(ctx, ia, "color", ""))
 
 		if cmd == "circle"
@@ -1400,11 +1408,17 @@ functions:
 		if t.startsWith("camera.setZoom")
 			return bcc1(ctx, "_camera_set_zoom", av(ctx, camera_attrs(t), "zoom", "1.0"))
 		if t.startsWith("camera.shake")
-			integer shake_ease = ue(ctx, ease_id(get_iexpr(camera_attrs(t), "ease")).toString())
+			// falloff= names the easing the intensity decays by (spec §19,
+			// default "easeOut").
+			string falloff = get_iexpr(camera_attrs(t), "falloff")
+			if falloff == ""
+				falloff = "\"easeOut\""
+			integer shake_ease = ue(ctx, ease_id(falloff).toString())
 			return bcc3(ctx, "_camera_shake", av(ctx, camera_attrs(t), "intensity", "5.0"), av(ctx, camera_attrs(t), "duration", "0.3"), shake_ease)
 		// Scenes (§25) and the page bridge (§26)
 		if t.startsWith("scene.changeTo ")
-			return bcc3(ctx, "_scene_change_animated", nm, av(ctx, ia, "transition", "\"fade\""), av(ctx, ia, "duration", "0.5"))
+			// Without transition= the change is instant (spec §22).
+			return bcc3(ctx, "_scene_change_animated", nm, av(ctx, ia, "transition", "\"instant\""), av(ctx, ia, "duration", "0.5"))
 		if t.startsWith("scene.change ")
 			return bcc1(ctx, "_scene_change", nm)
 		if t.startsWith("scene.push ")
@@ -1417,6 +1431,39 @@ functions:
 			return bcc2(ctx, "_page_set", nm, value_as_string(ctx, ia))
 		// Not a DSL form after all: user Clean code.
 		return us(ctx, t)
+
+	// `integer n = scene.get "k"` (CVS-S004): the receiving variable's type
+	// decides how the value is read — the text scene.set / page.set stored,
+	// converted for an integer / number receiver, "true" for a boolean. The
+	// receiver's type is the declaration's, or the state variable's for
+	// `name = scene.get "k"`. Any other statement is returned unchanged
+	// (a string receiver reads the text as it is).
+	string typed_get_statement(string t)
+		integer eq = t.indexOf(" = ")
+		if eq == -1
+			return t
+		string lhs = t.substring(0, eq).trim()
+		string rhs = t.substring(eq + 3, t.length()).trim()
+		string prefix = quoted_call_prefix(rhs)
+		if prefix != "scene.get " and prefix != "page.get "
+			return t
+		string rest = after_quoted(rhs)
+		if rest != "" and rest.startsWith("//") == false
+			return t
+		string ty = ""
+		integer sp = lhs.indexOf(" ")
+		if sp != -1
+			ty = lhs.substring(0, sp)
+		else
+			ty = state_var_type(_build_state_get("frame.canvas:state"), lhs)
+		string read = quoted_call_bridge(prefix) + "(" + clean_str(first_quoted(rhs, 0)) + ")"
+		if ty == "integer"
+			return lhs + " = " + read + ".toNumber().toInteger()"
+		if ty == "number"
+			return lhs + " = " + read + ".toNumber()"
+		if ty == "boolean"
+			return lhs + " = " + read + " == \"true\""
+		return t
 
 	// Attributes of a camera.<method> line (everything after the method word).
 	string camera_attrs(string t)
@@ -2146,6 +2193,13 @@ functions:
 		string draw_body = extract_scene_subblock(body, "draw")
 		string camera_body = extract_scene_subblock(body, "camera")
 		string dt_name = handler_param(body, "onFrame", "dt")
+		// Read while the scene's lines expand: the state variables' types
+		// (typed scene.get / page.get) and background= (canvas.clear).
+		_build_state_set("frame.canvas:state", state_body)
+		string scene_bg = get_iexpr(header, "background")
+		if scene_bg == "" and get_attr(attrs_json, "background", "") != ""
+			scene_bg = clean_str(get_attr(attrs_json, "background", ""))
+		_build_state_set("frame.canvas:background", scene_bg)
 
 		emit_all_scene_type_stubs(ctx)
 
@@ -2153,6 +2207,10 @@ functions:
 		integer init_call = _batch_call(ctx, "_canvas_init", canvas_init_args(ctx, attrs_json, header))
 		_emit_statement_into_start(ctx, svardecl(ctx, "__cv", "integer", init_call))
 		_emit_statement_into_start(ctx, bcc2(ctx, "_canvas_set_fps", ident(ctx, "__cv"), _batch_intLit(ctx, int_attr(attrs_json, header, "fps", 60), 0)))
+		// background= (frame-canvas.ebnf §2): the canvas starts in that colour
+		// and canvas.clear without color= clears to it.
+		if scene_bg != ""
+			_emit_statement_into_start(ctx, bcc2(ctx, "_canvas_clear_color", ident(ctx, "__cv"), ue(ctx, scene_bg)))
 		process_assets_body(ctx, extract_scene_subblock(body, "assets"))
 		process_layers_body(ctx, extract_scene_subblock(body, "layers"))
 		if scene_uses_anchors(body)
@@ -2175,15 +2233,22 @@ functions:
 			_batch_arrayPush(ctx, fcb, bcc1(ctx, "_anim_states_update", ident(ctx, "__cv")))
 		string follow_x = body_attr(camera_body, "followX", "")
 		string follow_y = body_attr(camera_body, "followY", "")
-		if follow_x != "" or follow_y != ""
-			if follow_x == ""
-				follow_x = "0.0"
-			if follow_y == ""
-				follow_y = "0.0"
-			// The camera follows its target expressions every frame.
+		string zoom_src = body_attr(camera_body, "zoom", "")
+		boolean follows = follow_x != "" or follow_y != ""
+		boolean zoom_changes = zoom_src != "" and is_number_literal(zoom_src) == false
+		if follows or zoom_changes
+			// Camera attributes that are expressions are evaluated every
+			// frame: the follow target, and zoom = <expression> (spec §19).
 			integer c_arr = _batch_arrayNew(ctx)
 			state_stmts(ctx, c_arr, state_body, 0)
-			_batch_arrayPush(ctx, c_arr, bcc3(ctx, "_camera_set_follow", ue(ctx, follow_x), ue(ctx, follow_y), ue(ctx, body_attr(camera_body, "smoothing", "0.08"))))
+			if follows
+				if follow_x == ""
+					follow_x = "0.0"
+				if follow_y == ""
+					follow_y = "0.0"
+				_batch_arrayPush(ctx, c_arr, bcc3(ctx, "_camera_set_follow", ue(ctx, follow_x), ue(ctx, follow_y), ue(ctx, body_attr(camera_body, "smoothing", "0.08"))))
+			if zoom_changes
+				_batch_arrayPush(ctx, c_arr, bcc1(ctx, "_camera_set_zoom", ue(ctx, zoom_src)))
 			emit_one_fn(ctx, "_camera_follow", handler_params(ctx, "", "", "", ""), c_arr)
 			_batch_arrayPush(ctx, fcb, bcc1(ctx, "_camera_follow", ident(ctx, "__cv")))
 		if draw_body.trim().length() > 0
@@ -2192,7 +2257,17 @@ functions:
 			state_stmts(ctx, d_arr, state_body, 0)
 			scene_expand_lines(ctx, d_arr, draw_body, "")
 			emit_one_fn(ctx, "_draw", handler_params(ctx, "", "", "", ""), d_arr)
+			// A scene with a camera draws through it: position, zoom, follow,
+			// deadzone, bounds and shake (spec §19).
+			boolean has_camera = scene_uses_camera(body, camera_body)
+			if has_camera
+				_batch_arrayPush(ctx, fcb, bcc1(ctx, "_camera_apply", ident(ctx, "__cv")))
 			_batch_arrayPush(ctx, fcb, bcc1(ctx, "_draw", ident(ctx, "__cv")))
+			if has_camera
+				_batch_arrayPush(ctx, fcb, bcc1(ctx, "_camera_reset", ident(ctx, "__cv")))
+		// The frame's drawing is complete: the runtime composites a recorded
+		// frame (layers in z order, CVS-D001).
+		_batch_arrayPush(ctx, fcb, bcc1(ctx, "_canvas_present", ident(ctx, "__cv")))
 		emit_one_fn(ctx, "_frame_callback", handler_params(ctx, "", "", "", ""), fcb)
 
 		// --- event and lifecycle handlers ------------------------------------
@@ -2261,6 +2336,30 @@ functions:
 		if body_attr(camera_body, "zoom", "") != ""
 			_batch_arrayPush(ctx, arr, bcc1(ctx, "_camera_set_zoom", ue(ctx, body_attr(camera_body, "zoom", "1.0"))))
 		return 0
+
+	// True when the scene has a camera: block or moves the camera from code.
+	boolean scene_uses_camera(string body, string camera_body)
+		if camera_body.trim().length() > 0
+			return true
+		return body.indexOf("camera.setPosition") != -1 or body.indexOf("camera.setZoom") != -1 or body.indexOf("camera.shake") != -1
+
+	// True when `s` is a plain number literal (`1.5`, `-2`, `3`).
+	boolean is_number_literal(string s)
+		string t = s.trim()
+		if t.startsWith("-")
+			t = t.substring(1, t.length())
+		if t.length() == 0
+			return false
+		integer i = 0
+		integer dots = 0
+		while i < t.length()
+			string c = t.substring(i, i + 1)
+			if c == "."
+				dots = dots + 1
+			else if c < "0" or c > "9"
+				return false
+			i = i + 1
+		return dots <= 1
 
 	// Attribute lookup in the compiler's attrs JSON ({"key":"value",...}).
 	string get_attr(string attrs, string key, string default_value)

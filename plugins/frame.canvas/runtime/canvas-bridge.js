@@ -19,6 +19,102 @@
  * - Scene management
  */
 
+// =============================================================================
+// FRAME RECORDING
+// =============================================================================
+// A scene with layers: (CVS-D001..D004), and every scene the scene manager
+// composites (scene.push overlays, scene.changeTo transitions), draws into
+// recorders instead of the page canvas. A recorder stands in for a
+// CanvasRenderingContext2D: method calls and property writes are kept as an
+// ordered op list (values already read from WASM memory), and the frame is
+// replayed onto the real context once it is complete — layer by layer in z
+// order, with the camera transform under each layer.
+
+// 2D-context methods that return a value; they run on the real context.
+const RECORDER_IMMEDIATE = new Set([
+  'createLinearGradient', 'createRadialGradient', 'createConicGradient', 'createPattern',
+  'createImageData', 'getImageData', 'isPointInPath', 'isPointInStroke', 'getLineDash',
+  'getContextAttributes',
+]);
+// Text state measureText depends on.
+const RECORDER_TEXT_STATE = ['font', 'textAlign', 'textBaseline', 'direction', 'letterSpacing', 'wordSpacing'];
+
+function createRecorder(target) {
+  const ops = [];
+  // Property values written so far, with the save/restore stack, so a read
+  // (`ctx.globalAlpha *= a`) sees what the replayed context will hold.
+  let shadow = {};
+  const stack = [];
+  const recorder = new Proxy({}, {
+    get(_, key) {
+      if (key === '__ops') return ops;
+      if (key === '__isRecorder') return true;
+      if (key === 'canvas') return target.canvas;
+      if (key === 'measureText') {
+        return (text) => {
+          target.save();
+          for (const k of RECORDER_TEXT_STATE) if (k in shadow) target[k] = shadow[k];
+          const metrics = target.measureText(text);
+          target.restore();
+          return metrics;
+        };
+      }
+      if (RECORDER_IMMEDIATE.has(key)) return (...args) => target[key](...args);
+      if (Object.prototype.hasOwnProperty.call(shadow, key)) return shadow[key];
+      const value = target[key];
+      if (typeof value === 'function') {
+        return (...args) => {
+          if (key === 'save') stack.push({ ...shadow });
+          else if (key === 'restore') shadow = stack.length ? stack.pop() : {};
+          ops.push([key, args]);
+        };
+      }
+      return value;
+    },
+    set(_, key, value) {
+      shadow[key] = value;
+      ops.push(['=', key, value]);
+      return true;
+    },
+  });
+  return recorder;
+}
+
+// 2D affine matrices as [a, b, c, d, e, f] (CanvasRenderingContext2D order).
+const IDENTITY_MATRIX = [1, 0, 0, 1, 0, 0];
+
+function multiplyMatrix(m, n) {
+  return [
+    m[0] * n[0] + m[2] * n[1],
+    m[1] * n[0] + m[3] * n[1],
+    m[0] * n[2] + m[2] * n[3],
+    m[1] * n[2] + m[3] * n[3],
+    m[0] * n[4] + m[2] * n[5] + m[4],
+    m[1] * n[4] + m[3] * n[5] + m[5],
+  ];
+}
+
+// Replay recorded ops onto `ctx` under `matrix` (the transform the ops'
+// identity maps to) and `alpha` (multiplies every globalAlpha the ops set).
+function replayOps(ops, ctx, matrix, alpha) {
+  ctx.save();
+  ctx.setTransform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+  ctx.globalAlpha = alpha;
+  for (const op of ops) {
+    if (op[0] === '=') {
+      ctx[op[1]] = op[1] === 'globalAlpha' ? op[2] * alpha : op[2];
+    } else if (op[0] === 'setTransform' || op[0] === 'resetTransform') {
+      const a = op[0] === 'resetTransform' ? IDENTITY_MATRIX
+        : (op[1].length >= 6 ? op[1] : [op[1][0].a, op[1][0].b, op[1][0].c, op[1][0].d, op[1][0].e, op[1][0].f]);
+      const m = multiplyMatrix(matrix, a);
+      ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    } else {
+      ctx[op[0]](...op[1]);
+    }
+  }
+  ctx.restore();
+}
+
 class CanvasBridge {
   constructor() {
     // ========================================================================
@@ -120,12 +216,6 @@ class CanvasBridge {
     this.nextGradientId = 1;
 
     // ========================================================================
-    // SCENE STATE
-    // ========================================================================
-    this.currentScene = 'default';
-    this.sceneStack = [];
-
-    // ========================================================================
     // NAMED ASSETS (gradients/paths/layers/tweens/timelines/animstates/animsprites/particles)
     // ========================================================================
     // Each Map below is keyed by the user-supplied name from the DSL block.
@@ -151,15 +241,12 @@ class CanvasBridge {
     this.pointerUpHandlers = new Map();
     this.keyDownHandlers = new Map();
     this.keyUpHandlers = new Map();
-    this.onExitHandlers = new Map();
-    this.onPauseHandlers = new Map();
-    this.onResumeHandlers = new Map();
 
     // ========================================================================
     // PAGE/UI BRIDGE + SCENE PARAMETERS
     // ========================================================================
     this.pageStore = new Map();   // key -> JSON-encoded value (string)
-    this.sceneParams = new Map(); // key -> JSON-encoded value (string)
+    this.sceneParams = new Map(); // key -> value text (no scene manager)
 
     // ========================================================================
     // CAMERA FOLLOW STATE
@@ -172,6 +259,38 @@ class CanvasBridge {
     this.cameraDeadzoneW = 0;
     this.cameraDeadzoneH = 0;
     this.cameraBounds = null; // {x, y, w, h} or null
+
+    // ========================================================================
+    // FRAME LOOP, LAYERS AND SCENES
+    // ========================================================================
+    // targetFps (canvasScene fps=, CVS-L006) limits how often the frame runs;
+    // 0 is the display rate. lastTickTime is the timestamp of the last frame
+    // that ran (its dt is measured from there).
+    this.targetFps = 0;
+    this.lastTickTime = null;
+    this.nextFrameDue = 0;
+    this.displayInterval = 1000 / 60;
+    this.lastRafTime = null;
+    this.inTick = false;
+    this.frameIndex = 0;
+    // Set once a layers: block declares a layer: every frame is recorded and
+    // composited in z order (CVS-D001).
+    this.layersDeclared = false;
+    this.layerSeq = 0;
+    // The scene manager (loader.js CleanCanvasScenes) when this bridge runs
+    // one scene of a scene stack; it composites the recorded frames itself.
+    this.manager = null;
+    this.composited = false;
+    this.sceneName = '';
+    // Only the scene on top of the stack receives input events.
+    this.inputActive = true;
+    this.listeners = [];
+    // Lifecycle exports the scene registered (_canvas_on_exit, ...): kind -> canvas id.
+    this.lifecycle = new Map();
+    this.cameraFollowInit = false;
+    this.cameraFrame = -1;
+    this.cameraMatrix = null;
+    this.shakeMatrix = null;
 
     // ========================================================================
     // WASM REFERENCES
@@ -261,21 +380,27 @@ class CanvasBridge {
 
   setupInputHandlers(canvasId, element) {
     const self = this;
+    // Listeners are kept so a scene that leaves the stack can detach them;
+    // handler exports run only while this scene is on top (inputActive).
+    const on = (type, fn) => {
+      element.addEventListener(type, fn);
+      self.listeners.push([element, type, fn]);
+    };
 
     // Make canvas focusable
     element.setAttribute('tabindex', '0');
     element.style.outline = 'none';
 
     // ========== MOUSE EVENTS ==========
-    element.addEventListener('mousemove', (e) => {
+    on('mousemove', (e) => {
       const rect = element.getBoundingClientRect();
       self.mouseX = e.clientX - rect.left;
       self.mouseY = e.clientY - rect.top;
       const handler = self.pointerMoveHandlers.get(canvasId);
-      if (handler) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
+      if (handler && self.inputActive) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
     });
 
-    element.addEventListener('mousedown', (e) => {
+    on('mousedown', (e) => {
       const button = e.button;
       if (button < 3) {
         self.mouseButtons[button] = true;
@@ -283,32 +408,32 @@ class CanvasBridge {
       }
       element.focus();
       const handler = self.pointerDownHandlers.get(canvasId);
-      if (handler) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
+      if (handler && self.inputActive) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
     });
 
-    element.addEventListener('mouseup', (e) => {
+    on('mouseup', (e) => {
       const button = e.button;
       if (button < 3) {
         self.mouseButtons[button] = false;
         self.mouseButtonsJustReleased[button] = true;
       }
       const handler = self.pointerUpHandlers.get(canvasId);
-      if (handler) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
+      if (handler && self.inputActive) self._callExport(handler, canvasId, self.mouseX, self.mouseY);
     });
 
-    element.addEventListener('mouseleave', () => {
+    on('mouseleave', () => {
       self.mouseButtons = [false, false, false];
     });
 
-    element.addEventListener('wheel', (e) => {
+    on('wheel', (e) => {
       self.mouseWheelX = e.deltaX;
       self.mouseWheelY = e.deltaY;
     });
 
-    element.addEventListener('contextmenu', (e) => e.preventDefault());
+    on('contextmenu', (e) => e.preventDefault());
 
     // ========== KEYBOARD EVENTS ==========
-    element.addEventListener('keydown', (e) => {
+    on('keydown', (e) => {
       const key = e.key;
       if (!self.keysDown.has(key)) {
         self.keysJustPressed.add(key);
@@ -328,21 +453,21 @@ class CanvasBridge {
       }
 
       const handler = self.keyDownHandlers.get(canvasId);
-      if (handler) self._callExport(handler, canvasId);
+      if (handler && self.inputActive) self._callExport(handler, canvasId);
     });
 
-    element.addEventListener('keyup', (e) => {
+    on('keyup', (e) => {
       const key = e.key;
       self.keysDown.delete(key);
       self.keysJustReleased.add(key);
       self.eventKey = key;
 
       const handler = self.keyUpHandlers.get(canvasId);
-      if (handler) self._callExport(handler, canvasId);
+      if (handler && self.inputActive) self._callExport(handler, canvasId);
     });
 
     // ========== TOUCH EVENTS ==========
-    element.addEventListener('touchstart', (e) => {
+    on('touchstart', (e) => {
       e.preventDefault();
       self.touchStarted = true;
       self._updateTouches(e.touches, element);
@@ -356,7 +481,7 @@ class CanvasBridge {
       }
     });
 
-    element.addEventListener('touchmove', (e) => {
+    on('touchmove', (e) => {
       e.preventDefault();
       self._updateTouches(e.touches, element);
       if (e.touches.length > 0) {
@@ -366,7 +491,7 @@ class CanvasBridge {
       }
     });
 
-    element.addEventListener('touchend', (e) => {
+    on('touchend', (e) => {
       e.preventDefault();
       self.touchEnded = true;
       self._updateTouches(e.touches, element);
@@ -376,7 +501,7 @@ class CanvasBridge {
       }
     });
 
-    element.addEventListener('touchcancel', (e) => {
+    on('touchcancel', (e) => {
       self.touchEnded = true;
       self._updateTouches(e.touches, element);
       self.mouseButtons[0] = false;
@@ -384,6 +509,12 @@ class CanvasBridge {
 
     // ========== GAMEPAD POLLING ==========
     // Gamepads are polled each frame, not event-driven
+  }
+
+  // Remove the input listeners this bridge attached (scene leaving the stack).
+  detachInput() {
+    for (const [element, type, fn] of this.listeners) element.removeEventListener(type, fn);
+    this.listeners = [];
   }
 
   _updateTouches(touchList, element) {
@@ -560,6 +691,284 @@ class CanvasBridge {
       if (bx(mid) < t) lo = mid; else hi = mid;
     }
     return by((lo + hi) / 2);
+  }
+
+  // ==========================================================================
+  // FRAMES: recording, layers, camera, compositing
+  // ==========================================================================
+
+  // True when this bridge records its frames instead of drawing directly.
+  _recording() {
+    return this.layersDeclared || this.composited;
+  }
+
+  // Start recording a fresh frame for `entry`: a base list (canvas.clear),
+  // one recorder per layer (the default layer is ''), and an overlay for the
+  // particles drawn after draw:.
+  _beginFrame(entry) {
+    entry.frame = { base: null, layers: new Map(), overlay: null, camera: null };
+    entry.ctx = this._layerTarget(entry, this.currentLayer || '');
+  }
+
+  _layerTarget(entry, name) {
+    let rec = entry.frame.layers.get(name);
+    if (!rec) {
+      rec = createRecorder(entry.real);
+      entry.frame.layers.set(name, rec);
+    }
+    return rec;
+  }
+
+  // Switch every canvas to recording (first layer declared, or composited).
+  _ensureRecording() {
+    for (const [, entry] of this.canvases) {
+      if (!entry.frame) this._beginFrame(entry);
+    }
+  }
+
+  // Draw order of a layer: [z, declaration order]. The default layer is
+  // z=0 ahead of the declared z=0 layers (CVS-D001, CVS-D002); a name no
+  // layers: entry declares draws at z=0 after them.
+  _layerRank(name) {
+    if (name === '') return [0, -1];
+    let layer = this.namedLayers.get(name);
+    if (!layer) {
+      layer = { z: 0, seq: this.layerSeq++, drawCalls: [] };
+      this.namedLayers.set(name, layer);
+    }
+    return [layer.z, layer.seq];
+  }
+
+  // Close the frame being recorded: it becomes entry.lastFrame (what the
+  // compositor draws) and recording starts over.
+  _sealFrame(entry) {
+    if (!entry.frame) return;
+    entry.lastFrame = entry.frame;
+    this._beginFrame(entry);
+  }
+
+  // Replay recorded frame `frame` onto `ctx`: the canvas.clear fill, then
+  // the layers that received draw calls in ascending z (CVS-D001, CVS-D004),
+  // then the particles. `matrix` / `alpha` place the whole frame (scene
+  // transitions); the camera transform applies under the layers only.
+  _replayFrame(entry, frame, ctx, matrix = IDENTITY_MATRIX, alpha = 1) {
+    if (!frame) return;
+    if (frame.base) {
+      ctx.save();
+      ctx.setTransform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+      ctx.globalAlpha = alpha;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = frame.base;
+      ctx.fillRect(0, 0, entry.width, entry.height);
+      ctx.restore();
+    }
+    const world = frame.camera ? multiplyMatrix(matrix, frame.camera) : matrix;
+    const layers = [...frame.layers.entries()]
+      .filter(([, rec]) => rec.__ops.length > 0)
+      .map(([name, rec]) => [this._layerRank(name), rec])
+      .sort((a, b) => (a[0][0] - b[0][0]) || (a[0][1] - b[0][1]));
+    for (const [, rec] of layers) replayOps(rec.__ops, ctx, world, alpha);
+    if (frame.overlay && frame.overlay.__ops.length > 0) replayOps(frame.overlay.__ops, ctx, world, alpha);
+  }
+
+  // Fill the whole canvas with `color` (canvas.clear). Recording: the fill
+  // becomes the frame's base and every layer buffer recorded so far this
+  // frame is dropped (CVS-L004). Direct: a fill in screen space, whatever
+  // transform (camera, translate) is active.
+  _clearCanvas(entry, color) {
+    if (this._recording() && entry.frame) {
+      entry.frame.layers = new Map();
+      entry.frame.overlay = null;
+      entry.frame.base = color;
+      entry.ctx = this._layerTarget(entry, this.currentLayer || '');
+      return;
+    }
+    const ctx = entry.ctx;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, entry.width, entry.height);
+    ctx.restore();
+  }
+
+  // Camera position update for this frame (once per frame): follow target
+  // with deadzone and smoothing, then the bounds clamp. The camera position
+  // (cameraX, cameraY) is the world point at the canvas top-left; the view
+  // is width / zoom x height / zoom world units.
+  _updateCamera(entry) {
+    if (this.cameraFrame === this.frameIndex) return;
+    this.cameraFrame = this.frameIndex;
+    const zoom = this.cameraZoom > 0 ? this.cameraZoom : 1;
+    const viewW = entry.width / zoom;
+    const viewH = entry.height / zoom;
+    if (this.cameraFollowX !== null) {
+      const targetX = this.cameraFollowX + this.cameraOffsetX;
+      const targetY = this.cameraFollowY + this.cameraOffsetY;
+      // Centre the deadzone box on the view centre; the camera moves only
+      // by how far the target is outside it.
+      const centreX = this.cameraX + viewW / 2;
+      const centreY = this.cameraY + viewH / 2;
+      const outside = (target, centre, size) => {
+        const d = target - centre;
+        const half = Math.max(0, size) / 2;
+        return Math.abs(d) <= half ? 0 : d - Math.sign(d) * half;
+      };
+      let wantX, wantY;
+      if (!this.cameraFollowInit) {
+        // First followed frame: start on the target.
+        wantX = targetX - viewW / 2;
+        wantY = targetY - viewH / 2;
+        this.cameraFollowInit = true;
+        this.cameraX = wantX;
+        this.cameraY = wantY;
+      } else {
+        wantX = this.cameraX + outside(targetX, centreX, this.cameraDeadzoneW);
+        wantY = this.cameraY + outside(targetY, centreY, this.cameraDeadzoneH);
+        // smoothing: 0 snaps, values near 1 follow slowly; the remaining
+        // distance keeps `smoothing` of itself per 1/60 s.
+        const s = Math.max(0, Math.min(0.999, this.cameraFollowSmoothing));
+        const k = s === 0 ? 1 : 1 - Math.pow(s, Math.max(0, this.deltaTime) * 60);
+        this.cameraX += (wantX - this.cameraX) * k;
+        this.cameraY += (wantY - this.cameraY) * k;
+      }
+    }
+    if (this.cameraBounds) {
+      // The whole view stays inside the bounds; a view wider than the
+      // bounds is centred on them.
+      const b = this.cameraBounds;
+      const clamp = (pos, min, size, view) => (size <= view ? min + (size - view) / 2
+        : Math.max(min, Math.min(min + size - view, pos)));
+      this.cameraX = clamp(this.cameraX, b.x, b.w, viewW);
+      this.cameraY = clamp(this.cameraY, b.y, b.h, viewH);
+    }
+  }
+
+  // The camera transform: world (cameraX, cameraY) at the top-left, scaled
+  // by zoom, rotated about the canvas centre, plus the shake offset.
+  _cameraTransform(entry) {
+    const zoom = this.cameraZoom > 0 ? this.cameraZoom : 1;
+    let shakeX = 0, shakeY = 0;
+    if (this.cameraShakeDuration > 0) {
+      const elapsed = (performance.now() - this.cameraShakeStart) / 1000;
+      if (elapsed < this.cameraShakeDuration) {
+        const decay = 1 - this._evalEaseId(this.cameraShakeEasing | 0, elapsed / this.cameraShakeDuration);
+        shakeX = (Math.random() - 0.5) * 2 * this.cameraShakeIntensity * decay;
+        shakeY = (Math.random() - 0.5) * 2 * this.cameraShakeIntensity * decay;
+      } else {
+        this.cameraShakeDuration = 0;
+        this.cameraShakeIntensity = 0;
+      }
+    }
+    let m = [1, 0, 0, 1, shakeX, shakeY];
+    if (this.cameraRotation !== 0) {
+      const r = this.cameraRotation * Math.PI / 180;
+      const cx = entry.width / 2, cy = entry.height / 2;
+      m = multiplyMatrix(m, [1, 0, 0, 1, cx, cy]);
+      m = multiplyMatrix(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+      m = multiplyMatrix(m, [1, 0, 0, 1, -cx, -cy]);
+    }
+    m = multiplyMatrix(m, [zoom, 0, 0, zoom, 0, 0]);
+    return multiplyMatrix(m, [1, 0, 0, 1, -this.cameraX, -this.cameraY]);
+  }
+
+  // True when the frame at `timestamp` should run under fps= (CVS-L006):
+  // frames are spaced 1/targetFps apart, give or take half a display frame.
+  _frameDue(timestamp) {
+    if (this.lastRafTime !== null && timestamp > this.lastRafTime) {
+      this.displayInterval = this.displayInterval * 0.9 + (timestamp - this.lastRafTime) * 0.1;
+    }
+    this.lastRafTime = timestamp;
+    if (!(this.targetFps > 0) || this.lastTickTime === null) return true;
+    if (timestamp < this.nextFrameDue - this.displayInterval / 2) return false;
+    return true;
+  }
+
+  // One frame of canvas `canvasId` at `timestamp` (ms): animations, the
+  // module's _frame_callback (onFrame:, transitions, camera, draw:), the
+  // particles. Returns false when fps= skips this display frame.
+  _tick(canvasId, timestamp) {
+    if (!this._frameDue(timestamp)) return false;
+    const last = this.lastTickTime === null ? this.lastFrameTime : this.lastTickTime;
+    this.deltaTime = Math.max(0, Math.min((timestamp - last) / 1000, 0.1));
+    this.lastTickTime = timestamp;
+    this.lastFrameTime = timestamp;
+    if (this.targetFps > 0) {
+      const interval = 1000 / this.targetFps;
+      this.nextFrameDue = Math.max(this.nextFrameDue + interval, timestamp + interval - this.displayInterval);
+    }
+    this.frameIndex++;
+    this.frameCount++;
+    if (timestamp - this.fpsLastTime >= 1000) {
+      this.fps = this.frameCount;
+      this.frameCount = 0;
+      this.fpsLastTime = timestamp;
+    }
+    if (typeof navigator !== 'undefined') this._pollGamepads();
+    this._updateAnimations(this.deltaTime);
+    const entry = this.canvases.get(canvasId);
+    this.inTick = true;
+    try {
+      if (this.wasmInstance && this.wasmInstance.exports._frame_callback) {
+        this.wasmInstance.exports._frame_callback(canvasId);
+      }
+      if (entry) {
+        if (this._recording() && entry.frame) {
+          const saved = entry.ctx;
+          entry.frame.overlay = createRecorder(entry.real);
+          entry.ctx = entry.frame.overlay;
+          this._drawParticles(canvasId);
+          entry.ctx = saved;
+        } else {
+          this._drawParticles(canvasId);
+        }
+      }
+    } catch (err) {
+      console.error('[CanvasBridge] Frame callback error:', err);
+    } finally {
+      this.inTick = false;
+    }
+    if (entry && this._recording()) {
+      this._sealFrame(entry);
+      if (!this.composited) this._replayFrame(entry, entry.lastFrame, entry.real);
+    }
+    this._clearFrameInputState();
+    return true;
+  }
+
+  // Hand a scene.change / changeTo / push / pop request to the scene
+  // manager. Without one (a bridge used on its own) there is no other scene
+  // to run: the request is refused.
+  _sceneRequest(request) {
+    if (!this.manager) {
+      console.error(`[CanvasBridge] scene.${request.op}${request.name ? ` "${request.name}"` : ''}: no scene manager — load scenes with CleanCanvas.load()`);
+      return -1;
+    }
+    return this.manager.request(this, request);
+  }
+
+  _sceneParams() {
+    return this.manager ? this.manager.params : this.sceneParams;
+  }
+
+  // Run a lifecycle export the scene registered: 'exit', 'pause', 'resume'.
+  _fireLifecycle(kind) {
+    if (!this.lifecycle.has(kind)) return;
+    this._callExport(`_on_${kind}`, this.lifecycle.get(kind));
+  }
+
+  // The page store page.set / page.get share with the HTML layer: frame.ui's
+  // state store (ui.getState / ui.setState) once its runtime publishes it as
+  // window.__cleanRuntime.pageState; this bridge's own map until then
+  // (values written before are carried over).
+  _pageStore() {
+    const rt = typeof window !== 'undefined' ? window.__cleanRuntime : null;
+    if (rt && rt.pageState instanceof Map && rt.pageState !== this.pageStore) {
+      for (const [k, v] of this.pageStore) if (!rt.pageState.has(k)) rt.pageState.set(k, v);
+      this.pageStore = rt.pageState;
+    }
+    return this.pageStore;
   }
 
   // ==========================================================================
@@ -864,6 +1273,18 @@ class CanvasBridge {
     const entry = this.canvases.get(canvasId);
     if (!entry) return;
     const ctx = entry.ctx;
+    // Particles live in world space: drawn directly, they take this frame's
+    // camera (a recorded overlay is replayed under it instead).
+    const camera = !ctx.__isRecorder && entry.lastCamera && this.cameraFrame === this.frameIndex ? entry.lastCamera : null;
+    if (camera) {
+      ctx.save();
+      ctx.transform(camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+    }
+    this._drawParticleSystems(ctx);
+    if (camera) ctx.restore();
+  }
+
+  _drawParticleSystems(ctx) {
     for (const [, sys] of this.namedParticles) {
       const cfg = sys.config;
       const a0 = cfg.alphaStart != null ? cfg.alphaStart : 1;
@@ -1059,12 +1480,21 @@ class CanvasBridge {
 
           const ctx = canvas.getContext('2d');
 
+          // `ctx` is where the draw bridges draw: the page context, or the
+          // recorder of the current layer while frames are recorded.
           self.canvases.set(id, {
             element: canvas,
             ctx: ctx,
+            real: ctx,
             width: width,
-            height: height
+            height: height,
+            created: !isCanvas,
+            frame: null,
+            lastFrame: null,
+            lastCamera: null,
           });
+          if (self._recording()) self._beginFrame(self.canvases.get(id));
+          if (self.manager) self.manager.canvasCreated(self, id);
 
           self.setupInputHandlers(id, canvas);
 
@@ -1077,24 +1507,34 @@ class CanvasBridge {
           return id;
         },
 
+        // canvas.clear: the whole canvas, in the default colour black
+        // (CVS-L003). The plugin passes the scene's background= colour to
+        // _canvas_clear_color when the scene declares one.
         _canvas_clear(canvasId) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
-          entry.ctx.clearRect(0, 0, entry.width, entry.height);
+          self._clearCanvas(entry, 'black');
           return 0;
         },
 
         _canvas_clear_color(canvasId, colorPtr, colorLen) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
-          const color = self.readString(colorPtr, colorLen);
-          entry.ctx.fillStyle = color;
-          entry.ctx.fillRect(0, 0, entry.width, entry.height);
+          self._clearCanvas(entry, self.readString(colorPtr, colorLen) || 'black');
           return 0;
         },
 
+        // End of the frame's drawing (the plugin calls it last in
+        // _frame_callback). A recorded frame is composited now when nothing
+        // else will do it: the frame loop composites after the particles, the
+        // scene manager after every scene of the stack has drawn.
         _canvas_present(canvasId) {
-          return self.canvases.has(canvasId) ? 0 : -1;
+          const entry = self.canvases.get(canvasId);
+          if (!entry) return -1;
+          if (!self._recording() || self.inTick || self.composited) return 0;
+          self._sealFrame(entry);
+          self._replayFrame(entry, entry.lastFrame, entry.real);
+          return 0;
         },
 
         _canvas_resize(canvasId, width, height) {
@@ -1665,11 +2105,11 @@ class CanvasBridge {
         // FRAME RATE TARGET
         // ====================================================================
 
+        // canvasScene fps= (CVS-L006): the frame loop runs at most this many
+        // frames per second; dt stays the real time between frames. 0 or
+        // less is the display rate.
         _canvas_set_fps(canvasId, fps) {
-          // The animation loop uses requestAnimationFrame at the browser's
-          // native refresh rate; we store the target only so _canvas_get_fps
-          // reflects the requested target.
-          if (fps > 0) self.targetFps = fps;
+          self.targetFps = fps > 0 ? fps : 0;
           return 0;
         },
 
@@ -1758,99 +2198,34 @@ class CanvasBridge {
         // ANIMATION
         // ====================================================================
 
+        // Start the scene's frame loop (the plugin calls it once, at the end
+        // of start:). Under a scene manager the manager's loop drives every
+        // scene of the stack; on its own the bridge runs requestAnimationFrame.
         _canvas_request_frame(canvasId) {
           const frameId = self.nextFrameId++;
-          console.log('[CanvasBridge] _canvas_request_frame called, frameId:', frameId, 'canvasId:', canvasId);
-
-          let debugFrameCount = 0;
+          if (self.manager) {
+            self.manager.requestFrames(self, canvasId);
+            self.animationFrames.set(frameId, 0);
+            return frameId;
+          }
           const callback = (timestamp) => {
-            // Calculate delta time
-            self.deltaTime = Math.min((timestamp - self.lastFrameTime) / 1000, 0.1);
-            self.lastFrameTime = timestamp;
-
-            // Debug first few frames
-            debugFrameCount++;
-            if (debugFrameCount <= 3) {
-              console.log('[CanvasBridge] Animation frame', debugFrameCount, 'wasmInstance:', !!self.wasmInstance, 'has _frame_callback:', !!(self.wasmInstance && self.wasmInstance.exports._frame_callback));
-            }
-
-            // Calculate FPS
-            self.frameCount++;
-            if (timestamp - self.fpsLastTime >= 1000) {
-              self.fps = self.frameCount;
-              self.frameCount = 0;
-              self.fpsLastTime = timestamp;
-            }
-
-            // Poll gamepads
-            self._pollGamepads();
-
-            // Update camera shake
-            if (self.cameraShakeDuration > 0) {
-              const elapsed = (performance.now() - self.cameraShakeStart) / 1000;
-              if (elapsed >= self.cameraShakeDuration) {
-                self.cameraShakeDuration = 0;
-                self.cameraShakeIntensity = 0;
-              }
-            }
-
-            // Update camera follow before WASM frame so reads inside onFrame
-            // see the new position.
-            if (self.cameraFollowX !== null) {
-              const targetX = self.cameraFollowX + self.cameraOffsetX;
-              const targetY = self.cameraFollowY + self.cameraOffsetY;
-              if (self.cameraFollowSmoothing > 0) {
-                const lerp = Math.min(1, 1 - Math.pow(1 - 0.1, self.cameraFollowSmoothing * 60 * self.deltaTime));
-                self.cameraX += (targetX - self.cameraX) * lerp;
-                self.cameraY += (targetY - self.cameraY) * lerp;
-              } else {
-                self.cameraX = targetX;
-                self.cameraY = targetY;
-              }
-              if (self.cameraBounds) {
-                const b = self.cameraBounds;
-                self.cameraX = Math.max(b.x, Math.min(b.x + b.w, self.cameraX));
-                self.cameraY = Math.max(b.y, Math.min(b.y + b.h, self.cameraY));
-              }
-            }
-
-            // Tick named tweens, timelines, animsprites, particles. Must run
-            // before _frame_callback so user draw code reads up-to-date state.
-            self._updateAnimations(self.deltaTime);
-
-            // Call WASM frame handler
-            if (self.wasmInstance && self.wasmInstance.exports._frame_callback) {
-              try {
-                self.wasmInstance.exports._frame_callback(canvasId);
-                self._drawParticles(canvasId);
-              } catch (err) {
-                console.error('[CanvasBridge] Frame callback error:', err);
-              }
-            } else if (debugFrameCount <= 3) {
-              console.log('[CanvasBridge] Skipping frame callback - wasmInstance not set');
-            }
-
-            // Clear per-frame input state
-            self._clearFrameInputState();
-
-            // Continue animation loop
+            if (!self.animationFrames.has(frameId)) return;
+            self._tick(canvasId, timestamp);
             if (self.animationFrames.has(frameId)) {
               self.animationFrames.set(frameId, requestAnimationFrame(callback));
             }
           };
-
           self.animationFrames.set(frameId, requestAnimationFrame(callback));
           return frameId;
         },
 
         _canvas_cancel_frame(frameId) {
+          if (!self.animationFrames.has(frameId)) return -1;
           const rafId = self.animationFrames.get(frameId);
-          if (rafId) {
-            cancelAnimationFrame(rafId);
-            self.animationFrames.delete(frameId);
-            return 0;
-          }
-          return -1;
+          if (rafId) cancelAnimationFrame(rafId);
+          self.animationFrames.delete(frameId);
+          if (self.manager && self.animationFrames.size === 0) self.manager.cancelFrames(self);
+          return 0;
         },
 
         _canvas_get_delta_time() {
@@ -2533,44 +2908,29 @@ class CanvasBridge {
           return 0;
         },
 
+        // The camera for this frame's draw: (the plugin wraps draw: in
+        // _camera_apply / _camera_reset when the scene has a camera). The
+        // follow target, deadzone and bounds move the camera first.
         _camera_apply(canvasId) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
-
-          const ctx = entry.ctx;
-          ctx.save();
-
-          // Apply shake
-          let shakeX = 0, shakeY = 0;
-          if (self.cameraShakeDuration > 0) {
-            const elapsed = (performance.now() - self.cameraShakeStart) / 1000;
-            if (elapsed < self.cameraShakeDuration) {
-              const decay = 1 - self._evalEaseId(self.cameraShakeEasing | 0, elapsed / self.cameraShakeDuration);
-              shakeX = (Math.random() - 0.5) * 2 * self.cameraShakeIntensity * decay;
-              shakeY = (Math.random() - 0.5) * 2 * self.cameraShakeIntensity * decay;
-            }
+          self._updateCamera(entry);
+          const m = self._cameraTransform(entry);
+          entry.lastCamera = m;
+          if (self._recording() && entry.frame) {
+            // Each layer is replayed under the camera; canvas.clear is not.
+            entry.frame.camera = m;
+            return 0;
           }
-
-          // Center on canvas
-          ctx.translate(entry.width / 2, entry.height / 2);
-
-          // Apply rotation
-          if (self.cameraRotation !== 0) {
-            ctx.rotate(self.cameraRotation * Math.PI / 180);
-          }
-
-          // Apply zoom
-          ctx.scale(self.cameraZoom, self.cameraZoom);
-
-          // Apply position (inverted for camera effect)
-          ctx.translate(-self.cameraX + shakeX, -self.cameraY + shakeY);
-
+          entry.ctx.save();
+          entry.ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
           return 0;
         },
 
         _camera_reset(canvasId) {
           const entry = self.canvases.get(canvasId);
           if (!entry) return -1;
+          if (self._recording() && entry.frame) return 0;
           entry.ctx.restore();
           return 0;
         },
@@ -2578,15 +2938,17 @@ class CanvasBridge {
         _camera_screen_to_world_x(screenX) {
           const entry = self.canvases.values().next().value;
           if (!entry) return screenX;
-          return (screenX - entry.width / 2) / self.cameraZoom + self.cameraX;
+          return screenX / (self.cameraZoom > 0 ? self.cameraZoom : 1) + self.cameraX;
         },
 
         _camera_screen_to_world_y(screenY) {
           const entry = self.canvases.values().next().value;
           if (!entry) return screenY;
-          return (screenY - entry.height / 2) / self.cameraZoom + self.cameraY;
+          return screenY / (self.cameraZoom > 0 ? self.cameraZoom : 1) + self.cameraY;
         },
 
+        // camera.shake intensity= duration= falloff= : intensity decays by
+        // the falloff easing over the duration.
         _camera_shake(intensity, duration, easingId) {
           self.cameraShakeIntensity = intensity;
           self.cameraShakeDuration = duration;
@@ -2790,97 +3152,81 @@ class CanvasBridge {
         // SCENE MANAGEMENT
         // ====================================================================
 
+        // Scenes (CVS-S001..S009). Each scene is its own module; the scene
+        // manager (loader.js) loads, starts and stops them. The requests run
+        // after the current frame or handler returns.
         _scene_get_current() {
-          return self.writeString(self.currentScene || '');
+          return self.writeString(self.sceneName || '');
         },
 
         _scene_change(namePtr, nameLen) {
-          const name = self.readString(namePtr, nameLen);
-          const prev = self.currentScene;
-          if (prev && self.onExitHandlers.has(prev)) {
-            self._callExport(self.onExitHandlers.get(prev));
-          }
-          self.currentScene = name;
-          self.sceneStack = [name];
-          console.log(`[CanvasBridge] Scene changed to: ${name}`);
-          return 0;
+          return self._sceneRequest({ op: 'change', name: self.readString(namePtr, nameLen), transition: 'instant', duration: 0 });
         },
 
         _scene_change_animated(namePtr, nameLen, transitionPtr, transitionLen, duration) {
-          const name = self.readString(namePtr, nameLen);
-          const transition = self.readString(transitionPtr, transitionLen);
-          const prev = self.currentScene;
-          if (prev && self.onExitHandlers.has(prev)) {
-            self._callExport(self.onExitHandlers.get(prev));
-          }
-          // Persist the transition + duration in pageStore so the next scene's
-          // init can render its enter animation if desired.
-          self.pageStore.set('__scene_transition', JSON.stringify({ from: prev, to: name, kind: transition, duration }));
-          self.currentScene = name;
-          self.sceneStack = [name];
-          console.log(`[CanvasBridge] Scene change animated: ${prev}→${name} via ${transition} (${duration}s)`);
-          return 0;
+          return self._sceneRequest({
+            op: 'change',
+            name: self.readString(namePtr, nameLen),
+            transition: self.readString(transitionPtr, transitionLen) || 'instant',
+            duration,
+          });
         },
 
         _scene_push(namePtr, nameLen) {
-          const name = self.readString(namePtr, nameLen);
-          const prev = self.currentScene;
-          if (prev && self.onPauseHandlers.has(prev)) {
-            self._callExport(self.onPauseHandlers.get(prev));
-          }
-          self.sceneStack.push(name);
-          self.currentScene = name;
-          console.log(`[CanvasBridge] Scene pushed: ${name}`);
-          return 0;
+          return self._sceneRequest({ op: 'push', name: self.readString(namePtr, nameLen) });
         },
 
         _scene_pop() {
-          if (self.sceneStack.length > 1) {
-            const prev = self.sceneStack.pop();
-            if (prev && self.onExitHandlers.has(prev)) {
-              self._callExport(self.onExitHandlers.get(prev));
-            }
-            self.currentScene = self.sceneStack[self.sceneStack.length - 1];
-            if (self.currentScene && self.onResumeHandlers.has(self.currentScene)) {
-              self._callExport(self.onResumeHandlers.get(self.currentScene));
-            }
-            console.log(`[CanvasBridge] Scene popped, current: ${self.currentScene}`);
-            return 0;
-          }
-          return -1;
+          return self._sceneRequest({ op: 'pop' });
         },
 
+        // scene.set / scene.get (CVS-S003): values for the next scene's
+        // init:, kept by the manager (shared by the scenes) and dropped once
+        // that init: has run.
         _scene_set(keyPtr, keyLen, valPtr, valLen) {
-          const key = self.readString(keyPtr, keyLen);
-          const val = self.readString(valPtr, valLen);
-          self.sceneParams.set(key, val);
+          self._sceneParams().set(self.readString(keyPtr, keyLen), self.readString(valPtr, valLen));
           return 0;
         },
 
         _scene_get(keyPtr, keyLen) {
           const key = self.readString(keyPtr, keyLen);
-          return self.writeString(self.sceneParams.get(key) || '');
+          return self.writeString(self._sceneParams().get(key) || '');
         },
 
         // ====================================================================
-        // PAGE / UI BRIDGE
+        // PAGE / UI BRIDGE (CVS-I003)
         // ====================================================================
+        // page.set / page.get share values with the HTML layer through
+        // frame.ui's state store (ui.getState / ui.setState read and write the
+        // same keys). Values are stored JSON-encoded: numbers and booleans as
+        // they are, any other text as a JSON string.
 
         _page_set(keyPtr, keyLen, valPtr, valLen) {
           const key = self.readString(keyPtr, keyLen);
           const val = self.readString(valPtr, valLen);
-          self.pageStore.set(key, val);
-          // Forward to the surrounding page via a CustomEvent so the
-          // enclosing app (frame.ui or vanilla page) can subscribe.
-          if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
-            window.dispatchEvent(new CustomEvent('clean-canvas-page-set', { detail: { key, value: val } }));
+          const json = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(val) || val === 'true' || val === 'false'
+            ? val : JSON.stringify(val);
+          self._pageStore().set(key, json);
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('clean-canvas-page-set', { detail: { key, value: json } }));
           }
           return 0;
         },
 
+        // The value as text: a JSON string decoded, a number or boolean as
+        // written, anything else (an object) as its JSON.
         _page_get(keyPtr, keyLen) {
           const key = self.readString(keyPtr, keyLen);
-          return self.writeString(self.pageStore.get(key) || '');
+          const stored = self._pageStore().get(key);
+          let text = '';
+          if (stored !== undefined && stored !== null) {
+            text = String(stored);
+            try {
+              const v = JSON.parse(text);
+              if (typeof v === 'string') text = v;
+            } catch (_) { /* not JSON: the text itself */ }
+          }
+          return self.writeString(text);
         },
 
         // ====================================================================
@@ -3038,23 +3384,36 @@ class CanvasBridge {
         // the canvas in declaration order, so layer routing is a no-op for
         // now but the bookkeeping is correct.
 
+        // layers: (CVS-D001..D004). Declaring a layer switches the canvas to
+        // recorded frames: `on layer` routes draw calls to that layer's
+        // buffer, everything else goes to the default z=0 layer, and the frame
+        // is composited in ascending z (equal z in declaration order) when it
+        // ends.
         _layer_declare(namePtr, nameLen, z) {
           const name = self.readString(namePtr, nameLen);
-          self.namedLayers.set(name, { z, drawCalls: [] });
+          self.namedLayers.set(name, { z, seq: self.layerSeq++, drawCalls: [] });
           self.layerOrder = [...self.namedLayers.entries()]
-            .sort((a, b) => a[1].z - b[1].z)
+            .sort((a, b) => (a[1].z - b[1].z) || (a[1].seq - b[1].seq))
             .map(([k]) => k);
+          self.layersDeclared = true;
+          self._ensureRecording();
           return 0;
         },
 
         _layer_begin(namePtr, nameLen) {
           const name = self.readString(namePtr, nameLen);
           self.currentLayer = name;
+          if (self._recording()) {
+            for (const [, entry] of self.canvases) if (entry.frame) entry.ctx = self._layerTarget(entry, name);
+          }
           return 0;
         },
 
         _layer_end() {
           self.currentLayer = null;
+          if (self._recording()) {
+            for (const [, entry] of self.canvases) if (entry.frame) entry.ctx = self._layerTarget(entry, '');
+          }
           return 0;
         },
 
@@ -3430,18 +3789,21 @@ class CanvasBridge {
           return 0;
         },
 
+        // Lifecycle hooks (CVS-S007..S009): the scene manager runs them when
+        // the scene leaves the stack (exit), is covered or the tab is hidden
+        // (pause), and is uncovered or the tab shown again (resume).
         _canvas_on_exit(canvasId) {
-          self.onExitHandlers.set(self.currentScene || 'default', '_on_exit');
+          self.lifecycle.set('exit', canvasId);
           return 0;
         },
 
         _canvas_on_pause(canvasId) {
-          self.onPauseHandlers.set(self.currentScene || 'default', '_on_pause');
+          self.lifecycle.set('pause', canvasId);
           return 0;
         },
 
         _canvas_on_resume(canvasId) {
-          self.onResumeHandlers.set(self.currentScene || 'default', '_on_resume');
+          self.lifecycle.set('resume', canvasId);
           return 0;
         },
 
@@ -3606,31 +3968,22 @@ class CanvasBridge {
   // ==========================================================================
 
   destroy() {
-    // Cancel all animation frames
-    for (const [frameId, rafId] of this.animationFrames) {
-      cancelAnimationFrame(rafId);
+    for (const [, rafId] of this.animationFrames) {
+      if (rafId) cancelAnimationFrame(rafId);
     }
     this.animationFrames.clear();
+    this.detachInput();
 
-    // Stop all sounds
-    for (const [id, instance] of this.soundInstances) {
+    for (const [, instance] of this.soundInstances) {
       try { instance.source.stop(); } catch (e) { }
     }
     this.soundInstances.clear();
 
-    // Stop music
-    if (this.currentMusicElement) {
-      this.currentMusicElement.pause();
-      this.currentMusicElement = null;
-    }
-
-    // Remove all canvas elements
-    for (const [id, entry] of this.canvases) {
-      entry.element.remove();
+    // Canvases the bridge created itself go; a page <canvas> stays.
+    for (const [, entry] of this.canvases) {
+      if (entry.created && entry.element.remove) entry.element.remove();
     }
     this.canvases.clear();
-
-    console.log('[CanvasBridge] Destroyed');
   }
 }
 
