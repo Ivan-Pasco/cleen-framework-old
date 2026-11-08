@@ -1,0 +1,13 @@
+// Fixture project for test_loader_runtime.mjs — cl-bind (UI-B005) in a
+// hydrated component. The build's frontend.wasm renders the component's
+// hydrated instance into its island (client_init); edits to the bound
+// controls reach its state through the uiprofile_bind export.
+
+component: tag="ui-profile" client="on"
+	state:
+		string name
+		boolean agree
+		integer size
+		string color
+	html:
+		<form><input id="name" type="text" cl-bind="name"><input id="name2" type="text" cl-bind="name"><input id="agree" type="checkbox" cl-bind="agree"><input id="s2" type="radio" name="s" value="2" cl-bind="size"><select id="color" cl-bind="color"><option value="red">R</option><option value="blue">B</option></select><p id="out">{name}/{agree.toString()}/{size.toString()}/{color}</p></form>

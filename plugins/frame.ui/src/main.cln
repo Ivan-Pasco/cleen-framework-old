@@ -111,6 +111,20 @@ functions:
 		integer ag_r = _type_string(ctx)
 		string ag_params = "[{\"name\":\"attrs\",\"type_handle\":" + ag_p_attrs.toString() + "},{\"name\":\"name\",\"type_handle\":" + ag_p_name.toString() + "}]"
 		ui_helper_function(ctx, "_ui_attr_get", ag_params, ag_r, attr_get_body(), 1)
+		// _ui_attr_names(attrs): the attribute names of that JSON object, one
+		// per line (a registered tag's render export, UI-S008).
+		integer an_p_attrs = _type_string(ctx)
+		integer an_r = _type_string(ctx)
+		string an_params = "[{\"name\":\"attrs\",\"type_handle\":" + an_p_attrs.toString() + "}]"
+		ui_helper_function(ctx, "_ui_attr_names", an_params, an_r, attr_names_body(), 1)
+		// _ui_select_value(options, value): the <option> markup of a select
+		// bound with cl-bind, with `selected` on the option whose value is
+		// `value` (UI-B005).
+		integer sv_p_options = _type_string(ctx)
+		integer sv_p_value = _type_string(ctx)
+		integer sv_r = _type_string(ctx)
+		string sv_params = "[{\"name\":\"options\",\"type_handle\":" + sv_p_options.toString() + "},{\"name\":\"value\",\"type_handle\":" + sv_p_value.toString() + "}]"
+		ui_helper_function(ctx, "_ui_select_value", sv_params, sv_r, select_value_body(), 1)
 		// _ui_head_links(page: string) -> string
 		// UI-S009 theme auto-link: when the project declares a `styles` block,
 		// adds <link rel="stylesheet" href="/theme.css"> before the page's
@@ -172,6 +186,58 @@ functions:
 		b = b + "\t\tout = out + c\n"
 		b = b + "\t\ti = i + 1\n"
 		b = b + "return out\n"
+		return b
+
+	// Body source of the _ui_attr_names helper (see emit_ui_helpers_typed):
+	// the keys of the JSON object `attrs` (string values only), each
+	// followed by a line break.
+	string attr_names_body()
+		string b = "string names = \"\"\n"
+		b = b + "boolean is_key = true\n"
+		b = b + "integer i = 0\n"
+		b = b + "while i < attrs.length()\n"
+		b = b + "\tif attrs.substring(i, i + 1) == \"\\\"\"\n"
+		b = b + "\t\tinteger j = i + 1\n"
+		b = b + "\t\tstring text = \"\"\n"
+		b = b + "\t\tboolean scanning = true\n"
+		b = b + "\t\twhile scanning and j < attrs.length()\n"
+		b = b + "\t\t\tstring d = attrs.substring(j, j + 1)\n"
+		b = b + "\t\t\tif d == \"\\\\\"\n"
+		b = b + "\t\t\t\tj = j + 2\n"
+		b = b + "\t\t\telse if d == \"\\\"\"\n"
+		b = b + "\t\t\t\tscanning = false\n"
+		b = b + "\t\t\telse\n"
+		b = b + "\t\t\t\ttext = text + d\n"
+		b = b + "\t\t\t\tj = j + 1\n"
+		b = b + "\t\tif is_key\n"
+		b = b + "\t\t\tnames = names + text + \"\\n\"\n"
+		b = b + "\t\tis_key = is_key == false\n"
+		b = b + "\t\ti = j + 1\n"
+		b = b + "\telse\n"
+		b = b + "\t\ti = i + 1\n"
+		b = b + "return names\n"
+		return b
+
+	// Body source of the _ui_select_value helper (see emit_ui_helpers_typed).
+	// frame.ui renders option attributes single-quoted (`value='x'`), with
+	// the value HTML-escaped.
+	string select_value_body()
+		string b = "string wanted = \"value='\" + _html_escape(value) + \"'\"\n"
+		b = b + "string out = \"\"\n"
+		b = b + "string rest = options\n"
+		b = b + "integer at = rest.indexOf(\"<option\")\n"
+		b = b + "while at != -1\n"
+		b = b + "\tinteger close = rest.indexOf(\">\", at)\n"
+		b = b + "\tif close == -1\n"
+		b = b + "\t\tat = -1\n"
+		b = b + "\telse\n"
+		b = b + "\t\tstring open_tag = rest.substring(at, close)\n"
+		b = b + "\t\tout = out + rest.substring(0, at) + open_tag\n"
+		b = b + "\t\tif open_tag.indexOf(\" \" + wanted) != -1 and open_tag.indexOf(\" selected\") == -1\n"
+		b = b + "\t\t\tout = out + \" selected\"\n"
+		b = b + "\t\trest = rest.substring(close, rest.length())\n"
+		b = b + "\t\tat = rest.indexOf(\"<option\")\n"
+		b = b + "return out + rest\n"
 		return b
 
 	// Body source of the _ui_add_root_class helper (see emit_ui_helpers_typed).
@@ -239,7 +305,195 @@ functions:
 		if block_name == "styles"
 			return expand_styles_typed(ctx, attrs_json, body)
 
+		// tags: block — frame-ui.ebnf §6 tags_block, the manual component tag
+		// registry in /config/tags.cln (UI-S008).
+		if block_name == "tags"
+			return expand_tags_typed(ctx, body)
+
 		return 0
+
+// ============================================================================
+// TAGS REGISTRY BLOCK — frame-ui.ebnf §6 (tags_block), UI-S008
+// ============================================================================
+// /config/tags.cln maps custom tags to component files:
+//     tags:
+//         "app-header": "app/ui/web/components/Header"
+// The component is the class the file names (Header). A registered tag
+// renders that component wherever a component tag renders (UI-C010), in
+// addition to the tags derived from component names, and the registration
+// wins over the derived name for the same tag. assemble reads the registry
+// from the project files before any block is expanded and keeps it in
+// build_state["frame.ui:tags"] ({"tag":"Class",...}), so every template sees
+// it whatever order the files are compiled in. The tags: block itself
+// validates its entries, adds them to the registry (a single-file build has
+// no assemble step), emits each tag's request-time render export
+// <tag without hyphens>_render(attrs) (bridge-host-classes.md §4.1) and, when
+// the class derived from the tag differs from the registered class, that
+// class as a subclass of it (for HTML entry pages, compiled before assemble).
+
+functions:
+	integer expand_tags_typed(integer ctx, string body)
+		_ctx_set_error_context(ctx, "PLUGIN_UI_TAGS", "expand_tags")
+		string entries = tags_registry_entries(body)
+		if entries.startsWith("!")
+			return plugin_error(ctx, "FRAME-UI-E014", "a tags: entry must be \"tag-name\": \"path/to/Component\" with a lowercase tag that contains a hyphen (frame-ui.ebnf tags_entry, UI-C002); got: " + entries.substring(1, entries.length()))
+		register_tags(entries)
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			integer sp = entry.indexOf(" ")
+			string tag = entry.substring(0, sp)
+			string class_name = entry.substring(sp + 1, entry.length())
+			integer rx_p_attrs = _type_string(ctx)
+			integer rx_r_str = _type_string(ctx)
+			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
+			ui_helper_function(ctx, component_render_export(tag), rx_params, rx_r_str, tag_render_export_body(class_name), 3)
+			// HTML entry pages are compiled before assemble runs, so they
+			// cannot read the registry: they build the class named after the
+			// tag (app-header → AppHeader), which is the registered class or
+			// a subclass of it.
+			string alias = tag_to_class_name(tag)
+			if alias != class_name
+				ui_component_class(ctx, "{\"name\":\"" + spec_esc_json(alias) + "\",\"parent\":\"" + spec_esc_json(class_name) + "\",\"fields\":[],\"methods\":[]}")
+		_ctx_clear_error(ctx)
+		return 0
+
+	// The entries of a tags: block body as "tag Class\n" lines, or "!" and
+	// the first malformed line.
+	string tags_registry_entries(string body)
+		string result = ""
+		string remaining = body
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string t = line.trim()
+			if t.length() > 0 and t.startsWith("//") == false
+				string tag = tags_entry_part(t, 0)
+				string class_name = path_component_class(tags_entry_part(t, 1))
+				if tag == "" or tag.indexOf("-") == -1 or tag != tag.toLowerCase() or tag.indexOf(" ") != -1 or is_plain_identifier(class_name) == false
+					return "!" + t
+				result = result + tag + " " + class_name + "\n"
+		return result
+
+	// Add "tag Class" entries to build_state["frame.ui:tags"]; a tag that is
+	// already registered keeps its entry.
+	void register_tags(string entries)
+		string registry = _build_state_get("frame.ui:tags")
+		if registry == ""
+			registry = "{}"
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			integer sp = entry.indexOf(" ")
+			string tag = entry.substring(0, sp)
+			if lookup_component(tag, registry) == ""
+				string item = "\"" + tag + "\":\"" + entry.substring(sp + 1, entry.length()) + "\""
+				if registry == "{}"
+					registry = "{" + item + "}"
+				else
+					registry = registry.substring(0, registry.length() - 1) + "," + item + "}"
+		_build_state_set("frame.ui:tags", registry)
+
+	// The body of the top-level `tags:` block in a Clean source file, ""
+	// when it has none.
+	string source_tags_body(string content)
+		integer pos = -1
+		if content.startsWith("tags:")
+			pos = 0
+		else
+			integer found = content.indexOf("\ntags:")
+			if found != -1
+				pos = found + 1
+		if pos == -1
+			return ""
+		integer header_end = content.indexOf("\n", pos)
+		if header_end == -1
+			return ""
+		string header = content.substring(pos, header_end).trim()
+		if header != "tags:"
+			return ""
+		string result = ""
+		string remaining = content.substring(header_end + 1, content.length())
+		boolean in_block = true
+		while in_block and remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			if line.trim().length() > 0 and leading_tabs(line) == 0 and line.startsWith(" ") == false
+				in_block = false
+			else
+				result = result + line + "\n"
+		return result
+
+	// The component class a tag renders: the registered class
+	// (build_state["frame.ui:tags"], UI-S008) or "" when it is not registered.
+	string registered_tag_class(string tag_name)
+		string registry = _build_state_get("frame.ui:tags")
+		if registry == ""
+			return ""
+		return lookup_component(tag_name, registry)
+
+	// Part 0 (the tag) or 1 (the path) of a `"tag": "path"` entry; "" when
+	// the entry is not two string literals separated by a colon.
+	string tags_entry_part(string entry, integer index)
+		if entry.startsWith("\"") == false
+			return ""
+		integer tag_end = entry.indexOf("\"", 1)
+		if tag_end == -1
+			return ""
+		if index == 0
+			return entry.substring(1, tag_end)
+		string rest = entry.substring(tag_end + 1, entry.length()).trim()
+		if rest.startsWith(":") == false
+			return ""
+		rest = rest.substring(1, rest.length()).trim()
+		if rest.startsWith("\"") == false or rest.endsWith("\"") == false or rest.length() < 2
+			return ""
+		return rest.substring(1, rest.length() - 1)
+
+	// The component class a registry path names: its last segment without
+	// `.cln` (`app/ui/web/components/Header` → Header, `.../user-card` →
+	// UserCard).
+	string path_component_class(string path)
+		string seg = path
+		integer slash = seg.lastIndexOf("/")
+		if slash != -1
+			seg = seg.substring(slash + 1, seg.length())
+		if seg.endsWith(".cln")
+			seg = seg.substring(0, seg.length() - 4)
+		if seg.indexOf("-") != -1
+			return tag_to_class_name(seg)
+		if seg.length() == 0
+			return ""
+		return seg.substring(0, 1).toUpperCase() + seg.substring(1, seg.length())
+
+	// Body of a registered tag's request-time render export: build the
+	// component, pass every attribute to setInput (which ignores names that
+	// are not scalar inputs) and add `class` to its outer element (UI-C009).
+	string tag_render_export_body(string class_name)
+		string body = class_name + " __comp = " + class_name + "()\n"
+		body = body + "string __names = _ui_attr_names(attrs)\n"
+		body = body + "while __names.length() > 0\n"
+		body = body + "\tinteger __nl = __names.indexOf(\"\\n\")\n"
+		body = body + "\tstring __key = __names.substring(0, __nl)\n"
+		body = body + "\t__names = __names.substring(__nl + 1, __names.length())\n"
+		body = body + "\tif __key != \"class\"\n"
+		body = body + "\t\t__comp.setInput(__key, _ui_attr_get(attrs, __key))\n"
+		body = body + "return _ui_add_root_class(__comp.render(), _ui_attr_get(attrs, \"class\"))\n"
+		return body
 
 // ============================================================================
 // STYLES BLOCK — frame-ui.ebnf §4 (styles_block)
@@ -414,6 +668,19 @@ functions:
 			if source_declares_styles(source_files[__ssi])
 				_build_state_set("frame.ui.has_styles", "1")
 			__ssi = __ssi + 1
+
+		// UI-S008: the component tag registry (/config/tags.cln `tags:`),
+		// recorded before any template is expanded.
+		integer __tgi = 0
+		while __tgi < source_files.length()
+			string __tgf = source_files[__tgi]
+			if extract_json_field(__tgf, "path").endsWith(".cln")
+				string __tgb = source_tags_body(decode_json_string(extract_json_field_escaped(__tgf, "content")))
+				if __tgb != ""
+					string __tge = tags_registry_entries(__tgb)
+					if __tge.startsWith("!") == false
+						register_tags(__tge)
+			__tgi = __tgi + 1
 
 		// -------- Phase 1: build routes-guard table --------
 		string __routes_guard_table = ""
@@ -1217,6 +1484,9 @@ functions:
 				_build_state_set("frame.ui:components", entry)
 			else
 				_build_state_set("frame.ui:components", components_state + ";" + entry)
+			// frontend.wasm is built for every project with a component tag
+			// or a cl-client element (plugin.toml [[artifacts]]).
+			_build_state_set("frame.ui:hydrated", "1")
 			string render_export = component_render_export(tag)
 			string component_obj = "{\"tag\":\"" + tag + "\",\"class\":\"" + name + "\",\"hydration\":\"" + client + "\",\"render_export\":\"" + render_export + "\"}"
 			string manifest_state = _build_state_get("frame.ui.components.json")
@@ -1237,6 +1507,13 @@ functions:
 		string fallback_html = decode_json_string(extract_json_field_escaped(parsed, "fallback"))
 		// Sections that become methods (events:, functions:).
 		string section_text = remove_state_dot(before_html + "\n" + after_html)
+		// computed: fields become methods; their reads in the template and
+		// the handlers become calls (frame-ui.ebnf computed_section).
+		string computed = computed_entries(component_section_lines(section_text, "computed"))
+		string computed_names = computed_name_list(computed)
+		section_text = call_computed(remove_section(section_text, "computed"), computed_names)
+		if template_error_code(section_text) != ""
+			return template_error(ctx, template_error_code(section_text))
 		// state: and inputs: entries both become class fields, so the render
 		// body and handlers can reference them by bare name.
 		string input_lines = component_section_lines(before_html, "inputs")
@@ -1273,14 +1550,18 @@ functions:
 				fields_json = fields_json + "," + sf_entry
 		fields_json = fields_json + "]"
 
+		// cl-bind (UI-B005) can bind any state: / inputs: field.
+		string bind_types = bindable_fields(state_fields, input_lines)
+		boolean has_bind = html_content.indexOf("cl-bind") != -1
+
 		// -------- Build render() method body source --------
 		string render_body_source = "string __html = \"\"\n"
 		if html_content != ""
 			if fallback_html != ""
 				string escaped_fb = escape_attr_text(fallback_html)
 				render_body_source = render_body_source + append_stmt("__html", "\"<div data-component='" + name + "' data-fallback='" + escaped_fb + "'>\"")
-			string markup = template_strip_state(strip_block_indent(html_content))
-			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, "{}", false)
+			string markup = template_call_computed(template_strip_state(strip_block_indent(html_content)), computed_names)
+			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, component_template_context(name, markup, bind_types, computed_names), false)
 			if fallback_html != ""
 				render_body_source = render_body_source + append_stmt("__html", "\"</div>\"")
 		render_body_source = render_body_source + "return __html\n"
@@ -1300,6 +1581,11 @@ functions:
 		// setInput(attr, value): a tag attribute written as text, converted
 		// to the declared input type (UI-C010).
 		integer setinput_bh = _emit_stmt_from_source(ctx, set_input_body(input_lines), 0)
+		// setBound(field, value): a cl-bind edit from the browser, converted
+		// to the field's declared type (UI-B005).
+		integer setbound_bh = 0
+		if has_bind
+			setbound_bh = _emit_stmt_from_source(ctx, set_fields_body(bind_types), 0)
 
 		// -------- Assemble the methods array --------
 		string methods_json = "["
@@ -1307,6 +1593,8 @@ functions:
 		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"content\",\"type\":\"string\"}]", "void", setslot_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("renderSSR", "[]", "string", renderssr_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("setInput", "[{\"name\":\"attr\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setinput_bh)
+		if has_bind
+			methods_json = methods_json + "," + spec_method_inline_bh("setBound", "[{\"name\":\"field\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setbound_bh)
 		// User-declared events: handlers and functions: methods.
 		string event_methods = component_section_methods(ctx, section_text, "events")
 		if event_methods != ""
@@ -1314,6 +1602,11 @@ functions:
 		string function_methods = component_section_methods(ctx, section_text, "functions")
 		if function_methods != ""
 			methods_json = methods_json + "," + function_methods
+		string computed_json = computed_methods(ctx, computed, computed_names)
+		if template_error_code(computed_json) != ""
+			return template_error(ctx, template_error_code(computed_json))
+		if computed_json != ""
+			methods_json = methods_json + "," + computed_json
 		// client_init calls onMount() on every hydrated component
 		// (lifecycle.md §3.3); declaring it is optional.
 		if tag != "" and client != "off" and methods_json.indexOf("\"name\":\"onMount\"") == -1
@@ -1344,17 +1637,37 @@ functions:
 		// clean-server renders a custom tag in a request-time `.html` page by
 		// calling `<tag without hyphens>_render(attrs_json)` with the tag's
 		// attributes (bridge-host-classes.md §4.1).
-		if tag != ""
+		// A tag registered in tags: (UI-S008) gets its export from the
+		// registry, which wins over the component's own tag.
+		if tag != "" and registered_tag_class(tag) == ""
 			integer rx_p_attrs = _type_string(ctx)
 			integer rx_r_str = _type_string(ctx)
 			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
 			ui_helper_function(ctx, component_render_export(tag), rx_params, rx_r_str, render_export_body(name, input_lines), 3)
+		// cl-bind in a hydrated component (UI-B005): the browser runtime calls
+		// <tag>_bind(field, value) on each edit; it updates the component
+		// state and patches the island with the new render.
+		if has_bind and tag != "" and client != "off"
+			integer bx_p_field = _type_string(ctx)
+			integer bx_p_value = _type_string(ctx)
+			integer bx_r = _type_boolean(ctx)
+			string bx_params = "[{\"name\":\"field\",\"type_handle\":" + bx_p_field.toString() + "},{\"name\":\"value\",\"type_handle\":" + bx_p_value.toString() + "}]"
+			string instance_name = "instance_" + tag.replace("-", "_")
+			string bx_body = instance_name + ".setBound(field, value)\n"
+			bx_body = bx_body + "integer __patched = _ui_patch(\"[data-island='" + tag + "']\", " + instance_name + ".render())\n"
+			bx_body = bx_body + "return __patched == 0\n"
+			ui_helper_function(ctx, component_bind_export(tag), bx_params, bx_r, bx_body, 3)
 		return 0
 
 	// Export name the host looks up for a custom tag: the tag with its
 	// hyphens removed, plus `_render` (`my-card` → `mycard_render`).
 	string component_render_export(string tag)
 		return tag.replace("-", "") + "_render"
+
+	// Export the browser runtime calls for a cl-bind edit inside the island
+	// of `tag` (`my-form` → `myform_bind`, UI-B005).
+	string component_bind_export(string tag)
+		return tag.replace("-", "") + "_bind"
 
 	// (name, type) of each `inputs:` line, as "name type" lines. Accepts both
 	// `type name [= default]` and `name: type [= default]`.
@@ -1385,8 +1698,28 @@ functions:
 	// (camelCase name or its kebab-case form), converting the text to the
 	// declared type. Attributes that are not scalar inputs are ignored.
 	string set_input_body(string input_lines)
+		return set_name_types_body(input_name_types(input_lines), "attr")
+
+	// Body of setBound(field, value): assigns the state: / inputs: field
+	// named `field` ("|name:type|..." list), converting the text to its type.
+	string set_fields_body(string bind_types)
+		string name_types = ""
+		string remaining = bind_types.substring(1, bind_types.length())
+		while remaining.length() > 0
+			integer bar = remaining.indexOf("|")
+			string item = remaining.substring(0, bar)
+			remaining = remaining.substring(bar + 1, remaining.length())
+			integer colon = item.indexOf(":")
+			name_types = name_types + item.substring(0, colon) + " " + item.substring(colon + 1, item.length()) + "\n"
+		string body = set_name_types_body(name_types, "field")
+		return body
+
+	// Assignment chain for "name type" lines: the field named by the string
+	// parameter `param` (its camelCase or kebab-case name) gets `value`
+	// converted to its type; names of non-scalar fields are ignored.
+	string set_name_types_body(string name_types, string param)
 		string body = ""
-		string remaining = input_name_types(input_lines)
+		string remaining = name_types
 		while remaining.length() > 0
 			integer nl = remaining.indexOf("\n")
 			string entry = remaining.substring(0, nl)
@@ -1404,14 +1737,19 @@ functions:
 			else if input_type == "boolean"
 				converted = "value.toBoolean()"
 			if converted != ""
-				string cond = "attr == \"" + input_name + "\""
+				string cond = param + " == \"" + input_name + "\""
 				string kebab = camel_to_kebab(input_name)
 				if kebab != input_name
-					cond = cond + " or attr == \"" + kebab + "\""
+					cond = cond + " or " + param + " == \"" + kebab + "\""
 				string keyword = "if "
 				if body != ""
 					keyword = "else if "
-				body = body + keyword + cond + "\n\t" + input_name + " = " + converted + "\n"
+				// setBound reads `this.` so a field named like a parameter
+				// (`value`, `field`) is still the field.
+				string assigned = input_name
+				if param != "attr"
+					assigned = "this." + input_name
+				body = body + keyword + cond + "\n\t" + assigned + " = " + converted + "\n"
 		if body == ""
 			return "return\n"
 		return body
@@ -1877,6 +2215,314 @@ functions:
 		return result
 
 // ============================================================================
+// COMPUTED FIELDS
+// ============================================================================
+// A component's `computed:` section (frame-ui.ebnf computed_section) declares
+// derived values: `name = expression`, or `type name = expression` to give the
+// value a type (`any` otherwise). Each one becomes a method of the component
+// class that returns the expression, and every read of the name in the
+// template and in the events: / functions: handlers becomes a call of that
+// method — so a read always sees the current state. A computed value is
+// read-only: assigning it is FRAME-UI-E010; computed values that depend on
+// each other in a cycle are FRAME-UI-E011.
+
+functions:
+	// The computed: lines as "name\ttype\texpression\n" entries. A line
+	// without `= expression` gives an entry with an empty expression.
+	string computed_entries(string lines)
+		string result = ""
+		string remaining = lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string t = line.trim()
+			if t.length() > 0
+				string left = t
+				string expr = ""
+				integer eq = t.indexOf("=")
+				if eq != -1
+					left = t.substring(0, eq).trim()
+					expr = t.substring(eq + 1, t.length()).trim()
+				string name = left
+				string type_name = "any"
+				integer sp = left.lastIndexOf(" ")
+				if sp != -1
+					type_name = left.substring(0, sp).trim()
+					name = left.substring(sp + 1, left.length()).trim()
+				result = result + name + "\t" + type_name + "\t" + expr + "\n"
+		return result
+
+	// ",a,b," — the names of the computed entries.
+	string computed_name_list(string entries)
+		string result = ","
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			result = result + entry.substring(0, entry.indexOf("\t")) + ","
+		return result
+
+	// Field `index` (0 name, 1 type, 2 expression) of one computed entry.
+	string computed_part(string entry, integer index)
+		integer t1 = entry.indexOf("\t")
+		integer t2 = entry.indexOf("\t", t1 + 1)
+		if index == 0
+			return entry.substring(0, t1)
+		if index == 1
+			return entry.substring(t1 + 1, t2)
+		return entry.substring(t2 + 1, entry.length())
+
+	// The first non-blank character of s at or after pos ("" at the end).
+	string next_code_char(string s, integer pos)
+		integer i = pos
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch != " " and ch != "\t"
+				return ch
+			i = i + 1
+		return ""
+
+	// Index of the first non-blank character of s at or after pos.
+	integer next_code_index(string s, integer pos)
+		integer i = pos
+		while i < s.length()
+			string ch = s.substring(i, i + 1)
+			if ch != " " and ch != "\t"
+				return i
+			i = i + 1
+		return s.length()
+
+	// Clean code with every read of a computed name (`names` is ",a,b,")
+	// turned into a call of its method: `total` → `total()`,
+	// `this.total` → `this.total()`. String literal text is left alone,
+	// except its `{...}` interpolations. An assignment to a computed name
+	// leaves the E010 marker in the result.
+	string call_computed(string code, string names)
+		if names == ","
+			return code
+		string result = ""
+		integer i = 0
+		integer n = code.length()
+		while i < n
+			string c = code.substring(i, i + 1)
+			if c == "\""
+				// String literal: copy it, rewriting only its interpolations.
+				result = result + c
+				i = i + 1
+				boolean in_str = true
+				while in_str and i < n
+					string sc = code.substring(i, i + 1)
+					if sc == "\\" and i + 1 < n
+						result = result + code.substring(i, i + 2)
+						i = i + 2
+					else if sc == "\""
+						result = result + sc
+						i = i + 1
+						in_str = false
+					else if sc == "{"
+						integer close = matching_brace(code, i)
+						if close == -1
+							result = result + code.substring(i, n)
+							i = n
+						else
+							result = result + "{" + call_computed(code.substring(i + 1, close), names) + "}"
+							i = close + 1
+					else
+						result = result + sc
+						i = i + 1
+			else if is_ident_char(c) and (c < "0" or c > "9")
+				integer id_at = i
+				while i < n and is_ident_char(code.substring(i, i + 1))
+					i = i + 1
+				string ident = code.substring(id_at, i)
+				boolean is_ref = names.indexOf("," + ident + ",") != -1
+				if is_ref and id_at > 0
+					string before = code.substring(id_at - 1, id_at)
+					if is_ident_char(before)
+						is_ref = false
+					else if before == "."
+						// Only `this.name` is the component's own field.
+						is_ref = id_at >= 5 and code.substring(id_at - 5, id_at) == "this."
+						if is_ref and id_at > 5
+							is_ref = is_ident_char(code.substring(id_at - 6, id_at - 5)) == false and code.substring(id_at - 6, id_at - 5) != "."
+				if is_ref
+					string after = next_code_char(code, i)
+					if after == "("
+						is_ref = false
+					else if after == "="
+						integer eq_at = next_code_index(code, i)
+						if next_code_char(code, eq_at + 1) != "="
+							return template_error_marker("E010") + "\n"
+				result = result + ident
+				if is_ref
+					result = result + "()"
+			else
+				result = result + c
+				i = i + 1
+		return result
+
+	// The attribute name written before the quote at quote_pos inside a
+	// tag (`cl-if="..."` → "cl-if"), or "" when the quote is not a value.
+	string attr_name_before(string html, integer quote_pos)
+		integer i = quote_pos - 1
+		while i >= 0 and is_tag_space(html.substring(i, i + 1))
+			i = i - 1
+		if i < 0 or html.substring(i, i + 1) != "="
+			return ""
+		i = i - 1
+		while i >= 0 and is_tag_space(html.substring(i, i + 1))
+			i = i - 1
+		integer name_end = i + 1
+		boolean in_name = true
+		while in_name and i >= 0
+			string ch = html.substring(i, i + 1)
+			if is_tag_space(ch) or ch == "<" or ch == "\"" or ch == "'"
+				in_name = false
+			else
+				i = i - 1
+		return html.substring(i + 1, name_end)
+
+	// call_computed applied where a template holds code: `{...}`
+	// interpolations and the values of cl-if, cl-show and cl-iterate.
+	string template_call_computed(string html, string names)
+		if names == ","
+			return html
+		string result = ""
+		integer i = 0
+		integer n = html.length()
+		boolean in_tag = false
+		while i < n
+			string c = html.substring(i, i + 1)
+			if c == "{"
+				integer close = matching_brace(html, i)
+				if close == -1
+					result = result + html.substring(i, n)
+					i = n
+				else
+					result = result + "{" + call_computed(html.substring(i + 1, close), names) + "}"
+					i = close + 1
+			else if in_tag and (c == "\"" or c == "'")
+				integer end_quote = html.indexOf(c, i + 1)
+				if end_quote == -1
+					result = result + html.substring(i, n)
+					i = n
+				else
+					string value = html.substring(i + 1, end_quote)
+					string attr = attr_name_before(html, i)
+					if attr == "cl-if" or attr == "cl-show" or attr == "cl-iterate"
+						value = call_computed(value, names)
+					result = result + c + value + c
+					i = end_quote + 1
+			else
+				if c == "<"
+					in_tag = true
+				else if c == ">"
+					in_tag = false
+				result = result + c
+				i = i + 1
+		return result
+
+	// The text without the lines of its `<section_name>:` section (the
+	// header line and the lines nested under it).
+	string remove_section(string text, string section_name)
+		string result = ""
+		boolean in_section = false
+		integer section_indent = 0
+		string remaining = text
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = ""
+			if nl == -1
+				line = remaining
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string trimmed = line.trim()
+			if in_section and trimmed.length() > 0 and leading_tabs(line) <= section_indent
+				in_section = false
+			if not in_section
+				if trimmed == section_name + ":"
+					in_section = true
+					section_indent = leading_tabs(line)
+				else
+					result = result + line + "\n"
+		return result
+
+	// True when computed `name` reaches itself through the expressions of
+	// the computed entries (a dependency cycle).
+	boolean computed_in_cycle(string entries, string names, string name)
+		string visited = ","
+		string frontier = "," + name + ","
+		integer guard = 0
+		while frontier != "," and guard < 1000
+			guard = guard + 1
+			integer cut = frontier.indexOf(",", 1)
+			string current = frontier.substring(1, cut)
+			frontier = frontier.substring(cut, frontier.length())
+			string remaining = entries
+			while remaining.length() > 0
+				integer nl = remaining.indexOf("\n")
+				string entry = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+				if computed_part(entry, 0) == current
+					string called = call_computed(computed_part(entry, 2), names)
+					string other_names = names.substring(1, names.length())
+					while other_names.length() > 0
+						integer oc = other_names.indexOf(",")
+						string other = other_names.substring(0, oc)
+						other_names = other_names.substring(oc + 1, other_names.length())
+						if other != "" and computed_calls(called, other)
+							if other == name
+								return true
+							if visited.indexOf("," + other + ",") == -1
+								visited = visited + other + ","
+								frontier = frontier + other + ","
+		return false
+
+	// True when code (after call_computed) calls computed `name`.
+	boolean computed_calls(string code, string name)
+		integer pos = code.indexOf(name + "()")
+		while pos != -1
+			boolean starts = pos == 0
+			if not starts
+				string before = code.substring(pos - 1, pos)
+				starts = is_ident_char(before) == false and (before != "." or (pos >= 5 and code.substring(pos - 5, pos) == "this."))
+			if starts
+				return true
+			pos = code.indexOf(name + "()", pos + 1)
+		return false
+
+	// Class-spec method entries for the computed fields, "" when there are
+	// none, or the E010 / E011 marker.
+	string computed_methods(integer ctx, string entries, string names)
+		string result = ""
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			string name = computed_part(entry, 0)
+			string expr = call_computed(remove_state_dot(computed_part(entry, 2)), names)
+			if expr.trim() == "" or is_plain_identifier(name) == false
+				return template_error_marker("E012")
+			if template_error_code(expr) != ""
+				return expr
+			if computed_in_cycle(entries, names, name)
+				return template_error_marker("E011")
+			integer bh = _emit_stmt_from_source(ctx, "return " + expr + "\n", 0)
+			if result != ""
+				result = result + ","
+			result = result + spec_method_inline_bh(name, "[]", computed_part(entry, 1), bh)
+		return result
+
+// ============================================================================
 // HTML → CLEAN STATEMENTS
 // ============================================================================
 // One emitter serves every HTML source frame.ui compiles: `html:` blocks,
@@ -2177,7 +2823,63 @@ functions:
 			return render_screen_island(tag_content, target)
 		if tag_name.indexOf("-") != -1
 			return render_component(tag_name, tag_content, inner, target, page_mode, registry_json, has_data)
+		string lower_name = tag_name.toLowerCase()
+		// cl-bind (UI-B005) in a component template: the element shows the
+		// bound field and carries data-cl-bind='field'; in the browser the
+		// runtime writes edits back to the hydrated component's state.
+		string bind_fields = lookup_component("__bind", registry_json)
+		string bind_field = ""
+		string bind_kind = ""
+		string bind_check = ""
+		if bind_fields != "" and has_attr("<" + tag_content + ">", "cl-bind")
+			bind_field = extract_attr_value("<" + tag_content + ">", "cl-bind").trim()
+			if bind_field.startsWith("{") and bind_field.endsWith("}")
+				bind_field = bind_field.substring(1, bind_field.length() - 1).trim()
+			if lookup_component("__computed", registry_json).indexOf("," + bind_field + ",") != -1
+				return template_error_marker("E010") + "\n"
+			string bind_type = bound_field_type(bind_fields, bind_field)
+			if bind_type == ""
+				return template_error_marker("E013") + "\n"
+			string input_type = extract_attr_value("<" + tag_content + ">", "type").toLowerCase()
+			tag_content = drop_attr(tag_content, "cl-bind")
+			if lower_name == "input" and input_type == "checkbox"
+				bind_kind = "checked"
+				bind_check = bind_field
+				if bind_type != "boolean"
+					bind_check = "(" + bind_field + ").toString() == \"true\""
+				tag_content = drop_attr(tag_content, "checked")
+			else if lower_name == "input" and input_type == "radio"
+				bind_kind = "checked"
+				bind_check = "(" + bind_field + ").toString() == \"" + clean_literal(extract_attr_value("<" + tag_content + ">", "value")) + "\""
+				tag_content = drop_attr(tag_content, "checked")
+			else if lower_name == "textarea"
+				bind_kind = "text"
+			else if lower_name == "select"
+				bind_kind = "select"
+			else
+				bind_kind = "value"
+				tag_content = drop_attr(tag_content, "value")
+		// cl-client (UI-B013): hydration mode of the element's subtree.
+		string client_mode = ""
+		if has_attr("<" + tag_content + ">", "cl-client")
+			client_mode = extract_attr_value("<" + tag_content + ">", "cl-client").trim()
+			if ",off,on,visible,idle,only,".indexOf("," + client_mode + ",") == -1 or client_mode == ""
+				return template_error_marker("E015") + "\n"
+			tag_content = drop_attr(tag_content, "cl-client")
+			if client_mode == "off"
+				client_mode = ""
+			else
+				// The page loads the browser runtime and frontend.wasm.
+				_build_state_set("frame.ui:hydrated", "1")
 		string attrs = html_attributes(tag_content, page_mode)
+		if client_mode != ""
+			attrs = join_attrs(attrs, "data-client='" + client_mode + "'")
+		if bind_field != ""
+			attrs = join_attrs(attrs, "data-cl-bind='" + bind_field + "'")
+			if bind_kind == "value"
+				attrs = join_attrs(attrs, "value='\" + _html_escape((" + bind_field + ").toString()) + \"'")
+			else if bind_kind == "select"
+				attrs = join_attrs(attrs, "data-cl-value='\" + _html_escape((" + bind_field + ").toString()) + \"'")
 		if page_mode
 			if tag_name == "iframe" and has_attr("<" + tag_content + ">", "cl-preview")
 				attrs = join_attrs(attrs, "data-cl-preview='true'")
@@ -2186,13 +2888,35 @@ functions:
 				attrs = join_attrs(attrs, "data-cl-stream='" + attr_value_fragment(stream_url) + "'")
 		if variant == "hidden"
 			attrs = hide_attrs(attrs)
+		// <style scoped> in a component template (UI-B017): every element of
+		// the template carries the component's scope attribute, and the
+		// style's selectors are narrowed to it.
+		string scope = lookup_component("__scope", registry_json)
+		boolean scoped_style = lower_name == "style" and scope != "" and has_attr("<" + tag_content + ">", "scoped")
+		if scoped_style
+			attrs = html_attributes(drop_bool_attr(tag_content, "scoped"), page_mode)
+		else if scope != "" and lower_name != "style"
+			attrs = join_attrs(attrs, scope_attr(scope))
 		string result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + ">\"")
-		string lower_name = tag_name.toLowerCase()
-		if lower_name == "style"
+		if bind_kind == "checked"
+			result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + "\"")
+			result = result + "if " + bind_check + "\n\t" + append_stmt(target, "\" checked\"")
+			result = result + append_stmt(target, "\">\"")
+		if bind_kind == "text"
+			result = result + append_stmt(target, "_html_escape((" + bind_field + ").toString())")
+		else if bind_kind == "select"
+			// The option whose value is the bound field is selected.
+			result = result + "if true\n\tstring __cl_options = \"\"\n"
+			result = result + indent_lines(html_nodes(inner, "__cl_options", page_mode, registry_json, has_data, preserve))
+			result = result + "\t" + append_stmt(target, "_ui_select_value(__cl_options, (" + bind_field + ").toString())")
+		else if lower_name == "style"
 			// Raw text element: CSS braces are not interpolation, the content
-			// is copied as written.
-			if inner.length() > 0
-				result = result + append_stmt(target, "\"" + clean_literal(inner) + "\"")
+			// is copied as written (scoped: with its selectors narrowed).
+			string css = inner
+			if scoped_style
+				css = css_scope(inner, "[" + scope_attr(scope) + "]")
+			if css.length() > 0
+				result = result + append_stmt(target, "\"" + clean_literal(css) + "\"")
 		else
 			boolean inner_preserve = preserve or lower_name == "pre" or lower_name == "textarea"
 			if inner_preserve or inner.trim().length() > 0
@@ -2256,6 +2980,11 @@ functions:
 	//   E003  an attribute frame-ui.ebnf does not allow
 	//   E004  a <script> element (UI-C001)
 	//   E005  an unknown cl-validate rule (UI-B012)
+	//   E010  an assignment to (or cl-bind of) a computed value
+	//   E011  computed values that depend on each other in a cycle
+	//   E012  a malformed computed: line
+	//   E013  cl-bind naming no state / inputs field of the component
+	//   E015  a cl-client value that is not a hydration mode
 	string template_error_marker(string code)
 		return "__FRAME_UI_" + code + "__"
 
@@ -2267,7 +2996,7 @@ functions:
 
 	// The code of the first template error marker in source, "" when none.
 	string template_error_code(string source)
-		list<string> codes = ["E003", "E004", "E005"]
+		list<string> codes = ["E003", "E004", "E005", "E010", "E011", "E012", "E013", "E015"]
 		integer i = 0
 		while i < codes.length()
 			if source.indexOf(template_error_marker(codes[i])) != -1
@@ -2280,6 +3009,16 @@ functions:
 			return plugin_error(ctx, "FRAME-UI-E004", "<script> is not allowed in frame.ui templates (frame-ui-semantics UI-C001). Page logic goes in Clean: a companion load() for data, functions: handlers wired with onclick=\"name\" and the ui.* bridges for DOM updates.")
 		if code == "E005"
 			return plugin_error(ctx, "FRAME-UI-E005", "unknown cl-validate rule (frame-ui-semantics UI-B012). Supported rules: required, email.")
+		if code == "E010"
+			return plugin_error(ctx, "FRAME-UI-E010", "a computed value is read-only: it cannot be assigned or bound with cl-bind (frame-ui.ebnf computed_section). Change the state it is computed from instead.")
+		if code == "E011"
+			return plugin_error(ctx, "FRAME-UI-E011", "computed values depend on each other in a cycle (frame-ui.ebnf computed_section). A computed value may read other computed values only when none of them reads it back.")
+		if code == "E012"
+			return plugin_error(ctx, "FRAME-UI-E012", "a computed: line must be `name = expression` or `type name = expression` (frame-ui.ebnf computed_field).")
+		if code == "E013"
+			return plugin_error(ctx, "FRAME-UI-E013", "cl-bind must name a state: or inputs: field of the component (frame-ui-semantics UI-B005), for example cl-bind=\"name\" for `string name = \"\"`.")
+		if code == "E015"
+			return plugin_error(ctx, "FRAME-UI-E015", "cl-client takes a hydration mode: off, on, visible, idle or only (frame-ui.ebnf cl_client_directive, UI-B013).")
 		return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
 
 	// Add display:none to an attribute fragment, inside an existing style
@@ -2331,6 +3070,8 @@ functions:
 	// tag attributes, pass the children as slot content and append render().
 	string render_component(string tag_name, string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data)
 		string class_name = lookup_component(tag_name, registry_json)
+		if class_name == ""
+			class_name = registered_tag_class(tag_name)
 		if class_name == ""
 			class_name = tag_to_class_name(tag_name)
 		string client = extract_attr_value("<" + tag_content + ">", "client")
@@ -2516,6 +3257,246 @@ functions:
 				else
 					remaining = ""
 		return result
+
+	// The registry_json a component's template is rendered with: no tags,
+	// plus "__scope" (the component class) when the template holds a
+	// <style scoped> (UI-B017).
+	string component_template_context(string class_name, string markup, string bind_types, string computed_names)
+		string ctx = ""
+		if markup.indexOf("<style") != -1 and markup.indexOf("scoped") != -1
+			ctx = "\"__scope\":\"" + class_name + "\""
+		// cl-bind (UI-B005): the bindable fields as "|name:type|..." and the
+		// computed names (read-only).
+		if markup.indexOf("cl-bind") != -1
+			if ctx != ""
+				ctx = ctx + ","
+			ctx = ctx + "\"__bind\":\"" + bind_types + "\",\"__computed\":\"" + computed_names + "\""
+		return "{" + ctx + "}"
+
+	// The type of field `name` in a "|name:type|..." list, "" when absent.
+	string bound_field_type(string bind_types, string name)
+		integer at = bind_types.indexOf("|" + name + ":")
+		if at == -1
+			return ""
+		integer type_start = at + name.length() + 2
+		integer type_end = bind_types.indexOf("|", type_start)
+		if type_end == -1
+			return ""
+		return bind_types.substring(type_start, type_end)
+
+	// "|name:type|..." for the state: / inputs: lines of a component.
+	string bindable_fields(string field_lines, string input_lines)
+		string result = "|"
+		string remaining = field_lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string entry = component_field_entry(line, input_lines)
+			if entry != ""
+				result = result + extract_json_field(entry, "name") + ":" + extract_json_field(entry, "type") + "|"
+		return result
+
+	// Tag text without the attribute attr_name (with its value, if any).
+	string drop_attr(string tag_content, string attr_name)
+		integer n = tag_content.length()
+		integer i = 0
+		while i < n and is_tag_space(tag_content.substring(i, i + 1)) == false and tag_content.substring(i, i + 1) != "/"
+			i = i + 1
+		while i < n
+			string ch = tag_content.substring(i, i + 1)
+			if is_tag_space(ch) or ch == "/"
+				i = i + 1
+			else if ch == "{"
+				integer close = matching_brace(tag_content, i)
+				if close == -1
+					return tag_content
+				i = close + 1
+			else
+				integer name_start = i
+				while i < n and is_tag_space(tag_content.substring(i, i + 1)) == false and tag_content.substring(i, i + 1) != "=" and tag_content.substring(i, i + 1) != "/"
+					i = i + 1
+				string name = tag_content.substring(name_start, i)
+				integer j = i
+				while j < n and is_tag_space(tag_content.substring(j, j + 1))
+					j = j + 1
+				integer attr_end = i
+				if j < n and tag_content.substring(j, j + 1) == "="
+					j = j + 1
+					while j < n and is_tag_space(tag_content.substring(j, j + 1))
+						j = j + 1
+					if j < n
+						string q = tag_content.substring(j, j + 1)
+						if q == "\"" or q == "'"
+							integer qe = tag_content.indexOf(q, j + 1)
+							if qe == -1
+								j = n
+							else
+								j = qe + 1
+						else if q == "{"
+							integer be = matching_brace(tag_content, j)
+							if be == -1
+								j = n
+							else
+								j = be + 1
+						else
+							while j < n and is_tag_space(tag_content.substring(j, j + 1)) == false
+								j = j + 1
+					attr_end = j
+				if name == attr_name
+					return (tag_content.substring(0, name_start).trimEnd() + " " + tag_content.substring(attr_end, n).trimStart()).trimEnd()
+				i = attr_end
+		return tag_content
+
+	// The attribute that marks an element of a scoped component (UI-B017).
+	string scope_attr(string scope)
+		return "data-cl-scope='" + scope + "'"
+
+	// Tag text without the boolean attribute `name` (`style scoped` →
+	// `style`); quoted values are left alone.
+	string drop_bool_attr(string tag_content, string name)
+		string result = ""
+		integer i = 0
+		integer n = tag_content.length()
+		while i < n
+			string c = tag_content.substring(i, i + 1)
+			if c == "\"" or c == "'"
+				integer q = tag_content.indexOf(c, i + 1)
+				if q == -1
+					q = n - 1
+				result = result + tag_content.substring(i, q + 1)
+				i = q + 1
+			else if is_tag_space(c) and tag_content.substring(i + 1, n).startsWith(name)
+				integer after = i + 1 + name.length()
+				string next = ""
+				if after < n
+					next = tag_content.substring(after, after + 1)
+				if next == "" or is_tag_space(next) or next == "/"
+					i = after
+				else
+					result = result + c
+					i = i + 1
+			else
+				result = result + c
+				i = i + 1
+		return result
+
+	// CSS with every rule's selectors narrowed to elements carrying `attr`
+	// (UI-B017): the attribute selector is added to the last compound of
+	// each selector, before its pseudo-classes (`.a .b:hover` →
+	// `.a .b[attr]:hover`). Rules inside @media / @supports / @container /
+	// @layer blocks are scoped too; other at-rules (@keyframes, @font-face,
+	// @import, ...) and comments are copied as written.
+	string css_scope(string css, string attr)
+		string result = ""
+		integer i = 0
+		integer n = css.length()
+		while i < n
+			string c = css.substring(i, i + 1)
+			if c == "/" and i + 1 < n and css.substring(i + 1, i + 2) == "*"
+				integer end_comment = css.indexOf("*/", i + 2)
+				if end_comment == -1
+					end_comment = n - 2
+				result = result + css.substring(i, end_comment + 2)
+				i = end_comment + 2
+			else if is_tag_space(c) or c == "}"
+				result = result + c
+				i = i + 1
+			else
+				// A prelude up to `{` or `;`.
+				integer j = i
+				boolean scanning = true
+				while scanning and j < n
+					string pc = css.substring(j, j + 1)
+					if pc == "{" or pc == ";"
+						scanning = false
+					else
+						j = j + 1
+				string prelude = css.substring(i, j)
+				if j >= n
+					result = result + prelude
+					i = n
+				else if css.substring(j, j + 1) == ";"
+					result = result + prelude + ";"
+					i = j + 1
+				else
+					integer close = matching_brace(css, j)
+					if close == -1
+						close = n - 1
+					string block = css.substring(j + 1, close)
+					string head = prelude.trim()
+					if head.startsWith("@")
+						string at_name = head.toLowerCase()
+						if at_name.startsWith("@media") or at_name.startsWith("@supports") or at_name.startsWith("@container") or at_name.startsWith("@layer")
+							result = result + prelude + "{" + css_scope(block, attr) + "}"
+						else
+							result = result + prelude + "{" + block + "}"
+					else
+						result = result + css_scope_selectors(prelude, attr) + "{" + block + "}"
+					i = close + 1
+		return result
+
+	// A comma-separated selector list with each selector scoped.
+	string css_scope_selectors(string prelude, string attr)
+		string result = ""
+		integer depth = 0
+		integer part_start = 0
+		integer i = 0
+		while i <= prelude.length()
+			string c = ""
+			if i < prelude.length()
+				c = prelude.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			if i == prelude.length() or (c == "," and depth == 0)
+				string part = prelude.substring(part_start, i)
+				if result != ""
+					result = result + ","
+				string lead = part.substring(0, part.length() - part.trimStart().length())
+				string tail = part.substring(part.trimEnd().length(), part.length())
+				result = result + lead + css_scope_selector(part.trim(), attr) + tail
+				part_start = i + 1
+			i = i + 1
+		return result
+
+	// One selector with `attr` added to its last compound.
+	string css_scope_selector(string selector, string attr)
+		if selector == ""
+			return selector
+		integer depth = 0
+		integer compound_start = 0
+		integer i = 0
+		while i < selector.length()
+			string c = selector.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			else if depth == 0 and (c == " " or c == ">" or c == "+" or c == "~")
+				compound_start = i + 1
+			i = i + 1
+		// Before the first pseudo-class / pseudo-element of that compound.
+		integer insert_at = selector.length()
+		depth = 0
+		i = compound_start
+		boolean searching = true
+		while searching and i < selector.length()
+			string c = selector.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			else if c == ":" and depth == 0
+				insert_at = i
+				searching = false
+			i = i + 1
+		return selector.substring(0, insert_at) + attr + selector.substring(insert_at, selector.length())
 
 	string lookup_component(string tag_name, string registry_json)
 		string pattern = "\"" + tag_name + "\":\""
@@ -2804,6 +3785,16 @@ functions:
 			return true
 		if html.indexOf("client=\"idle\"") != -1
 			return true
+		// cl-client on an element (UI-B013), any active mode.
+		integer cl_at = html.indexOf("cl-client")
+		while cl_at != -1
+			integer tag_open = html.lastIndexOf("<", cl_at)
+			integer tag_close = html.indexOf(">", cl_at)
+			if tag_open != -1 and tag_close != -1
+				string mode = extract_attr_value(html.substring(tag_open, tag_close + 1), "cl-client").trim()
+				if mode == "on" or mode == "visible" or mode == "idle" or mode == "only"
+					return true
+			cl_at = html.indexOf("cl-client", cl_at + 9)
 		return false
 
 // ============================================================================

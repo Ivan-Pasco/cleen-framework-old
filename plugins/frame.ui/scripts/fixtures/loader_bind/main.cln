@@ -1,0 +1,6 @@
+package: LoaderBind
+    version: "1.0.0"
+
+    target: server
+        plugins: [frame.ui]
+        entry: app/ui/web/pages/index.html

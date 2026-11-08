@@ -38,6 +38,19 @@ function compile(name) {
 	return fs.readFileSync(out);
 }
 
+// Build the fixture project fixtures/<name>/ (a main.cln manifest) and
+// return its frontend.wasm — the client build with client_init.
+function compileProject(name) {
+	const dir = path.join(WORK, name);
+	fs.cpSync(path.join(FIXTURES, name), dir, { recursive: true });
+	try {
+		execFileSync(CLN, ['compile', 'main.cln', '-o', 'app.wasm', '--plugins'], { cwd: dir, stdio: 'pipe' });
+	} catch (err) {
+		throw new Error('compile failed: ' + name + '\n' + String(err.stdout || '') + String(err.stderr || ''));
+	}
+	return fs.readFileSync(path.join(dir, 'frontend.wasm'));
+}
+
 // A DOMParser over the shim: the parsed document's body holds the markup
 // between <body> and </body> (or all of it).
 class ShimDOMParser {
@@ -151,6 +164,7 @@ async function main() {
 	const stringsWasm = compile('loader_strings');
 	const eventsWasm = compile('loader_events');
 	const startErrorWasm = compile('loader_start_error');
+	const bindWasm = compileProject('loader_bind');
 
 	console.log('loader runtime:');
 
@@ -192,6 +206,47 @@ async function main() {
 			const want = crypto.createHmac(alg, key).update(data).digest('hex');
 			eq(got, want, 'hmac ' + alg + ' key length ' + key.length);
 		}
+	});
+
+	await test('password hashing is not a browser bridge (server-only bcrypt)', async () => {
+		// function-registry.toml: _crypto_hash_password / _crypto_verify_password
+		// are hosts = ["server"]; a browser build calling them fails at compile
+		// time, so the runtime must not offer a different (non-bcrypt) hash.
+		const { imports } = await boot('<div id="src">x</div><div id="num">1</div><div id="out"></div>', stringsWasm);
+		const env = imports().env;
+		eq(typeof env._crypto_hash_password, 'undefined', 'env._crypto_hash_password');
+		eq(typeof env._crypto_verify_password, 'undefined', 'env._crypto_verify_password');
+	});
+
+	await test('cl-bind: edits in a hydrated island update the component state and its render', async () => {
+		const { doc, win, logs } = await boot("<div data-island='ui-profile' data-client='on'></div><input id='loose' data-cl-bind='name'>", bindWasm);
+		const out = () => doc.querySelector('#out').textContent;
+		eq(out(), '/false/0/', 'initial render');
+		const name = doc.querySelector('#name');
+		name.value = 'bob';
+		name.dispatchEvent(new Event('input', { bubbles: true }));
+		eq(out(), 'bob/false/0/', 'text input');
+		eq(doc.querySelector('#name2').value, 'bob', 'other control bound to the same field');
+		const agree = doc.querySelector('#agree');
+		agree.checked = true;
+		agree.dispatchEvent(new Event('change', { bubbles: true }));
+		eq(out(), 'bob/true/0/', 'checkbox');
+		const radio = doc.querySelector('#s2');
+		radio.checked = true;
+		radio.dispatchEvent(new Event('change', { bubbles: true }));
+		eq(out(), 'bob/true/2/', 'radio');
+		const color = doc.querySelector('#color');
+		color.value = 'blue';
+		color.dispatchEvent(new Event('change', { bubbles: true }));
+		eq(out(), 'bob/true/2/blue', 'select');
+		eq(doc.querySelector('#color').getAttribute('data-cl-value'), 'blue', 'select data-cl-value');
+		// A text control does not commit on 'change' a second time, and a
+		// bound control outside an island (not hydrated) does nothing.
+		const loose = doc.querySelector('#loose');
+		loose.value = 'zed';
+		loose.dispatchEvent(new Event('input', { bubbles: true }));
+		eq(out(), 'bob/true/2/blue', 'control outside the island');
+		eq(logs.error.length, 0, 'console errors: ' + logs.error.join(' | '));
 	});
 
 	await test('list.push_f64 never writes past the list capacity', async () => {

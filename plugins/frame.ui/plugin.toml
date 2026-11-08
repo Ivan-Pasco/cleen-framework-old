@@ -49,7 +49,9 @@ name            = "frontend.wasm"
 purpose         = "client_hydration"
 emit            = { from_module = "client_only_build" }
 output_relative = "{output_dir}/frontend.wasm"
-required_when   = "has_build_state.frame.ui:components"
+# frame.ui:hydrated is set by every component tag and every element with an
+# active cl-client mode (UI-B013), whose handlers live in frontend.wasm.
+required_when   = "has_build_state.frame.ui:hydrated"
 public          = true
 content_type    = "application/wasm"
 
@@ -118,7 +120,7 @@ assemble = "assemble_typed"
 lint = "lint_project"
 
 [handles]
-blocks = ["component", "page", "html", "styles"]
+blocks = ["component", "page", "html", "styles", "tags"]
 
 # Per-block typed-emission declarations (typed-emission.md §2.1).
 # version = 3 is required when expansion_version = "3.0.0". Every block the
@@ -140,6 +142,13 @@ version = 3
 # styles <Name>: — frame-ui.ebnf §4 styles_block. Emits no Clean code; the
 # block's CSS feeds build_state["frame.ui.theme.css"] (theme.css artifact).
 [blocks.styles]
+expand = "expand_block_typed"
+version = 3
+
+# tags: — frame-ui.ebnf §6 tags_block, the manual component tag registry in
+# /config/tags.cln (UI-S008). Registers tags in build_state["frame.ui:tags"]
+# and emits an alias class + render export per registered tag.
+[blocks.tags]
 expand = "expand_block_typed"
 version = 3
 
@@ -245,6 +254,7 @@ functions = [
 
   # DOM Manipulation (for client-side updates)
   { name = "_ui_update_element", params = ["string", "string"], returns = "integer", description = "Update element content: selector, new content", expand_strings = true, signature = "_ui_update_element(selector, content)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
+  { name = "_ui_patch", params = ["string", "string"], returns = "integer", description = "Diff and incrementally patch DOM subtree: selector, new HTML (preserves focus, scroll, selection)", expand_strings = true, signature = "_ui_patch(selector, newHtml)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
   { name = "_ui_update_attr", params = ["string", "string", "string"], returns = "integer", description = "Update element attribute: selector, attr name, value", expand_strings = true, signature = "_ui_update_attr(selector, attr, value)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
 
   # Form Binding
@@ -365,7 +375,7 @@ functions = [
 
 [language]
 # Block-level keywords that start a declaration
-blocks = ["component", "page", "html", "styles"]
+blocks = ["component", "page", "html", "styles", "tags"]
 
 # Keywords used within plugin context
 keywords = [
@@ -470,7 +480,6 @@ functions = [
   { name = "ui.iframeInject", signature = "ui.iframeInject(selector, script) -> boolean", description = "Inject script into iframe", maps_to = "_ui_iframe_inject", params = ["string", "string"], returns = "boolean" },
 
   # --- §FEXT-5: Incremental DOM patching (browser-only; server is a no-op) ---
-  { name = "_ui_patch", params = ["string", "string"], returns = "integer", description = "Diff and incrementally patch DOM subtree: selector, new HTML (preserves focus, scroll, selection)", expand_strings = true, signature = "_ui_patch(selector, newHtml)", hosts = ["browser"] },
   { name = "ui.patch", signature = "ui.patch(selector, newHtml)", description = "Incrementally patch DOM subtree without full re-render", maps_to = "_ui_patch", params = ["string", "string"], returns = "integer" },
 
   # --- Keyboard shortcuts ---
@@ -550,7 +559,8 @@ completions = [
 # Render targets nest under app/ui/ so the "folder name = plugin name after the dot"
 # rule holds: frame.ui → app/ui/, with web/, mobile/, desktop/ as target subfolders
 # and shared/ for cross-platform code.
-owns = ["app/ui", "app/ui/shared", "app/ui/web", "app/ui/web/pages", "app/ui/web/components", "app/ui/web/layouts"]
+# config/ holds the manual component tag registry config/tags.cln (UI-S008).
+owns = ["app/ui", "app/ui/shared", "app/ui/web", "app/ui/web/pages", "app/ui/web/components", "app/ui/web/layouts", "config"]
 
 # Automatically create folders when plugin is imported
 auto_create = true
