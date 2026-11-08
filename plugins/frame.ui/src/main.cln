@@ -1287,7 +1287,7 @@ functions:
 				string escaped_fb = escape_attr_text(fallback_html)
 				render_body_source = render_body_source + append_stmt("__html", "\"<div data-component='" + name + "' data-fallback='" + escaped_fb + "'>\"")
 			string markup = template_call_computed(template_strip_state(strip_block_indent(html_content)), computed_names)
-			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, "{}", false)
+			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, component_template_context(name, markup), false)
 			if fallback_html != ""
 				render_body_source = render_body_source + append_stmt("__html", "\"</div>\"")
 		render_body_source = render_body_source + "return __html\n"
@@ -2506,13 +2506,25 @@ functions:
 				attrs = join_attrs(attrs, "data-cl-stream='" + attr_value_fragment(stream_url) + "'")
 		if variant == "hidden"
 			attrs = hide_attrs(attrs)
-		string result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + ">\"")
 		string lower_name = tag_name.toLowerCase()
+		// <style scoped> in a component template (UI-B017): every element of
+		// the template carries the component's scope attribute, and the
+		// style's selectors are narrowed to it.
+		string scope = lookup_component("__scope", registry_json)
+		boolean scoped_style = lower_name == "style" and scope != "" and has_attr("<" + tag_content + ">", "scoped")
+		if scoped_style
+			attrs = html_attributes(drop_bool_attr(tag_content, "scoped"), page_mode)
+		else if scope != "" and lower_name != "style"
+			attrs = join_attrs(attrs, scope_attr(scope))
+		string result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + ">\"")
 		if lower_name == "style"
 			// Raw text element: CSS braces are not interpolation, the content
-			// is copied as written.
-			if inner.length() > 0
-				result = result + append_stmt(target, "\"" + clean_literal(inner) + "\"")
+			// is copied as written (scoped: with its selectors narrowed).
+			string css = inner
+			if scoped_style
+				css = css_scope(inner, "[" + scope_attr(scope) + "]")
+			if css.length() > 0
+				result = result + append_stmt(target, "\"" + clean_literal(css) + "\"")
 		else
 			boolean inner_preserve = preserve or lower_name == "pre" or lower_name == "textarea"
 			if inner_preserve or inner.trim().length() > 0
@@ -2848,6 +2860,160 @@ functions:
 				else
 					remaining = ""
 		return result
+
+	// The registry_json a component's template is rendered with: no tags,
+	// plus "__scope" (the component class) when the template holds a
+	// <style scoped> (UI-B017).
+	string component_template_context(string class_name, string markup)
+		if markup.indexOf("<style") == -1 or markup.indexOf("scoped") == -1
+			return "{}"
+		return "{\"__scope\":\"" + class_name + "\"}"
+
+	// The attribute that marks an element of a scoped component (UI-B017).
+	string scope_attr(string scope)
+		return "data-cl-scope='" + scope + "'"
+
+	// Tag text without the boolean attribute `name` (`style scoped` →
+	// `style`); quoted values are left alone.
+	string drop_bool_attr(string tag_content, string name)
+		string result = ""
+		integer i = 0
+		integer n = tag_content.length()
+		while i < n
+			string c = tag_content.substring(i, i + 1)
+			if c == "\"" or c == "'"
+				integer q = tag_content.indexOf(c, i + 1)
+				if q == -1
+					q = n - 1
+				result = result + tag_content.substring(i, q + 1)
+				i = q + 1
+			else if is_tag_space(c) and tag_content.substring(i + 1, n).startsWith(name)
+				integer after = i + 1 + name.length()
+				string next = ""
+				if after < n
+					next = tag_content.substring(after, after + 1)
+				if next == "" or is_tag_space(next) or next == "/"
+					i = after
+				else
+					result = result + c
+					i = i + 1
+			else
+				result = result + c
+				i = i + 1
+		return result
+
+	// CSS with every rule's selectors narrowed to elements carrying `attr`
+	// (UI-B017): the attribute selector is added to the last compound of
+	// each selector, before its pseudo-classes (`.a .b:hover` →
+	// `.a .b[attr]:hover`). Rules inside @media / @supports / @container /
+	// @layer blocks are scoped too; other at-rules (@keyframes, @font-face,
+	// @import, ...) and comments are copied as written.
+	string css_scope(string css, string attr)
+		string result = ""
+		integer i = 0
+		integer n = css.length()
+		while i < n
+			string c = css.substring(i, i + 1)
+			if c == "/" and i + 1 < n and css.substring(i + 1, i + 2) == "*"
+				integer end_comment = css.indexOf("*/", i + 2)
+				if end_comment == -1
+					end_comment = n - 2
+				result = result + css.substring(i, end_comment + 2)
+				i = end_comment + 2
+			else if is_tag_space(c) or c == "}"
+				result = result + c
+				i = i + 1
+			else
+				// A prelude up to `{` or `;`.
+				integer j = i
+				boolean scanning = true
+				while scanning and j < n
+					string pc = css.substring(j, j + 1)
+					if pc == "{" or pc == ";"
+						scanning = false
+					else
+						j = j + 1
+				string prelude = css.substring(i, j)
+				if j >= n
+					result = result + prelude
+					i = n
+				else if css.substring(j, j + 1) == ";"
+					result = result + prelude + ";"
+					i = j + 1
+				else
+					integer close = matching_brace(css, j)
+					if close == -1
+						close = n - 1
+					string block = css.substring(j + 1, close)
+					string head = prelude.trim()
+					if head.startsWith("@")
+						string at_name = head.toLowerCase()
+						if at_name.startsWith("@media") or at_name.startsWith("@supports") or at_name.startsWith("@container") or at_name.startsWith("@layer")
+							result = result + prelude + "{" + css_scope(block, attr) + "}"
+						else
+							result = result + prelude + "{" + block + "}"
+					else
+						result = result + css_scope_selectors(prelude, attr) + "{" + block + "}"
+					i = close + 1
+		return result
+
+	// A comma-separated selector list with each selector scoped.
+	string css_scope_selectors(string prelude, string attr)
+		string result = ""
+		integer depth = 0
+		integer part_start = 0
+		integer i = 0
+		while i <= prelude.length()
+			string c = ""
+			if i < prelude.length()
+				c = prelude.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			if i == prelude.length() or (c == "," and depth == 0)
+				string part = prelude.substring(part_start, i)
+				if result != ""
+					result = result + ","
+				string lead = part.substring(0, part.length() - part.trimStart().length())
+				string tail = part.substring(part.trimEnd().length(), part.length())
+				result = result + lead + css_scope_selector(part.trim(), attr) + tail
+				part_start = i + 1
+			i = i + 1
+		return result
+
+	// One selector with `attr` added to its last compound.
+	string css_scope_selector(string selector, string attr)
+		if selector == ""
+			return selector
+		integer depth = 0
+		integer compound_start = 0
+		integer i = 0
+		while i < selector.length()
+			string c = selector.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			else if depth == 0 and (c == " " or c == ">" or c == "+" or c == "~")
+				compound_start = i + 1
+			i = i + 1
+		// Before the first pseudo-class / pseudo-element of that compound.
+		integer insert_at = selector.length()
+		depth = 0
+		i = compound_start
+		boolean searching = true
+		while searching and i < selector.length()
+			string c = selector.substring(i, i + 1)
+			if c == "(" or c == "["
+				depth = depth + 1
+			else if c == ")" or c == "]"
+				depth = depth - 1
+			else if c == ":" and depth == 0
+				insert_at = i
+				searching = false
+			i = i + 1
+		return selector.substring(0, insert_at) + attr + selector.substring(insert_at, selector.length())
 
 	string lookup_component(string tag_name, string registry_json)
 		string pattern = "\"" + tag_name + "\":\""

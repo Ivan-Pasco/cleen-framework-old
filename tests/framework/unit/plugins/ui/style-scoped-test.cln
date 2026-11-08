@@ -1,0 +1,39 @@
+// Test: frame.ui — <style scoped> in a component template.
+// Spec: frame-ui-semantics UI-B017 — a <style scoped> block inside a
+// component applies its rules only to that component's rendered elements:
+// the framework adds a component attribute to each element and narrows the
+// rule selectors to it. A plain <style> stays global.
+// Regression: the scoped style was copied verbatim, so its rules applied to
+// the whole page.
+
+plugins:
+	frame.ui
+
+component: tag="ui-note"
+	html:
+		<div class="note"><style scoped>.note p, a:hover { color: red; } @media (min-width: 4px) { .note > p::first-line { x: y; } } @keyframes k { from { top: 0; } }</style><p>hi</p></div>
+
+component: tag="ui-plain"
+	html:
+		<div class="plain"><style>.plain { color: blue; }</style><p>yo</p></div>
+
+page NotePage:
+	<main>
+		<ui-note></ui-note>
+		<ui-plain></ui-plain>
+	</main>
+
+start:
+	NotePage page = NotePage()
+	string out = page.render()
+	string s = "[data-cl-scope='UiNote']"
+	string css = ".note p" + s + ", a" + s + ":hover \{ color: red; \} @media (min-width: 4px) \{ .note > p" + s + "::first-line \{ x: y; \} \} @keyframes k \{ from \{ top: 0; \} \}"
+	string note = "<div class='note' data-cl-scope='UiNote'><style>" + css + "</style><p data-cl-scope='UiNote'>hi</p></div>"
+	string plain = "<div class='plain'><style>.plain \{ color: blue; \}</style><p>yo</p></div>"
+	string want = "<main>" + note + plain + "</main>"
+	if out == want
+		printl("PASS: ui-style-scoped")
+	else
+		printl("FAIL: ui-style-scoped")
+		printl("  Expected: " + want)
+		printl("  Actual:   " + out)
