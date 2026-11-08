@@ -49,7 +49,9 @@ name            = "frontend.wasm"
 purpose         = "client_hydration"
 emit            = { from_module = "client_only_build" }
 output_relative = "{output_dir}/frontend.wasm"
-required_when   = "has_build_state.frame.ui:components"
+# frame.ui:hydrated is set by every component tag and every element with an
+# active cl-client mode (UI-B013), whose handlers live in frontend.wasm.
+required_when   = "has_build_state.frame.ui:hydrated"
 public          = true
 content_type    = "application/wasm"
 
@@ -252,6 +254,7 @@ functions = [
 
   # DOM Manipulation (for client-side updates)
   { name = "_ui_update_element", params = ["string", "string"], returns = "integer", description = "Update element content: selector, new content", expand_strings = true, signature = "_ui_update_element(selector, content)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
+  { name = "_ui_patch", params = ["string", "string"], returns = "integer", description = "Diff and incrementally patch DOM subtree: selector, new HTML (preserves focus, scroll, selection)", expand_strings = true, signature = "_ui_patch(selector, newHtml)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
   { name = "_ui_update_attr", params = ["string", "string", "string"], returns = "integer", description = "Update element attribute: selector, attr name, value", expand_strings = true, signature = "_ui_update_attr(selector, attr, value)", hosts = ["browser", "server"], browser_impl = "real", server_impl = "stub", server_stub = { returns = "0" } },
 
   # Form Binding
@@ -477,7 +480,6 @@ functions = [
   { name = "ui.iframeInject", signature = "ui.iframeInject(selector, script) -> boolean", description = "Inject script into iframe", maps_to = "_ui_iframe_inject", params = ["string", "string"], returns = "boolean" },
 
   # --- §FEXT-5: Incremental DOM patching (browser-only; server is a no-op) ---
-  { name = "_ui_patch", params = ["string", "string"], returns = "integer", description = "Diff and incrementally patch DOM subtree: selector, new HTML (preserves focus, scroll, selection)", expand_strings = true, signature = "_ui_patch(selector, newHtml)", hosts = ["browser"] },
   { name = "ui.patch", signature = "ui.patch(selector, newHtml)", description = "Incrementally patch DOM subtree without full re-render", maps_to = "_ui_patch", params = ["string", "string"], returns = "integer" },
 
   # --- Keyboard shortcuts ---

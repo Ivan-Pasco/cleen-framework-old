@@ -755,6 +755,66 @@
 	// before the module loads, so none of them runs as inline script.
 	normalizeEventAttributes(document);
 
+	// --- cl-bind (UI-B005) ---
+	// An edit to an element with data-cl-bind inside a hydrated component
+	// island (data-island='tag') calls the module export <tag>_bind(field,
+	// value) (the tag without hyphens), which sets the component's state
+	// field and patches the island with the new render. A checkbox sends
+	// "true" / "false", a radio its value once it is checked, any other
+	// control its value. Outside an island cl-bind does nothing: the
+	// component is not hydrated.
+	function boundControlKind(el) {
+		const tag = (el.tagName || '').toUpperCase();
+		const type = (el.getAttribute('type') || '').toLowerCase();
+		if (tag === 'INPUT' && (type === 'checkbox' || type === 'radio')) return type;
+		if (tag === 'SELECT') return 'select';
+		if (tag === 'TEXTAREA') return 'textarea';
+		return 'value';
+	}
+
+	// After a patch, set the live state of the island's bound controls from
+	// the rendered markup (a control's value / checked state does not
+	// follow its attribute once the user has edited it). The control being
+	// edited keeps what the user typed.
+	function syncBoundControls(root, except) {
+		root.querySelectorAll('[data-cl-bind]').forEach((el) => {
+			if (el === except) return;
+			const kind = boundControlKind(el);
+			if (kind === 'checkbox' || kind === 'radio') el.checked = el.hasAttribute('checked');
+			else if (kind === 'select') el.value = el.getAttribute('data-cl-value') || '';
+			else if (kind === 'textarea') el.value = el.textContent;
+			else el.value = el.getAttribute('value') || '';
+		});
+	}
+
+	function onBoundEdit(e) {
+		const el = eventElement(e);
+		if (!el || !el.hasAttribute('data-cl-bind') || !instance) return;
+		const kind = boundControlKind(el);
+		// Text controls follow every keystroke ('input'); checkboxes, radios
+		// and selects report their change once ('change').
+		const changeKind = kind === 'checkbox' || kind === 'radio' || kind === 'select';
+		if ((e.type === 'change') !== changeKind) return;
+		const island = el.closest('[data-island]');
+		if (!island) return;
+		let value;
+		if (kind === 'checkbox') value = el.checked ? 'true' : 'false';
+		else if (kind === 'radio') {
+			if (!el.checked) return;
+			value = el.getAttribute('value') || '';
+		} else value = el.value;
+		const name = island.getAttribute('data-island').replace(/-/g, '') + '_bind';
+		if (invokeExport(name, 'cl-bind', writeString(el.getAttribute('data-cl-bind')), writeString(value))) {
+			syncBoundControls(island, el);
+		}
+		checkMemoryGrowth();
+	}
+
+	function initBindings() {
+		document.addEventListener('input', onBoundEdit);
+		document.addEventListener('change', onBoundEdit);
+	}
+
 	// --- §FEXT-5: Incremental DOM Patching Helper ---
 	// Recursively diffs oldNode against newNode, applying the minimum set of
 	// mutations. Keyed elements (key="X") are matched by key, not position.
@@ -3317,6 +3377,9 @@
 		// UI-B006 / UI-B007: dispatch declarative event attributes
 		// (data-on-* / on<event>="handler") to the module's exports.
 		initDeclarativeEvents();
+
+		// UI-B005: cl-bind edits write back to the hydrated component.
+		initBindings();
 
 		// Call _start — registers event handlers via _ui_on_event.
 		// Wrapped in try/catch so an error during startup triggers the error boundary

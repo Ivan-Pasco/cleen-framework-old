@@ -117,6 +117,14 @@ functions:
 		integer an_r = _type_string(ctx)
 		string an_params = "[{\"name\":\"attrs\",\"type_handle\":" + an_p_attrs.toString() + "}]"
 		ui_helper_function(ctx, "_ui_attr_names", an_params, an_r, attr_names_body(), 1)
+		// _ui_select_value(options, value): the <option> markup of a select
+		// bound with cl-bind, with `selected` on the option whose value is
+		// `value` (UI-B005).
+		integer sv_p_options = _type_string(ctx)
+		integer sv_p_value = _type_string(ctx)
+		integer sv_r = _type_string(ctx)
+		string sv_params = "[{\"name\":\"options\",\"type_handle\":" + sv_p_options.toString() + "},{\"name\":\"value\",\"type_handle\":" + sv_p_value.toString() + "}]"
+		ui_helper_function(ctx, "_ui_select_value", sv_params, sv_r, select_value_body(), 1)
 		// _ui_head_links(page: string) -> string
 		// UI-S009 theme auto-link: when the project declares a `styles` block,
 		// adds <link rel="stylesheet" href="/theme.css"> before the page's
@@ -208,6 +216,28 @@ functions:
 		b = b + "\telse\n"
 		b = b + "\t\ti = i + 1\n"
 		b = b + "return names\n"
+		return b
+
+	// Body source of the _ui_select_value helper (see emit_ui_helpers_typed).
+	// frame.ui renders option attributes single-quoted (`value='x'`), with
+	// the value HTML-escaped.
+	string select_value_body()
+		string b = "string wanted = \"value='\" + _html_escape(value) + \"'\"\n"
+		b = b + "string out = \"\"\n"
+		b = b + "string rest = options\n"
+		b = b + "integer at = rest.indexOf(\"<option\")\n"
+		b = b + "while at != -1\n"
+		b = b + "\tinteger close = rest.indexOf(\">\", at)\n"
+		b = b + "\tif close == -1\n"
+		b = b + "\t\tat = -1\n"
+		b = b + "\telse\n"
+		b = b + "\t\tstring open_tag = rest.substring(at, close)\n"
+		b = b + "\t\tout = out + rest.substring(0, at) + open_tag\n"
+		b = b + "\t\tif open_tag.indexOf(\" \" + wanted) != -1 and open_tag.indexOf(\" selected\") == -1\n"
+		b = b + "\t\t\tout = out + \" selected\"\n"
+		b = b + "\t\trest = rest.substring(close, rest.length())\n"
+		b = b + "\t\tat = rest.indexOf(\"<option\")\n"
+		b = b + "return out + rest\n"
 		return b
 
 	// Body source of the _ui_add_root_class helper (see emit_ui_helpers_typed).
@@ -1454,6 +1484,9 @@ functions:
 				_build_state_set("frame.ui:components", entry)
 			else
 				_build_state_set("frame.ui:components", components_state + ";" + entry)
+			// frontend.wasm is built for every project with a component tag
+			// or a cl-client element (plugin.toml [[artifacts]]).
+			_build_state_set("frame.ui:hydrated", "1")
 			string render_export = component_render_export(tag)
 			string component_obj = "{\"tag\":\"" + tag + "\",\"class\":\"" + name + "\",\"hydration\":\"" + client + "\",\"render_export\":\"" + render_export + "\"}"
 			string manifest_state = _build_state_get("frame.ui.components.json")
@@ -1517,6 +1550,10 @@ functions:
 				fields_json = fields_json + "," + sf_entry
 		fields_json = fields_json + "]"
 
+		// cl-bind (UI-B005) can bind any state: / inputs: field.
+		string bind_types = bindable_fields(state_fields, input_lines)
+		boolean has_bind = html_content.indexOf("cl-bind") != -1
+
 		// -------- Build render() method body source --------
 		string render_body_source = "string __html = \"\"\n"
 		if html_content != ""
@@ -1524,7 +1561,7 @@ functions:
 				string escaped_fb = escape_attr_text(fallback_html)
 				render_body_source = render_body_source + append_stmt("__html", "\"<div data-component='" + name + "' data-fallback='" + escaped_fb + "'>\"")
 			string markup = template_call_computed(template_strip_state(strip_block_indent(html_content)), computed_names)
-			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, component_template_context(name, markup), false)
+			render_body_source = render_body_source + html_to_stmts(markup, "__html", false, component_template_context(name, markup, bind_types, computed_names), false)
 			if fallback_html != ""
 				render_body_source = render_body_source + append_stmt("__html", "\"</div>\"")
 		render_body_source = render_body_source + "return __html\n"
@@ -1544,6 +1581,11 @@ functions:
 		// setInput(attr, value): a tag attribute written as text, converted
 		// to the declared input type (UI-C010).
 		integer setinput_bh = _emit_stmt_from_source(ctx, set_input_body(input_lines), 0)
+		// setBound(field, value): a cl-bind edit from the browser, converted
+		// to the field's declared type (UI-B005).
+		integer setbound_bh = 0
+		if has_bind
+			setbound_bh = _emit_stmt_from_source(ctx, set_fields_body(bind_types), 0)
 
 		// -------- Assemble the methods array --------
 		string methods_json = "["
@@ -1551,6 +1593,8 @@ functions:
 		methods_json = methods_json + "," + spec_method_inline_bh("setSlot", "[{\"name\":\"content\",\"type\":\"string\"}]", "void", setslot_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("renderSSR", "[]", "string", renderssr_bh)
 		methods_json = methods_json + "," + spec_method_inline_bh("setInput", "[{\"name\":\"attr\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setinput_bh)
+		if has_bind
+			methods_json = methods_json + "," + spec_method_inline_bh("setBound", "[{\"name\":\"field\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"string\"}]", "void", setbound_bh)
 		// User-declared events: handlers and functions: methods.
 		string event_methods = component_section_methods(ctx, section_text, "events")
 		if event_methods != ""
@@ -1600,12 +1644,30 @@ functions:
 			integer rx_r_str = _type_string(ctx)
 			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
 			ui_helper_function(ctx, component_render_export(tag), rx_params, rx_r_str, render_export_body(name, input_lines), 3)
+		// cl-bind in a hydrated component (UI-B005): the browser runtime calls
+		// <tag>_bind(field, value) on each edit; it updates the component
+		// state and patches the island with the new render.
+		if has_bind and tag != "" and client != "off"
+			integer bx_p_field = _type_string(ctx)
+			integer bx_p_value = _type_string(ctx)
+			integer bx_r = _type_boolean(ctx)
+			string bx_params = "[{\"name\":\"field\",\"type_handle\":" + bx_p_field.toString() + "},{\"name\":\"value\",\"type_handle\":" + bx_p_value.toString() + "}]"
+			string instance_name = "instance_" + tag.replace("-", "_")
+			string bx_body = instance_name + ".setBound(field, value)\n"
+			bx_body = bx_body + "integer __patched = _ui_patch(\"[data-island='" + tag + "']\", " + instance_name + ".render())\n"
+			bx_body = bx_body + "return __patched == 0\n"
+			ui_helper_function(ctx, component_bind_export(tag), bx_params, bx_r, bx_body, 3)
 		return 0
 
 	// Export name the host looks up for a custom tag: the tag with its
 	// hyphens removed, plus `_render` (`my-card` → `mycard_render`).
 	string component_render_export(string tag)
 		return tag.replace("-", "") + "_render"
+
+	// Export the browser runtime calls for a cl-bind edit inside the island
+	// of `tag` (`my-form` → `myform_bind`, UI-B005).
+	string component_bind_export(string tag)
+		return tag.replace("-", "") + "_bind"
 
 	// (name, type) of each `inputs:` line, as "name type" lines. Accepts both
 	// `type name [= default]` and `name: type [= default]`.
@@ -1636,8 +1698,28 @@ functions:
 	// (camelCase name or its kebab-case form), converting the text to the
 	// declared type. Attributes that are not scalar inputs are ignored.
 	string set_input_body(string input_lines)
+		return set_name_types_body(input_name_types(input_lines), "attr")
+
+	// Body of setBound(field, value): assigns the state: / inputs: field
+	// named `field` ("|name:type|..." list), converting the text to its type.
+	string set_fields_body(string bind_types)
+		string name_types = ""
+		string remaining = bind_types.substring(1, bind_types.length())
+		while remaining.length() > 0
+			integer bar = remaining.indexOf("|")
+			string item = remaining.substring(0, bar)
+			remaining = remaining.substring(bar + 1, remaining.length())
+			integer colon = item.indexOf(":")
+			name_types = name_types + item.substring(0, colon) + " " + item.substring(colon + 1, item.length()) + "\n"
+		string body = set_name_types_body(name_types, "field")
+		return body
+
+	// Assignment chain for "name type" lines: the field named by the string
+	// parameter `param` (its camelCase or kebab-case name) gets `value`
+	// converted to its type; names of non-scalar fields are ignored.
+	string set_name_types_body(string name_types, string param)
 		string body = ""
-		string remaining = input_name_types(input_lines)
+		string remaining = name_types
 		while remaining.length() > 0
 			integer nl = remaining.indexOf("\n")
 			string entry = remaining.substring(0, nl)
@@ -1655,14 +1737,19 @@ functions:
 			else if input_type == "boolean"
 				converted = "value.toBoolean()"
 			if converted != ""
-				string cond = "attr == \"" + input_name + "\""
+				string cond = param + " == \"" + input_name + "\""
 				string kebab = camel_to_kebab(input_name)
 				if kebab != input_name
-					cond = cond + " or attr == \"" + kebab + "\""
+					cond = cond + " or " + param + " == \"" + kebab + "\""
 				string keyword = "if "
 				if body != ""
 					keyword = "else if "
-				body = body + keyword + cond + "\n\t" + input_name + " = " + converted + "\n"
+				// setBound reads `this.` so a field named like a parameter
+				// (`value`, `field`) is still the field.
+				string assigned = input_name
+				if param != "attr"
+					assigned = "this." + input_name
+				body = body + keyword + cond + "\n\t" + assigned + " = " + converted + "\n"
 		if body == ""
 			return "return\n"
 		return body
@@ -2736,7 +2823,63 @@ functions:
 			return render_screen_island(tag_content, target)
 		if tag_name.indexOf("-") != -1
 			return render_component(tag_name, tag_content, inner, target, page_mode, registry_json, has_data)
+		string lower_name = tag_name.toLowerCase()
+		// cl-bind (UI-B005) in a component template: the element shows the
+		// bound field and carries data-cl-bind='field'; in the browser the
+		// runtime writes edits back to the hydrated component's state.
+		string bind_fields = lookup_component("__bind", registry_json)
+		string bind_field = ""
+		string bind_kind = ""
+		string bind_check = ""
+		if bind_fields != "" and has_attr("<" + tag_content + ">", "cl-bind")
+			bind_field = extract_attr_value("<" + tag_content + ">", "cl-bind").trim()
+			if bind_field.startsWith("{") and bind_field.endsWith("}")
+				bind_field = bind_field.substring(1, bind_field.length() - 1).trim()
+			if lookup_component("__computed", registry_json).indexOf("," + bind_field + ",") != -1
+				return template_error_marker("E010") + "\n"
+			string bind_type = bound_field_type(bind_fields, bind_field)
+			if bind_type == ""
+				return template_error_marker("E013") + "\n"
+			string input_type = extract_attr_value("<" + tag_content + ">", "type").toLowerCase()
+			tag_content = drop_attr(tag_content, "cl-bind")
+			if lower_name == "input" and input_type == "checkbox"
+				bind_kind = "checked"
+				bind_check = bind_field
+				if bind_type != "boolean"
+					bind_check = "(" + bind_field + ").toString() == \"true\""
+				tag_content = drop_attr(tag_content, "checked")
+			else if lower_name == "input" and input_type == "radio"
+				bind_kind = "checked"
+				bind_check = "(" + bind_field + ").toString() == \"" + clean_literal(extract_attr_value("<" + tag_content + ">", "value")) + "\""
+				tag_content = drop_attr(tag_content, "checked")
+			else if lower_name == "textarea"
+				bind_kind = "text"
+			else if lower_name == "select"
+				bind_kind = "select"
+			else
+				bind_kind = "value"
+				tag_content = drop_attr(tag_content, "value")
+		// cl-client (UI-B013): hydration mode of the element's subtree.
+		string client_mode = ""
+		if has_attr("<" + tag_content + ">", "cl-client")
+			client_mode = extract_attr_value("<" + tag_content + ">", "cl-client").trim()
+			if ",off,on,visible,idle,only,".indexOf("," + client_mode + ",") == -1 or client_mode == ""
+				return template_error_marker("E015") + "\n"
+			tag_content = drop_attr(tag_content, "cl-client")
+			if client_mode == "off"
+				client_mode = ""
+			else
+				// The page loads the browser runtime and frontend.wasm.
+				_build_state_set("frame.ui:hydrated", "1")
 		string attrs = html_attributes(tag_content, page_mode)
+		if client_mode != ""
+			attrs = join_attrs(attrs, "data-client='" + client_mode + "'")
+		if bind_field != ""
+			attrs = join_attrs(attrs, "data-cl-bind='" + bind_field + "'")
+			if bind_kind == "value"
+				attrs = join_attrs(attrs, "value='\" + _html_escape((" + bind_field + ").toString()) + \"'")
+			else if bind_kind == "select"
+				attrs = join_attrs(attrs, "data-cl-value='\" + _html_escape((" + bind_field + ").toString()) + \"'")
 		if page_mode
 			if tag_name == "iframe" and has_attr("<" + tag_content + ">", "cl-preview")
 				attrs = join_attrs(attrs, "data-cl-preview='true'")
@@ -2745,7 +2888,6 @@ functions:
 				attrs = join_attrs(attrs, "data-cl-stream='" + attr_value_fragment(stream_url) + "'")
 		if variant == "hidden"
 			attrs = hide_attrs(attrs)
-		string lower_name = tag_name.toLowerCase()
 		// <style scoped> in a component template (UI-B017): every element of
 		// the template carries the component's scope attribute, and the
 		// style's selectors are narrowed to it.
@@ -2756,7 +2898,18 @@ functions:
 		else if scope != "" and lower_name != "style"
 			attrs = join_attrs(attrs, scope_attr(scope))
 		string result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + ">\"")
-		if lower_name == "style"
+		if bind_kind == "checked"
+			result = append_stmt(target, "\"<" + join_attrs(tag_name, attrs) + "\"")
+			result = result + "if " + bind_check + "\n\t" + append_stmt(target, "\" checked\"")
+			result = result + append_stmt(target, "\">\"")
+		if bind_kind == "text"
+			result = result + append_stmt(target, "_html_escape((" + bind_field + ").toString())")
+		else if bind_kind == "select"
+			// The option whose value is the bound field is selected.
+			result = result + "if true\n\tstring __cl_options = \"\"\n"
+			result = result + indent_lines(html_nodes(inner, "__cl_options", page_mode, registry_json, has_data, preserve))
+			result = result + "\t" + append_stmt(target, "_ui_select_value(__cl_options, (" + bind_field + ").toString())")
+		else if lower_name == "style"
 			// Raw text element: CSS braces are not interpolation, the content
 			// is copied as written (scoped: with its selectors narrowed).
 			string css = inner
@@ -2831,6 +2984,7 @@ functions:
 	//   E011  computed values that depend on each other in a cycle
 	//   E012  a malformed computed: line
 	//   E013  cl-bind naming no state / inputs field of the component
+	//   E015  a cl-client value that is not a hydration mode
 	string template_error_marker(string code)
 		return "__FRAME_UI_" + code + "__"
 
@@ -2842,7 +2996,7 @@ functions:
 
 	// The code of the first template error marker in source, "" when none.
 	string template_error_code(string source)
-		list<string> codes = ["E003", "E004", "E005", "E010", "E011", "E012", "E013"]
+		list<string> codes = ["E003", "E004", "E005", "E010", "E011", "E012", "E013", "E015"]
 		integer i = 0
 		while i < codes.length()
 			if source.indexOf(template_error_marker(codes[i])) != -1
@@ -2863,6 +3017,8 @@ functions:
 			return plugin_error(ctx, "FRAME-UI-E012", "a computed: line must be `name = expression` or `type name = expression` (frame-ui.ebnf computed_field).")
 		if code == "E013"
 			return plugin_error(ctx, "FRAME-UI-E013", "cl-bind must name a state: or inputs: field of the component (frame-ui-semantics UI-B005), for example cl-bind=\"name\" for `string name = \"\"`.")
+		if code == "E015"
+			return plugin_error(ctx, "FRAME-UI-E015", "cl-client takes a hydration mode: off, on, visible, idle or only (frame-ui.ebnf cl_client_directive, UI-B013).")
 		return plugin_error(ctx, "FRAME-UI-E003", bad_attribute_message())
 
 	// Add display:none to an attribute fragment, inside an existing style
@@ -3105,10 +3261,96 @@ functions:
 	// The registry_json a component's template is rendered with: no tags,
 	// plus "__scope" (the component class) when the template holds a
 	// <style scoped> (UI-B017).
-	string component_template_context(string class_name, string markup)
-		if markup.indexOf("<style") == -1 or markup.indexOf("scoped") == -1
-			return "{}"
-		return "{\"__scope\":\"" + class_name + "\"}"
+	string component_template_context(string class_name, string markup, string bind_types, string computed_names)
+		string ctx = ""
+		if markup.indexOf("<style") != -1 and markup.indexOf("scoped") != -1
+			ctx = "\"__scope\":\"" + class_name + "\""
+		// cl-bind (UI-B005): the bindable fields as "|name:type|..." and the
+		// computed names (read-only).
+		if markup.indexOf("cl-bind") != -1
+			if ctx != ""
+				ctx = ctx + ","
+			ctx = ctx + "\"__bind\":\"" + bind_types + "\",\"__computed\":\"" + computed_names + "\""
+		return "{" + ctx + "}"
+
+	// The type of field `name` in a "|name:type|..." list, "" when absent.
+	string bound_field_type(string bind_types, string name)
+		integer at = bind_types.indexOf("|" + name + ":")
+		if at == -1
+			return ""
+		integer type_start = at + name.length() + 2
+		integer type_end = bind_types.indexOf("|", type_start)
+		if type_end == -1
+			return ""
+		return bind_types.substring(type_start, type_end)
+
+	// "|name:type|..." for the state: / inputs: lines of a component.
+	string bindable_fields(string field_lines, string input_lines)
+		string result = "|"
+		string remaining = field_lines
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string entry = component_field_entry(line, input_lines)
+			if entry != ""
+				result = result + extract_json_field(entry, "name") + ":" + extract_json_field(entry, "type") + "|"
+		return result
+
+	// Tag text without the attribute attr_name (with its value, if any).
+	string drop_attr(string tag_content, string attr_name)
+		integer n = tag_content.length()
+		integer i = 0
+		while i < n and is_tag_space(tag_content.substring(i, i + 1)) == false and tag_content.substring(i, i + 1) != "/"
+			i = i + 1
+		while i < n
+			string ch = tag_content.substring(i, i + 1)
+			if is_tag_space(ch) or ch == "/"
+				i = i + 1
+			else if ch == "{"
+				integer close = matching_brace(tag_content, i)
+				if close == -1
+					return tag_content
+				i = close + 1
+			else
+				integer name_start = i
+				while i < n and is_tag_space(tag_content.substring(i, i + 1)) == false and tag_content.substring(i, i + 1) != "=" and tag_content.substring(i, i + 1) != "/"
+					i = i + 1
+				string name = tag_content.substring(name_start, i)
+				integer j = i
+				while j < n and is_tag_space(tag_content.substring(j, j + 1))
+					j = j + 1
+				integer attr_end = i
+				if j < n and tag_content.substring(j, j + 1) == "="
+					j = j + 1
+					while j < n and is_tag_space(tag_content.substring(j, j + 1))
+						j = j + 1
+					if j < n
+						string q = tag_content.substring(j, j + 1)
+						if q == "\"" or q == "'"
+							integer qe = tag_content.indexOf(q, j + 1)
+							if qe == -1
+								j = n
+							else
+								j = qe + 1
+						else if q == "{"
+							integer be = matching_brace(tag_content, j)
+							if be == -1
+								j = n
+							else
+								j = be + 1
+						else
+							while j < n and is_tag_space(tag_content.substring(j, j + 1)) == false
+								j = j + 1
+					attr_end = j
+				if name == attr_name
+					return (tag_content.substring(0, name_start).trimEnd() + " " + tag_content.substring(attr_end, n).trimStart()).trimEnd()
+				i = attr_end
+		return tag_content
 
 	// The attribute that marks an element of a scoped component (UI-B017).
 	string scope_attr(string scope)
@@ -3543,6 +3785,16 @@ functions:
 			return true
 		if html.indexOf("client=\"idle\"") != -1
 			return true
+		// cl-client on an element (UI-B013), any active mode.
+		integer cl_at = html.indexOf("cl-client")
+		while cl_at != -1
+			integer tag_open = html.lastIndexOf("<", cl_at)
+			integer tag_close = html.indexOf(">", cl_at)
+			if tag_open != -1 and tag_close != -1
+				string mode = extract_attr_value(html.substring(tag_open, tag_close + 1), "cl-client").trim()
+				if mode == "on" or mode == "visible" or mode == "idle" or mode == "only"
+					return true
+			cl_at = html.indexOf("cl-client", cl_at + 9)
 		return false
 
 // ============================================================================

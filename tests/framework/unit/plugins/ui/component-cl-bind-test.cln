@@ -1,0 +1,47 @@
+// Test: frame.ui — cl-bind two-way binding in a component (UI-B005) and
+// cl-client on an element (UI-B013).
+// Spec: frame-ui.ebnf cl_bind_directive / cl_client_directive,
+// frame-ui-semantics UI-B005 (cl-bind binds a form input to component state;
+// it needs client hydration) and UI-B013 (cl-client="mode" sets the
+// hydration mode of an element's subtree).
+//   - Server render: each bound element shows its field (value, checked,
+//     textarea text, selected option) and carries data-cl-bind='field'.
+//   - Browser edit: the runtime calls the island's <tag>_bind(field, value)
+//     export, which sets the field (converted to its type) on the hydrated
+//     instance; the next render shows it.
+//   - cl-client="on" renders as data-client='on'; cl-client="off" adds
+//     nothing.
+// Regression: both directives were parsed and dropped.
+
+plugins:
+	frame.ui
+
+component: tag="ui-profile" client="on"
+	state:
+		string name = "ann"
+		boolean agree = true
+		integer size = 2
+		string bio = "a<b"
+		string color = "blue"
+	html:
+		<form><input type="text" cl-bind="name" value="old"><input type="checkbox" cl-bind="agree"><input type="radio" name="s" value="1" cl-bind="size"><input type="radio" name="s" value="2" cl-bind="size"><textarea cl-bind="bio">x</textarea><select cl-bind="color"><option value="red">R</option><option value="blue">B</option></select><p>{name}/{size.toString()}</p></form>
+
+page ProfilePage:
+	<main><section cl-client="on"><button onclick="noop">n</button></section><p cl-client="off">s</p><ui-profile client="on"></ui-profile></main>
+
+start:
+	ProfilePage page = ProfilePage()
+	string out = page.render()
+	string form = "<form><input type='text' data-cl-bind='name' value='ann'><input type='checkbox' data-cl-bind='agree' checked><input type='radio' name='s' value='1' data-cl-bind='size'><input type='radio' name='s' value='2' data-cl-bind='size' checked><textarea data-cl-bind='bio'>a&lt;b</textarea><select data-cl-bind='color' data-cl-value='blue'><option value='red'>R</option><option value='blue' selected>B</option></select><p>ann/2</p></form>"
+	string want = "<main><section data-client='on'><button data-on-click='noop'>n</button></section><p>s</p><div data-island='ui-profile' data-client='on'>" + form + "</div></main>"
+	boolean ok_render = out == want
+	boolean ok_bind = uiprofile_bind("name", "bob") and uiprofile_bind("size", "1") and uiprofile_bind("agree", "false")
+	string after = instance_ui_profile.render()
+	boolean ok_after = after.contains("value='bob'") and after.contains("<p>bob/1</p>") and after.contains("data-cl-bind='agree'>") and after.contains("value='1' data-cl-bind='size' checked")
+	if ok_render and ok_bind and ok_after
+		printl("PASS: ui-component-cl-bind")
+	else
+		printl("FAIL: ui-component-cl-bind")
+		printl("  Expected: " + want)
+		printl("  Actual:   " + out)
+		printl("  After:    " + after)

@@ -59,6 +59,10 @@ One document-level listener per event type dispatches to `instance.exports[name]
 
 Modifiers: `.prevent`, `.stop` (no ancestor handlers run), `.once`, `.passive` (no `preventDefault`), `.enter` / `.escape` / `.space` (key filter), `.left` / `.right` (mouse button filter). `focus`, `blur`, `mouseenter`, `mouseleave`, `pointerenter`, `pointerleave` and `scroll` do not bubble: only the element's own handler runs.
 
+### Two-way binding (`cl-bind`, UI-B005)
+
+frame.ui renders a bound control with `data-cl-bind='field'` and the field's current value (`value`, `checked`, textarea text, or `data-cl-value` plus a `selected` option for a select). Inside a hydrated component island (`data-island='tag'`) an edit calls the export `<tag without hyphens>_bind(field, value)`: text controls on every `input` event, checkboxes (`"true"` / `"false"`), radios (their value, once checked) and selects on `change`. The export sets the component's field and patches the island with the new render; the other bound controls in the island are then set to the rendered values. Outside an island `cl-bind` does nothing (the component is not hydrated).
+
 Tests: `node scripts/test_event_dispatch.mjs` (compiles `scripts/fixtures/*.cln` with `$CLEEN_CLN` or `~/.cleen/bin/cln`).
 
 ### Event Context (inside handler)
