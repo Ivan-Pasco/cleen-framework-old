@@ -111,6 +111,12 @@ functions:
 		integer ag_r = _type_string(ctx)
 		string ag_params = "[{\"name\":\"attrs\",\"type_handle\":" + ag_p_attrs.toString() + "},{\"name\":\"name\",\"type_handle\":" + ag_p_name.toString() + "}]"
 		ui_helper_function(ctx, "_ui_attr_get", ag_params, ag_r, attr_get_body(), 1)
+		// _ui_attr_names(attrs): the attribute names of that JSON object, one
+		// per line (a registered tag's render export, UI-S008).
+		integer an_p_attrs = _type_string(ctx)
+		integer an_r = _type_string(ctx)
+		string an_params = "[{\"name\":\"attrs\",\"type_handle\":" + an_p_attrs.toString() + "}]"
+		ui_helper_function(ctx, "_ui_attr_names", an_params, an_r, attr_names_body(), 1)
 		// _ui_head_links(page: string) -> string
 		// UI-S009 theme auto-link: when the project declares a `styles` block,
 		// adds <link rel="stylesheet" href="/theme.css"> before the page's
@@ -172,6 +178,36 @@ functions:
 		b = b + "\t\tout = out + c\n"
 		b = b + "\t\ti = i + 1\n"
 		b = b + "return out\n"
+		return b
+
+	// Body source of the _ui_attr_names helper (see emit_ui_helpers_typed):
+	// the keys of the JSON object `attrs` (string values only), each
+	// followed by a line break.
+	string attr_names_body()
+		string b = "string names = \"\"\n"
+		b = b + "boolean is_key = true\n"
+		b = b + "integer i = 0\n"
+		b = b + "while i < attrs.length()\n"
+		b = b + "\tif attrs.substring(i, i + 1) == \"\\\"\"\n"
+		b = b + "\t\tinteger j = i + 1\n"
+		b = b + "\t\tstring text = \"\"\n"
+		b = b + "\t\tboolean scanning = true\n"
+		b = b + "\t\twhile scanning and j < attrs.length()\n"
+		b = b + "\t\t\tstring d = attrs.substring(j, j + 1)\n"
+		b = b + "\t\t\tif d == \"\\\\\"\n"
+		b = b + "\t\t\t\tj = j + 2\n"
+		b = b + "\t\t\telse if d == \"\\\"\"\n"
+		b = b + "\t\t\t\tscanning = false\n"
+		b = b + "\t\t\telse\n"
+		b = b + "\t\t\t\ttext = text + d\n"
+		b = b + "\t\t\t\tj = j + 1\n"
+		b = b + "\t\tif is_key\n"
+		b = b + "\t\t\tnames = names + text + \"\\n\"\n"
+		b = b + "\t\tis_key = is_key == false\n"
+		b = b + "\t\ti = j + 1\n"
+		b = b + "\telse\n"
+		b = b + "\t\ti = i + 1\n"
+		b = b + "return names\n"
 		return b
 
 	// Body source of the _ui_add_root_class helper (see emit_ui_helpers_typed).
@@ -239,7 +275,195 @@ functions:
 		if block_name == "styles"
 			return expand_styles_typed(ctx, attrs_json, body)
 
+		// tags: block — frame-ui.ebnf §6 tags_block, the manual component tag
+		// registry in /config/tags.cln (UI-S008).
+		if block_name == "tags"
+			return expand_tags_typed(ctx, body)
+
 		return 0
+
+// ============================================================================
+// TAGS REGISTRY BLOCK — frame-ui.ebnf §6 (tags_block), UI-S008
+// ============================================================================
+// /config/tags.cln maps custom tags to component files:
+//     tags:
+//         "app-header": "app/ui/web/components/Header"
+// The component is the class the file names (Header). A registered tag
+// renders that component wherever a component tag renders (UI-C010), in
+// addition to the tags derived from component names, and the registration
+// wins over the derived name for the same tag. assemble reads the registry
+// from the project files before any block is expanded and keeps it in
+// build_state["frame.ui:tags"] ({"tag":"Class",...}), so every template sees
+// it whatever order the files are compiled in. The tags: block itself
+// validates its entries, adds them to the registry (a single-file build has
+// no assemble step), emits each tag's request-time render export
+// <tag without hyphens>_render(attrs) (bridge-host-classes.md §4.1) and, when
+// the class derived from the tag differs from the registered class, that
+// class as a subclass of it (for HTML entry pages, compiled before assemble).
+
+functions:
+	integer expand_tags_typed(integer ctx, string body)
+		_ctx_set_error_context(ctx, "PLUGIN_UI_TAGS", "expand_tags")
+		string entries = tags_registry_entries(body)
+		if entries.startsWith("!")
+			return plugin_error(ctx, "FRAME-UI-E014", "a tags: entry must be \"tag-name\": \"path/to/Component\" with a lowercase tag that contains a hyphen (frame-ui.ebnf tags_entry, UI-C002); got: " + entries.substring(1, entries.length()))
+		register_tags(entries)
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			integer sp = entry.indexOf(" ")
+			string tag = entry.substring(0, sp)
+			string class_name = entry.substring(sp + 1, entry.length())
+			integer rx_p_attrs = _type_string(ctx)
+			integer rx_r_str = _type_string(ctx)
+			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
+			ui_helper_function(ctx, component_render_export(tag), rx_params, rx_r_str, tag_render_export_body(class_name), 3)
+			// HTML entry pages are compiled before assemble runs, so they
+			// cannot read the registry: they build the class named after the
+			// tag (app-header → AppHeader), which is the registered class or
+			// a subclass of it.
+			string alias = tag_to_class_name(tag)
+			if alias != class_name
+				ui_component_class(ctx, "{\"name\":\"" + spec_esc_json(alias) + "\",\"parent\":\"" + spec_esc_json(class_name) + "\",\"fields\":[],\"methods\":[]}")
+		_ctx_clear_error(ctx)
+		return 0
+
+	// The entries of a tags: block body as "tag Class\n" lines, or "!" and
+	// the first malformed line.
+	string tags_registry_entries(string body)
+		string result = ""
+		string remaining = body
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			string t = line.trim()
+			if t.length() > 0 and t.startsWith("//") == false
+				string tag = tags_entry_part(t, 0)
+				string class_name = path_component_class(tags_entry_part(t, 1))
+				if tag == "" or tag.indexOf("-") == -1 or tag != tag.toLowerCase() or tag.indexOf(" ") != -1 or is_plain_identifier(class_name) == false
+					return "!" + t
+				result = result + tag + " " + class_name + "\n"
+		return result
+
+	// Add "tag Class" entries to build_state["frame.ui:tags"]; a tag that is
+	// already registered keeps its entry.
+	void register_tags(string entries)
+		string registry = _build_state_get("frame.ui:tags")
+		if registry == ""
+			registry = "{}"
+		string remaining = entries
+		while remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string entry = remaining.substring(0, nl)
+			remaining = remaining.substring(nl + 1, remaining.length())
+			integer sp = entry.indexOf(" ")
+			string tag = entry.substring(0, sp)
+			if lookup_component(tag, registry) == ""
+				string item = "\"" + tag + "\":\"" + entry.substring(sp + 1, entry.length()) + "\""
+				if registry == "{}"
+					registry = "{" + item + "}"
+				else
+					registry = registry.substring(0, registry.length() - 1) + "," + item + "}"
+		_build_state_set("frame.ui:tags", registry)
+
+	// The body of the top-level `tags:` block in a Clean source file, ""
+	// when it has none.
+	string source_tags_body(string content)
+		integer pos = -1
+		if content.startsWith("tags:")
+			pos = 0
+		else
+			integer found = content.indexOf("\ntags:")
+			if found != -1
+				pos = found + 1
+		if pos == -1
+			return ""
+		integer header_end = content.indexOf("\n", pos)
+		if header_end == -1
+			return ""
+		string header = content.substring(pos, header_end).trim()
+		if header != "tags:"
+			return ""
+		string result = ""
+		string remaining = content.substring(header_end + 1, content.length())
+		boolean in_block = true
+		while in_block and remaining.length() > 0
+			integer nl = remaining.indexOf("\n")
+			string line = remaining
+			if nl == -1
+				remaining = ""
+			else
+				line = remaining.substring(0, nl)
+				remaining = remaining.substring(nl + 1, remaining.length())
+			if line.trim().length() > 0 and leading_tabs(line) == 0 and line.startsWith(" ") == false
+				in_block = false
+			else
+				result = result + line + "\n"
+		return result
+
+	// The component class a tag renders: the registered class
+	// (build_state["frame.ui:tags"], UI-S008) or "" when it is not registered.
+	string registered_tag_class(string tag_name)
+		string registry = _build_state_get("frame.ui:tags")
+		if registry == ""
+			return ""
+		return lookup_component(tag_name, registry)
+
+	// Part 0 (the tag) or 1 (the path) of a `"tag": "path"` entry; "" when
+	// the entry is not two string literals separated by a colon.
+	string tags_entry_part(string entry, integer index)
+		if entry.startsWith("\"") == false
+			return ""
+		integer tag_end = entry.indexOf("\"", 1)
+		if tag_end == -1
+			return ""
+		if index == 0
+			return entry.substring(1, tag_end)
+		string rest = entry.substring(tag_end + 1, entry.length()).trim()
+		if rest.startsWith(":") == false
+			return ""
+		rest = rest.substring(1, rest.length()).trim()
+		if rest.startsWith("\"") == false or rest.endsWith("\"") == false or rest.length() < 2
+			return ""
+		return rest.substring(1, rest.length() - 1)
+
+	// The component class a registry path names: its last segment without
+	// `.cln` (`app/ui/web/components/Header` → Header, `.../user-card` →
+	// UserCard).
+	string path_component_class(string path)
+		string seg = path
+		integer slash = seg.lastIndexOf("/")
+		if slash != -1
+			seg = seg.substring(slash + 1, seg.length())
+		if seg.endsWith(".cln")
+			seg = seg.substring(0, seg.length() - 4)
+		if seg.indexOf("-") != -1
+			return tag_to_class_name(seg)
+		if seg.length() == 0
+			return ""
+		return seg.substring(0, 1).toUpperCase() + seg.substring(1, seg.length())
+
+	// Body of a registered tag's request-time render export: build the
+	// component, pass every attribute to setInput (which ignores names that
+	// are not scalar inputs) and add `class` to its outer element (UI-C009).
+	string tag_render_export_body(string class_name)
+		string body = class_name + " __comp = " + class_name + "()\n"
+		body = body + "string __names = _ui_attr_names(attrs)\n"
+		body = body + "while __names.length() > 0\n"
+		body = body + "\tinteger __nl = __names.indexOf(\"\\n\")\n"
+		body = body + "\tstring __key = __names.substring(0, __nl)\n"
+		body = body + "\t__names = __names.substring(__nl + 1, __names.length())\n"
+		body = body + "\tif __key != \"class\"\n"
+		body = body + "\t\t__comp.setInput(__key, _ui_attr_get(attrs, __key))\n"
+		body = body + "return _ui_add_root_class(__comp.render(), _ui_attr_get(attrs, \"class\"))\n"
+		return body
 
 // ============================================================================
 // STYLES BLOCK — frame-ui.ebnf §4 (styles_block)
@@ -414,6 +638,19 @@ functions:
 			if source_declares_styles(source_files[__ssi])
 				_build_state_set("frame.ui.has_styles", "1")
 			__ssi = __ssi + 1
+
+		// UI-S008: the component tag registry (/config/tags.cln `tags:`),
+		// recorded before any template is expanded.
+		integer __tgi = 0
+		while __tgi < source_files.length()
+			string __tgf = source_files[__tgi]
+			if extract_json_field(__tgf, "path").endsWith(".cln")
+				string __tgb = source_tags_body(decode_json_string(extract_json_field_escaped(__tgf, "content")))
+				if __tgb != ""
+					string __tge = tags_registry_entries(__tgb)
+					if __tge.startsWith("!") == false
+						register_tags(__tge)
+			__tgi = __tgi + 1
 
 		// -------- Phase 1: build routes-guard table --------
 		string __routes_guard_table = ""
@@ -1356,7 +1593,9 @@ functions:
 		// clean-server renders a custom tag in a request-time `.html` page by
 		// calling `<tag without hyphens>_render(attrs_json)` with the tag's
 		// attributes (bridge-host-classes.md §4.1).
-		if tag != ""
+		// A tag registered in tags: (UI-S008) gets its export from the
+		// registry, which wins over the component's own tag.
+		if tag != "" and registered_tag_class(tag) == ""
 			integer rx_p_attrs = _type_string(ctx)
 			integer rx_r_str = _type_string(ctx)
 			string rx_params = "[{\"name\":\"attrs\",\"type_handle\":" + rx_p_attrs.toString() + "}]"
@@ -2675,6 +2914,8 @@ functions:
 	// tag attributes, pass the children as slot content and append render().
 	string render_component(string tag_name, string tag_content, string inner, string target, boolean page_mode, string registry_json, boolean has_data)
 		string class_name = lookup_component(tag_name, registry_json)
+		if class_name == ""
+			class_name = registered_tag_class(tag_name)
 		if class_name == ""
 			class_name = tag_to_class_name(tag_name)
 		string client = extract_attr_value("<" + tag_content + ">", "client")

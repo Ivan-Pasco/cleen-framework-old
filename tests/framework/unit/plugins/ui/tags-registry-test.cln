@@ -1,0 +1,40 @@
+// Test: frame.ui — tags: component tag registry.
+// Spec: frame-ui.ebnf §6 tags_block / tags_entry (`"tag": "path"`),
+// frame-ui-semantics UI-S008 (manual registry in /config/tags.cln,
+// supplementing auto-discovery) and UI-C010 (a component tag renders its
+// component wherever HTML is written, its attributes set the inputs).
+// <app-header> is registered to the Header component, whose own name would
+// give the tag <header>: the page renders Header for it, and the
+// request-time render export appheader_render(attrs) does the same with
+// the attributes the host passes.
+// Regression: the tags: block was not a frame.ui block, so it did not
+// compile, and <app-header> named an undefined class.
+
+plugins:
+	frame.ui
+
+tags:
+	"app-header": "app/ui/web/components/Header"
+
+component Header:
+	inputs:
+		string title = "Home"
+		integer level = 1
+	html:
+		<header class="top">{title}/{level.toString()}</header>
+
+page TagsPage:
+	<div><app-header title="Docs" level="2"></app-header></div>
+
+start:
+	TagsPage page = TagsPage()
+	string out = page.render()
+	string want = "<div><header class='top'>Docs/2</header></div>"
+	string req = appheader_render("\{\"title\":\"Blog\",\"level\":\"3\",\"class\":\"big\"\}")
+	string want_req = "<header class='big top'>Blog/3</header>"
+	if out == want and req == want_req
+		printl("PASS: ui-tags-registry")
+	else
+		printl("FAIL: ui-tags-registry")
+		printl("  Expected: " + want + " | " + want_req)
+		printl("  Actual:   " + out + " | " + req)
