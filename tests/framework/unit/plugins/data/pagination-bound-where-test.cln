@@ -76,7 +76,7 @@ endpoints:
 				age > 0
 		ok_inject = ok_inject and still_there == 6
 
-		// Quotes and placeholder look-alikes are matched by exact value.
+		// Quotes and SQL bind-marker look-alikes ($1, ?) are matched by exact value.
 		string quoted = "it's"
 		string marker = "$1"
 		string mark2 = "what?"
