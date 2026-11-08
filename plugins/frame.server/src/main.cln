@@ -431,6 +431,12 @@ functions:
 				_emit_error(ctx, 2, "FRAME-SERVER-E001", "syntax error in handler body for " + method + " " + path, "{\"start\":0,\"end\":0,\"source\":\"block_body\"}")
 				return 1
 			stmts = join_handles(stmts, body_stmt.toString())
+			// A body that ends without a return (a FEED stream, a handler
+			// that only sets the response through helpers) answers an
+			// empty body; the handler returns a string on every path
+			// (FUNC004).
+			integer end_return = _stmt_return(ctx, _expr_string_lit(ctx, ""))
+			stmts = join_handles(stmts, end_return.toString())
 
 		if stmts.length() == 0
 			// No user code and no preamble: answer with the route name.
