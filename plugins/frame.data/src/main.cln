@@ -2744,8 +2744,10 @@ functions:
 	// Parse a single condition. Converts Clean operators to SQL and quotes strings.
 	string parse_condition(string condition)
 		string result = condition
+		result = result.replace(" == none", " IS NULL")
 		result = result.replace(" == null", " IS NULL")
 		result = result.replace(" == NULL", " IS NULL")
+		result = result.replace(" != none", " IS NOT NULL")
 		result = result.replace(" != null", " IS NOT NULL")
 		result = result.replace(" != NULL", " IS NOT NULL")
 		result = result.replace(" == ", " = ")
@@ -2927,14 +2929,15 @@ functions:
 		return lower_json_path(t)
 
 	// SQL literal for a Clean literal token: a quoted string (with `'`
-	// doubled), a number, true/false or null. "" when `tok` is not a literal.
+	// doubled), a number, true/false or none (alias null). "" when `tok` is
+	// not a literal.
 	string sql_literal(string tok)
 		string t = tok.trim()
 		if t.startsWith("\"") and t.endsWith("\"") and t.length() >= 2
 			return "'" + t.substring(1, t.length() - 1).replace("'", "''") + "'"
 		if t == "true" or t == "false"
 			return t
-		if t == "null" or t == "NULL"
+		if t == "none" or t == "null" or t == "NULL"
 			return "NULL"
 		if is_numeric(t) and t != "-" and t != "."
 			return t
@@ -2994,7 +2997,9 @@ functions:
 			if part == "params"
 				return ""
 			return sql_lit(head + lowered)
-		if rhs == "null" or rhs == "NULL"
+		// `none` is the standard spelling of the empty value, `null` its alias
+		// (03-lexical-structure.md "None Literal").
+		if rhs == "none" or rhs == "null" or rhs == "NULL"
 			if part == "params"
 				return ""
 			if op_sql == "<>"
