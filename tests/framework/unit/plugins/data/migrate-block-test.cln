@@ -4,6 +4,9 @@
 // before the first request.
 // Regression: up:/down: lines were sent with their quotes, so a migration
 // written in the grammar's string-literal form produced invalid SQL.
+// SQLite :memory: (test default) or MySQL (FRAMEWORK_TEST_MYSQL_URL).
+// Fixed: the insert names the key — `INTEGER PRIMARY KEY` only fills itself
+// in on SQLite, and the test is about the migration, not key generation.
 
 plugins:
 	frame.server
@@ -21,10 +24,14 @@ migrate "001_create_widgets":
 
 endpoints:
 	GET "/test":
-		db.execute("INSERT INTO widgets (label) VALUES ('a')", "[]")
+		db.execute("INSERT INTO widgets (id, label) VALUES (1, 'a')", "[]")
 		string rows = db.query("SELECT COUNT(*) AS n FROM widgets", "[]")
 		boolean ok_table = json.get(rows, "data.rows.0.n") == "1"
-		string idx = db.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_widgets_label'", "[]")
+		string idx_sql = "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_widgets_label'"
+		string probe = db.query("SELECT sqlite_version() AS v", "[]")
+		if json.get(probe, "ok") != "true"
+			idx_sql = "SELECT COUNT(DISTINCT INDEX_NAME) AS n FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND INDEX_NAME = 'idx_widgets_label'"
+		string idx = db.query(idx_sql, "[]")
 		boolean ok_index = json.get(idx, "data.rows.0.n") == "1"
 
 		if ok_table and ok_index

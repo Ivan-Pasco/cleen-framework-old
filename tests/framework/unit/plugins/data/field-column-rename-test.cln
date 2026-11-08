@@ -4,7 +4,8 @@
 // field name). The table, inserts, updates, query clauses (where/order/
 // select/count/paginate/cursor), indexes and row hydration must all use the
 // column name while application code uses the field name.
-// SQLite :memory: (test default). Server-shaped: runner drives /test.
+// SQLite :memory: (test default) or MySQL (FRAMEWORK_TEST_MYSQL_URL): the
+// schema checks read the engine's catalog. Server-shaped: runner drives /test.
 // Fixed: `first` returns `Model?` (frame-data DAT-Q001) and only a `T?` holds
 // none (type-system.md §8), so a `first` result is held in a `T?` and
 // unwrapped with `!` before its fields are used.
@@ -39,7 +40,10 @@ endpoints:
 		if column_count("passwordHash") != 0 or column_count("displayName") != 0
 			printl("FAIL: table has field-named columns")
 			failures = failures + 1
-		string idx = db.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND tbl_name = 'accounts' AND sql LIKE '%password_hash%'", "[]")
+		string idx_sql = "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND tbl_name = 'accounts' AND sql LIKE '%password_hash%'"
+		if not on_sqlite()
+			idx_sql = "SELECT COUNT(DISTINCT INDEX_NAME) AS n FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'accounts' AND COLUMN_NAME = 'password_hash'"
+		string idx = db.query(idx_sql, "[]")
 		if json.get(idx, "data.rows.0.n") != "1"
 			printl("FAIL: indexes: entry not created on the renamed column")
 			failures = failures + 1
@@ -161,7 +165,15 @@ start:
 	printl("[boot] data-field-column-rename server ready")
 
 functions:
+	// True on SQLite; the catalog queries below differ per engine.
+	boolean on_sqlite()
+		string probe = db.query("SELECT sqlite_version() AS v", "[]")
+		return json.get(probe, "ok") == "true"
+
 	// 1 when the accounts table has a column named `col`, else 0.
 	integer column_count(string col)
-		string r = db.query("SELECT COUNT(*) AS n FROM pragma_table_info('accounts') WHERE name = '" + col + "'", "[]")
+		string sql = "SELECT COUNT(*) AS n FROM pragma_table_info('accounts') WHERE name = '" + col + "'"
+		if not on_sqlite()
+			sql = "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'accounts' AND COLUMN_NAME = '" + col + "'"
+		string r = db.query(sql, "[]")
 		return json.get(r, "data.rows.0.n").toInteger()

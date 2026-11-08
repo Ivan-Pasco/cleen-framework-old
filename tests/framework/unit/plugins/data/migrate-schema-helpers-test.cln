@@ -6,7 +6,8 @@
 // DAT-C007 (up and down). The host applies registered migrations before the
 // first request. addForeignKey/dropForeignKey need ALTER TABLE ... CONSTRAINT,
 // which SQLite does not support, so they are not exercised here.
-// SQLite :memory: (test default). Server-shaped: runner drives /test.
+// SQLite :memory: (test default) or MySQL (FRAMEWORK_TEST_MYSQL_URL): the
+// schema checks read the engine's catalog. Server-shaped: runner drives /test.
 
 plugins:
 	frame.server
@@ -43,17 +44,17 @@ endpoints:
 		integer failures = 0
 
 		// createTable + addColumn + renameColumn + dropColumn: final columns.
-		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name IN ('id', 'name', 'weight', 'color')") != 4
+		if column_count("name IN ('id', 'name', 'weight', 'color')") != 4
 			printl("FAIL: gadgets columns are not id, name, weight, color")
 			failures = failures + 1
-		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name IN ('size', 'temp')") != 0
+		if column_count("name IN ('size', 'temp')") != 0
 			printl("FAIL: renamed/dropped columns still present")
 			failures = failures + 1
 		// `required` is NOT NULL, `primary` is the primary key.
-		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name = 'name' AND \"notnull\" = 1") != 1
+		if column_count("name = 'name' AND not_null = 1") != 1
 			printl("FAIL: required column is nullable")
 			failures = failures + 1
-		if count_of("SELECT COUNT(*) AS n FROM pragma_table_info('gadgets') WHERE name = 'id' AND pk = 1") != 1
+		if column_count("name = 'id' AND pk = 1") != 1
 			printl("FAIL: id is not the primary key")
 			failures = failures + 1
 
@@ -65,18 +66,18 @@ endpoints:
 			failures = failures + 1
 
 		// createTable + dropTable in one migration leaves no table.
-		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'scratch'") != 0
+		if table_count("scratch") != 0
 			printl("FAIL: dropTable left the scratch table")
 			failures = failures + 1
 
 		// createIndex / dropIndex.
-		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_gadgets_name_size'") != 1
+		if index_count("idx_gadgets_name_size") != 1
 			printl("FAIL: composite index missing")
 			failures = failures + 1
-		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'idx_gadgets_weight'") != 1
+		if index_count("idx_gadgets_weight") != 1
 			printl("FAIL: single-column index missing")
 			failures = failures + 1
-		if count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'uniq_gadgets_color'") != 0
+		if index_count("uniq_gadgets_color") != 0
 			printl("FAIL: dropIndex left the unique index")
 			failures = failures + 1
 
@@ -93,3 +94,25 @@ functions:
 	integer count_of(string sql)
 		string r = db.query(sql, "[]")
 		return json.get(r, "data.rows.0.n").toInteger()
+
+	// True on SQLite; the catalog queries below differ per engine.
+	boolean on_sqlite()
+		string probe = db.query("SELECT sqlite_version() AS v", "[]")
+		return json.get(probe, "ok") == "true"
+
+	// Columns of gadgets matching `cond`, over the columns name, not_null
+	// (1 for NOT NULL) and pk (1 for the primary key).
+	integer column_count(string cond)
+		if on_sqlite()
+			return count_of("SELECT COUNT(*) AS n FROM (SELECT name, \"notnull\" AS not_null, pk FROM pragma_table_info('gadgets')) c WHERE " + cond)
+		return count_of("SELECT COUNT(*) AS n FROM (SELECT COLUMN_NAME AS name, IF(IS_NULLABLE = 'NO', 1, 0) AS not_null, IF(COLUMN_KEY = 'PRI', 1, 0) AS pk FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gadgets') c WHERE " + cond)
+
+	integer table_count(string table)
+		if on_sqlite()
+			return count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = '" + table + "'")
+		return count_of("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '" + table + "'")
+
+	integer index_count(string index)
+		if on_sqlite()
+			return count_of("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = '" + index + "'")
+		return count_of("SELECT COUNT(DISTINCT INDEX_NAME) AS n FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND INDEX_NAME = '" + index + "'")
