@@ -1,0 +1,46 @@
+// Test: frame.locale — detection = "manual" ignores the request; locale.set selects
+// Spec: foundation/spec/framework/grammar/frame-locale.ebnf §1 (locale_block,
+//       detection_strategy); HOST_BRIDGE.md _i18n_configure.
+//
+// The locale: block loads every <tag>.json of its path (en, fr, de, es here —
+// not only the default and the fallback). The /test request carries all three
+// locale sources; the detection strategy decides which one counts.
+// test-request-header: Accept-Language: de-DE,de;q=0.9
+// test-request-header: Cookie: theme=dark; cl_locale=fr
+// test-request-query: locale=es
+
+plugins:
+	frame.locale
+	frame.server
+
+locale:
+	default = "en"
+	fallback = "fr"
+	detection = "manual"
+	path = "tests/framework/unit/plugins/locale/translations"
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		string got_current = locale.current()
+		if got_current != "en"
+			printl("FAIL: current: expected en, got " + got_current)
+			failures = failures + 1
+		string got_hello = t("hello", "{}")
+		if got_hello != "Hello"
+			printl("FAIL: hello: expected Hello, got " + got_hello)
+			failures = failures + 1
+		locale.set("de")
+		string got_after_set = locale.current()
+		if got_after_set != "de"
+			printl("FAIL: after_set: expected de, got " + got_after_set)
+			failures = failures + 1
+		string got_hello_de = t("hello", "{}")
+		if got_hello_de != "Hallo"
+			printl("FAIL: hello_de: expected Hallo, got " + got_hello_de)
+			failures = failures + 1
+		if failures == 0
+			printl("PASS: locale-detection-manual")
+		else
+			printl("FAIL: locale-detection-manual")
+		return json({locale: locale.current()})

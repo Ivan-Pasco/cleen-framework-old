@@ -11,7 +11,7 @@
 // foundation/spec/plugins/contracts/typed-emission.md §2.3, §3, §5
 //
 // Only the 4 bridges required by frame.locale's expansion:
-//   _stmt_call              — build a call statement (for _i18n_load / _i18n_set_locale)
+//   _stmt_call              — build a call statement (for _i18n_configure)
 //   _expr_string_lit        — build a string literal expression (for arguments)
 //   _emit_statement_into_start — inject a statement into the start: slot
 //   _emit_error             — emit a diagnostic (severity 2 = error)
@@ -79,20 +79,21 @@ functions:
 functions:
 	// Expand locale: block into typed AST statements injected into start:.
 	//
-	// Supported fields in DSL body (same as v1):
-	//   default   = "en"        — active locale BCP 47 tag (default: "en")
-	//   fallback  = "en"        — fallback locale when key is missing (default: "en")
-	//   detection = "header"    — detection strategy: header|cookie|query|manual
-	//   path      = "app/i18n"  — filesystem path to translation JSON files
+	// Supported fields in DSL body (frame-locale.ebnf §1):
+	//   default   = "en"        — default locale BCP 47 tag (default: "en")
+	//   fallback  = "en"        — locale tried when a key is missing (default: the default locale)
+	//   detection = "header"    — how a request picks its locale: header|cookie|query|manual (default: header)
+	//   path      = "app/i18n"  — folder of the translation files <tag>.json (default: app/i18n)
 	//
 	// V3 emits typed AST directly — no string concatenation into Clean source.
-	// Emits into start: slot via _emit_statement_into_start:
-	//   _i18n_load("en", "app/i18n/en.json")
-	//   _i18n_load("fr", "app/i18n/fr.json")   // only when fallback differs
-	//   _i18n_set_locale("en")
+	// Emits one statement into the start: slot via _emit_statement_into_start:
+	//   _i18n_configure("en", "en", "header", "app/i18n")
+	// The server loads every <tag>.json of the folder, sets the default and
+	// fallback locales and selects the detection strategy (HOST_BRIDGE.md).
 	integer expand_locale_typed(integer ctx, string body)
 		string default_locale = "en"
-		string fallback_locale = "en"
+		string fallback_locale = ""
+		string detection = "header"
 		string i18n_path = "app/i18n"
 
 		string lines = body
@@ -116,6 +117,11 @@ functions:
 				if val.length() > 0
 					fallback_locale = val
 
+			if trimmed.startsWith("detection")
+				string val = extract_field_value(trimmed, "detection")
+				if val.length() > 0
+					detection = val
+
 			if trimmed.startsWith("path")
 				string val = extract_field_value(trimmed, "path")
 				if val.length() > 0
@@ -123,70 +129,42 @@ functions:
 
 			line_start = line_end + 1
 
-		// Build _i18n_load(default_locale, path/default_locale.json) call
-		string default_path = i18n_path + "/" + default_locale + ".json"
+		if detection != "header" and detection != "cookie" and detection != "query" and detection != "manual"
+			_emit_error(ctx, 2, "FRAME-LOCALE-E012", "locale: detection = \"" + detection + "\" is not a detection strategy; use \"header\", \"cookie\", \"query\" or \"manual\" (frame-locale.ebnf §1)", "{\"source\":\"plugin\"}")
+			return 1
 
-		integer locale_arg = _expr_string_lit(ctx, default_locale)
-		if locale_arg == 0
+		if fallback_locale == ""
+			fallback_locale = default_locale
+
+		integer default_arg = _expr_string_lit(ctx, default_locale)
+		if default_arg == 0
 			_emit_error(ctx, 2, "FRAME-LOCALE-E001", "failed to build locale string literal", "{\"source\":\"plugin\"}")
 			return 1
 
-		integer path_arg = _expr_string_lit(ctx, default_path)
+		integer fallback_arg = _expr_string_lit(ctx, fallback_locale)
+		if fallback_arg == 0
+			_emit_error(ctx, 2, "FRAME-LOCALE-E005", "failed to build fallback locale string literal", "{\"source\":\"plugin\"}")
+			return 1
+
+		integer detection_arg = _expr_string_lit(ctx, detection)
+		if detection_arg == 0
+			_emit_error(ctx, 2, "FRAME-LOCALE-E009", "failed to build detection string literal", "{\"source\":\"plugin\"}")
+			return 1
+
+		integer path_arg = _expr_string_lit(ctx, i18n_path)
 		if path_arg == 0
 			_emit_error(ctx, 2, "FRAME-LOCALE-E002", "failed to build path string literal", "{\"source\":\"plugin\"}")
 			return 1
 
-		string load_args = "[" + locale_arg.toString() + "," + path_arg.toString() + "]"
-		integer load_stmt = _stmt_call(ctx, "_i18n_load", load_args)
-		if load_stmt == 0
-			_emit_error(ctx, 2, "FRAME-LOCALE-E003", "failed to build _i18n_load statement", "{\"source\":\"plugin\"}")
+		string args = "[" + default_arg.toString() + "," + fallback_arg.toString() + "," + detection_arg.toString() + "," + path_arg.toString() + "]"
+		integer configure_stmt = _stmt_call(ctx, "_i18n_configure", args)
+		if configure_stmt == 0
+			_emit_error(ctx, 2, "FRAME-LOCALE-E003", "failed to build _i18n_configure statement", "{\"source\":\"plugin\"}")
 			return 1
 
-		integer emit_result = _emit_statement_into_start(ctx, load_stmt)
+		integer emit_result = _emit_statement_into_start(ctx, configure_stmt)
 		if emit_result != 0
-			_emit_error(ctx, 2, "FRAME-LOCALE-E004", "failed to emit _i18n_load into start", "{\"source\":\"plugin\"}")
-			return 1
-
-		// Load fallback locale separately when it differs from the default
-		if fallback_locale != default_locale
-			string fallback_path = i18n_path + "/" + fallback_locale + ".json"
-
-			integer fb_locale_arg = _expr_string_lit(ctx, fallback_locale)
-			if fb_locale_arg == 0
-				_emit_error(ctx, 2, "FRAME-LOCALE-E005", "failed to build fallback locale string literal", "{\"source\":\"plugin\"}")
-				return 1
-
-			integer fb_path_arg = _expr_string_lit(ctx, fallback_path)
-			if fb_path_arg == 0
-				_emit_error(ctx, 2, "FRAME-LOCALE-E006", "failed to build fallback path string literal", "{\"source\":\"plugin\"}")
-				return 1
-
-			string fb_load_args = "[" + fb_locale_arg.toString() + "," + fb_path_arg.toString() + "]"
-			integer fb_load_stmt = _stmt_call(ctx, "_i18n_load", fb_load_args)
-			if fb_load_stmt == 0
-				_emit_error(ctx, 2, "FRAME-LOCALE-E007", "failed to build fallback _i18n_load statement", "{\"source\":\"plugin\"}")
-				return 1
-
-			integer fb_emit_result = _emit_statement_into_start(ctx, fb_load_stmt)
-			if fb_emit_result != 0
-				_emit_error(ctx, 2, "FRAME-LOCALE-E008", "failed to emit fallback _i18n_load into start", "{\"source\":\"plugin\"}")
-				return 1
-
-		// Build _i18n_set_locale(default_locale) call
-		integer set_locale_arg = _expr_string_lit(ctx, default_locale)
-		if set_locale_arg == 0
-			_emit_error(ctx, 2, "FRAME-LOCALE-E009", "failed to build set_locale string literal", "{\"source\":\"plugin\"}")
-			return 1
-
-		string set_args = "[" + set_locale_arg.toString() + "]"
-		integer set_stmt = _stmt_call(ctx, "_i18n_set_locale", set_args)
-		if set_stmt == 0
-			_emit_error(ctx, 2, "FRAME-LOCALE-E010", "failed to build _i18n_set_locale statement", "{\"source\":\"plugin\"}")
-			return 1
-
-		integer set_emit_result = _emit_statement_into_start(ctx, set_stmt)
-		if set_emit_result != 0
-			_emit_error(ctx, 2, "FRAME-LOCALE-E011", "failed to emit _i18n_set_locale into start", "{\"source\":\"plugin\"}")
+			_emit_error(ctx, 2, "FRAME-LOCALE-E004", "failed to emit _i18n_configure into start", "{\"source\":\"plugin\"}")
 			return 1
 
 		return 0

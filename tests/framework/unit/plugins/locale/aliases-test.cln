@@ -1,0 +1,44 @@
+// Test: frame.locale — the i18n.* names are aliases of the locale.* / t() functions.
+// Spec: foundation/spec/framework/grammar/frame-locale.ebnf §2–§4 (i18n.*
+//       aliases); plugin.toml [aliases].
+
+plugins:
+	frame.locale
+	frame.server
+
+locale:
+	default = "en"
+	fallback = "fr"
+	detection = "manual"
+	path = "tests/framework/unit/plugins/locale/translations"
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		if i18n.locale() != locale.current()
+			printl("FAIL: i18n.locale() differs from locale.current()")
+			failures = failures + 1
+		i18n.setLocale("fr")
+		if locale.current() != "fr"
+			printl("FAIL: i18n.setLocale did not set the locale: " + locale.current())
+			failures = failures + 1
+		if i18n.t("hello", "{}") != "Bonjour"
+			printl("FAIL: i18n.t: " + i18n.t("hello", "{}"))
+			failures = failures + 1
+		if i18n.tc("hello", 2, "{}") != tc("hello", 2, "{}")
+			printl("FAIL: i18n.tc differs from tc")
+			failures = failures + 1
+		if i18n.formatNumber(1234.5, "de", "{}") != locale.formatNumber(1234.5, "de", "{}")
+			printl("FAIL: i18n.formatNumber differs from locale.formatNumber")
+			failures = failures + 1
+		if i18n.formatCurrency(9.5, "EUR", "de") != locale.formatCurrency(9.5, "EUR", "de")
+			printl("FAIL: i18n.formatCurrency differs from locale.formatCurrency")
+			failures = failures + 1
+		if i18n.formatDate(1704067200.0, "long", "en") != locale.formatDate(1704067200.0, "long", "en")
+			printl("FAIL: i18n.formatDate differs from locale.formatDate")
+			failures = failures + 1
+		if failures == 0
+			printl("PASS: locale-aliases")
+		else
+			printl("FAIL: locale-aliases")
+		return json({ok: failures == 0})
