@@ -136,4 +136,4 @@ anti_pattern = "hardcoding number formatting (e.g. '$' + price.toString()) — d
 example = "patterns/locale-aware-formatting.cln"
 
 [build]
-built_with_compiler = "0.33.181"
+built_with_compiler = "0.33.182"

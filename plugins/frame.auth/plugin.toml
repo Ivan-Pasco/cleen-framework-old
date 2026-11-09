@@ -295,4 +295,4 @@ anti_pattern = "turning csrf: off or moving mutations to GET routes — a third-
 example = "patterns/csrf-protection.cln"
 
 [build]
-built_with_compiler = "0.33.181"
+built_with_compiler = "0.33.182"
