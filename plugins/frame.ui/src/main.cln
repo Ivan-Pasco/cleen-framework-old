@@ -1725,7 +1725,10 @@ functions:
 		string setslot_body_source = "_slot_content = __content\n"
 
 		// -------- Build renderSSR() body source --------
-		string renderssr_body_source = "return this.render()\n"
+		// renderSSR() builds the same markup as render(). It does not call
+		// render() by its bare name: frame.ui also declares a global
+		// render(name), and the method would resolve to that function.
+		string renderssr_body_source = render_body_source
 
 		// -------- Parse method bodies into stmt handles --------
 		if template_error_code(render_body_source) != ""
@@ -1901,10 +1904,8 @@ functions:
 					keyword = "else if "
 				// The parameters are named `__attr` / `__field` / `__value`,
 				// so a component field never shares a parameter's name
-				// (CLASS007). setBound keeps reading `this.`.
+				// (CLASS007) and the field is assigned by its bare name.
 				string assigned = input_name
-				if param != "__attr"
-					assigned = "this." + input_name
 				// An empty value keeps the field's current value: the
 				// integer, number and boolean conversions raise on "".
 				if input_type != "string"
@@ -2459,9 +2460,9 @@ functions:
 		return s.length()
 
 	// Clean code with every read of a computed name (`names` is ",a,b,")
-	// turned into a call of its method: `total` → `total()`,
-	// `this.total` → `this.total()`. String literal text is left alone,
-	// except its `{...}` interpolations. An assignment to a computed name
+	// turned into a call of its method: `total` → `total()`. A name after
+	// a dot is another value's member and is left alone. String literal
+	// text is left alone, except its `{...}` interpolations. An assignment to a computed name
 	// leaves the E010 marker in the result.
 	string call_computed(string code, string names)
 		if names == ","
@@ -2507,10 +2508,9 @@ functions:
 					if is_ident_char(before)
 						is_ref = false
 					else if before == "."
-						// Only `this.name` is the component's own field.
-						is_ref = id_at >= 5 and code.substring(id_at - 5, id_at) == "this."
-						if is_ref and id_at > 5
-							is_ref = is_ident_char(code.substring(id_at - 6, id_at - 5)) == false and code.substring(id_at - 6, id_at - 5) != "."
+						// `x.name` is a member of another value, not the
+						// component's own computed field.
+						is_ref = false
 				if is_ref
 					string after = next_code_char(code, i)
 					if after == "("
@@ -2653,7 +2653,7 @@ functions:
 			boolean starts = pos == 0
 			if not starts
 				string before = code.substring(pos - 1, pos)
-				starts = is_ident_char(before) == false and (before != "." or (pos >= 5 and code.substring(pos - 5, pos) == "this."))
+				starts = is_ident_char(before) == false and before != "."
 			if starts
 				return true
 			pos = code.indexOf(name + "()", pos + 1)

@@ -24,7 +24,8 @@ component: tag="ui-cart"
 		label = name + "!"
 	functions:
 		string summary()
-			return "net " + net.toString() + " of " + this.total.toString()
+			// Fixed: was `this.total`; class members are read by their bare name.
+			return "net " + net.toString() + " of " + total.toString()
 
 	html:
 		<p>{label} {total}/{net} <b cl-if="net > 3">big</b>{summary()}</p>
