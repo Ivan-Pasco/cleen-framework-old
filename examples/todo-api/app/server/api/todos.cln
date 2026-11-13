@@ -46,7 +46,7 @@ endpoints:
 
 		any prioField = bodyData.priority
 		if prioField != none
-			item.priority = prioField.toInteger()
+			item.priority = prioField.toInteger() onError return badRequest("priority must be a whole number")
 
 		Database.save(item)
 

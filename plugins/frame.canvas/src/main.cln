@@ -1476,10 +1476,12 @@ functions:
 		else
 			ty = state_var_type(_build_state_get("frame.canvas:state"), lhs)
 		string read = quoted_call_bridge(prefix) + "(" + clean_str(first_quoted(rhs, 0)) + ")"
+		// A key never set reads as "": the receiver gets 0, as the
+		// conversion raises on "".
 		if ty == "integer"
-			return lhs + " = " + read + ".toNumber().toInteger()"
+			return lhs + " = " + read + ".toNumber().toInteger() onError 0"
 		if ty == "number"
-			return lhs + " = " + read + ".toNumber()"
+			return lhs + " = " + read + ".toNumber() onError 0.0"
 		if ty == "boolean"
 			return lhs + " = " + read + " == \"true\""
 		return t
@@ -2419,7 +2421,8 @@ functions:
 			return fallback
 		if v == "0"
 			return 0
-		integer n = v.toInteger()
+		// Not a whole number: the fallback, as for 0.
+		integer n = v.toInteger() onError 0
 		if n == 0
 			return fallback
 		return n

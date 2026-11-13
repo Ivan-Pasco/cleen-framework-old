@@ -1137,8 +1137,11 @@ functions:
 			return "mcp: transport must be stdio or http: (got " + transport.substring(8, transport.length()) + ")"
 		if transport == "http"
 			string port = http_attr(body, "port")
-			if port != "" and port.toInteger().toString() != port
-				return "mcp: transport http port must be an integer (got " + port + ")"
+			if port != ""
+				// Text that is not a whole number raises in toInteger().
+				string port_back = port.toInteger().toString() onError ""
+				if port_back != port
+					return "mcp: transport http port must be an integer (got " + port + ")"
 
 		// MCP-B004: apiKey is an HTTP-only setting.
 		if has_config(body, "apiKey")

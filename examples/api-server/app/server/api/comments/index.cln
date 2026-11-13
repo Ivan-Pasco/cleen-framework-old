@@ -10,9 +10,11 @@ endpoints:
 		any data = json.tryTextToData(body())
 		if data == none
 			return badRequest("Invalid JSON")
+		if data.post_id == none
+			return badRequest("post_id is required")
 		Comment comment = Comment()
 		comment.user_id = auth.userId()
-		comment.post_id = data.post_id.toInteger()
+		comment.post_id = data.post_id.toInteger() onError return badRequest("post_id must be a whole number")
 		comment.content = data.content.toString()
 		Database.save(comment)
 		return jsonResponse("{\"ok\": true, \"message\": \"comment created\"}")

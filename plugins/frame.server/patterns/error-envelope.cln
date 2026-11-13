@@ -24,7 +24,7 @@ endpoints:
 		if product_id.length() == 0
 			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"product_id is required\",\"field\":\"product_id\"}}")
 
-		integer qty = quantity.toInteger()
+		integer qty = quantity.toInteger() onError 0
 		if qty <= 0
 			return badRequest("quantity must be greater than zero")
 

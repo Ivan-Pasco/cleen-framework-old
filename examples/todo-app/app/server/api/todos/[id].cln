@@ -40,7 +40,7 @@ endpoints:
 		if descField != none
 			item.details = descField.toString()
 		if completedField != none
-			item.completed = completedField.toInteger()
+			item.completed = completedField.toInteger() onError return badRequest("completed must be a whole number")
 
 		Database.save(item)
 

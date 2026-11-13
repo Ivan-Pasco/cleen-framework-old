@@ -85,6 +85,12 @@ canvasScene: id="dsl" width=320 height=240
 		expectTrue(dist >= -1.0, "collision.rayCircle returns a distance or -1")
 		string level = scene.get "level"
 		string shown = page.get "score"
+		// A key never set reads as "" (the clean-server stubs return ""):
+		// integer / number receivers get 0. Regression: the generated
+		// toNumber() raised on "" (compiler 0.33.184).
+		integer savedLevel = scene.get "level"
+		number savedSpeed = page.get "speed"
+		expectTrue(savedLevel == 0 and savedSpeed == 0.0, "scene.get / page.get of an unset key read 0 into integer / number")
 		string fsmState = animState.current "heroFSM"
 		expectTrue(level.length() >= 0 and shown.length() >= 0 and fsmState.length() >= 0 and last.length() >= 0, "string-returning DSL expressions")
 		page.set "score" value=score

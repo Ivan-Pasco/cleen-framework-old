@@ -29,7 +29,7 @@ endpoints:
 			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"email must contain @\",\"field\":\"email\"}}")
 
 		// Type coercion check — age must be a positive integer
-		integer age_int = age.toInteger()
+		integer age_int = age.toInteger() onError 0
 		if age_int <= 0
 			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"age must be a positive integer\",\"field\":\"age\"}}")
 
@@ -43,7 +43,7 @@ endpoints:
 		string id = req.param("id")
 
 		// Path param must be a positive integer
-		integer id_int = id.toInteger()
+		integer id_int = id.toInteger() onError 0
 		if id_int <= 0
 			return httpStatus(400, "{\"ok\":false,\"err\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"id must be a positive integer\",\"field\":\"id\"}}")
 
