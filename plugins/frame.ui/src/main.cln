@@ -1773,6 +1773,10 @@ functions:
 				string assigned = input_name
 				if param != "__attr"
 					assigned = "this." + input_name
+				// An empty value keeps the field's current value: the
+				// integer, number and boolean conversions raise on "".
+				if input_type != "string"
+					cond = "(" + cond + ") and __value != \"\""
 				body = body + keyword + cond + "\n\t" + assigned + " = " + converted + "\n"
 		if body == ""
 			return "return\n"
@@ -4473,10 +4477,7 @@ functions:
 		if first == "_"
 			first_ok = true
 		else
-			integer fc = first.toInteger()
-			// Rough letter check via ranges — cheaper than iterating alphabet.
-			// A-Z = 65..90, a-z = 97..122. toInteger on a single-char string
-			// returns 0 when not numeric, so use string comparison instead.
+			// Letter check by string comparison on the first character.
 			if first >= "A" and first <= "Z"
 				first_ok = true
 			if first >= "a" and first <= "z"

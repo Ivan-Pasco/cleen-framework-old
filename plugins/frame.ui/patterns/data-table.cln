@@ -24,7 +24,7 @@ endpoints:
 		string q = req.query("q")
 		string sort = req.query("sort")
 		string dir = req.query("dir")
-		integer page = req.query("page").toInteger()
+		integer page = req.query("page").toInteger() onError 1
 		if sort != "email"
 			sort = "name"
 		if dir != "desc"

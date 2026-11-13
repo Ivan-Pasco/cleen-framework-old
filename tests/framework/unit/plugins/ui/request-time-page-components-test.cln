@@ -9,6 +9,9 @@
 // and `class` lands on the outer element, exactly as in `html:` blocks. The
 // file declares a component and endpoints together, which also checks that
 // the browser build (frontend.wasm) leaves the endpoint handlers out.
+// An empty integer attribute (`count=""`) keeps the input's default.
+// Regression: the generated setInput converted it with toInteger(), which
+// raises on "" (compiler 0.33.184).
 
 plugins:
 	frame.ui
@@ -31,10 +34,14 @@ endpoints:
 		boolean written = file.write(path, "<main><ui-badge label=\"new\" count=\"2\" class=\"big\"></ui-badge></main>")
 		string body = _ui_render_page(path, "{}")
 		boolean ok = body.contains("<main><span class='big badge'>new x2</span></main>")
-		if written and ok
+		string empty_path = "/tmp/frame-ui-request-time-components-empty-test.html"
+		boolean empty_written = file.write(empty_path, "<main><ui-badge label=\"none\" count=\"\"></ui-badge></main>")
+		string empty_body = _ui_render_page(empty_path, "{}")
+		boolean ok_empty = empty_body.contains("none x0")
+		if written and ok and empty_written and ok_empty
 			printl("PASS: ui-request-time-page-components")
 		else
-			printl("FAIL: ui-request-time-page-components " + body)
+			printl("FAIL: ui-request-time-page-components " + body + " / " + empty_body)
 		return http.respond(200, "text/html", body)
 
 start:
