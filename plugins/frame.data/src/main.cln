@@ -192,6 +192,34 @@ functions:
 		if emit_fn(ctx, "__frame_data_sql", ns_params, _type_string(ctx), ns) != 0
 			return 1
 
+		// __frame_data_datetime(v): the JSON bind value of a datetime field.
+		// Epoch seconds (what time.* gives) bind as {"__type":"epoch_s"}; the
+		// text a datetime column reads back as ("YYYY-MM-DD HH:MM:SS", or
+		// RFC 3339) binds as {"__type":"datetime_iso"}, UTC unless it names an
+		// offset; an unset field ("") binds epoch 0 as before. toInteger()
+		// raises on "" and on the column text, so it is not applied to either.
+		string dt = "if v == \"\"\n"
+		dt = dt + "\treturn \"{\\\"__type\\\":\\\"epoch_s\\\",\\\"value\\\":0}\"\n"
+		dt = dt + "string __t = v.trim()\n"
+		dt = dt + "boolean __digits = __t.length() > 0\n"
+		dt = dt + "integer __i = 0\n"
+		dt = dt + "if __t.startsWith(\"-\")\n"
+		dt = dt + "\t__i = 1\n"
+		dt = dt + "\t__digits = __t.length() > 1\n"
+		dt = dt + "while __digits and __i < __t.length()\n"
+		dt = dt + "\tstring __ch = __t.substring(__i, __i + 1)\n"
+		dt = dt + "\tif __ch < \"0\" or __ch > \"9\"\n"
+		dt = dt + "\t\t__digits = false\n"
+		dt = dt + "\t__i = __i + 1\n"
+		dt = dt + "if __digits\n"
+		dt = dt + "\treturn \"{\\\"__type\\\":\\\"epoch_s\\\",\\\"value\\\":\" + __t.toInteger().toString() + \"}\"\n"
+		dt = dt + "string __iso = __t.replace(\" \", \"T\")\n"
+		dt = dt + "if not (__iso.endsWith(\"Z\") or __iso.indexOf(\"+\", 10) != -1 or __iso.indexOf(\"-\", 10) != -1)\n"
+		dt = dt + "\t__iso = __iso + \"Z\"\n"
+		dt = dt + "return \"{\\\"__type\\\":\\\"datetime_iso\\\",\\\"value\\\":\" + json.dataToText(__iso) + \"}\"\n"
+		if emit_fn(ctx, "__frame_data_datetime", string_param(ctx, "v"), _type_string(ctx), dt) != 0
+			return 1
+
 		// __frame_data_params(a, b): JSON array of the comma-separated JSON
 		// values `a` then `b` (either may be "").
 		string pm = "if a == \"\"\n\treturn \"[\" + b + \"]\"\n"
@@ -1712,11 +1740,11 @@ functions:
 
 	// Clean expression for one field value as a JSON parameter: strings go
 	// through json.dataToText so quotes, backslashes and newlines stay valid
-	// JSON; datetime values travel as {"__type":"epoch_s","value":N}.
+	// JSON; datetime values go through __frame_data_datetime.
 	string field_param_expr(string field, string ftype)
 		string ref = safe_field_name(field)
 		if ftype == "datetime"
-			return "\"{\\\"__type\\\":\\\"epoch_s\\\",\\\"value\\\":\" + " + ref + ".toInteger().toString() + \"}\""
+			return "__frame_data_datetime(" + ref + ")"
 		if ftype == "integer" or ftype == "number" or ftype == "boolean"
 			return ref + ".toString()"
 		return "json.dataToText(" + ref + ")"
@@ -1854,7 +1882,13 @@ functions:
 			return ""
 		string tref = safe_field_name(tf)
 		if field_type_of(field_names, field_types, tf) == "integer"
-			return indent + "if " + tref + " == 0\n" + indent + "\t" + tref + " = tenant_getId().toInteger()\n"
+			// Without a session tenant (tenant_getId() is "") the field
+			// stays unset; the conversion raises on "".
+			string src = indent + "if " + tref + " == 0\n"
+			src = src + indent + "\tstring __tenant_id = tenant_getId()\n"
+			src = src + indent + "\tif __tenant_id != \"\"\n"
+			src = src + indent + "\t\t" + tref + " = __tenant_id.toInteger()\n"
+			return src
 		return indent + "if " + tref + " == \"\"\n" + indent + "\t" + tref + " = tenant_getId()\n"
 
 	// "$1, $2, ..., $n".
@@ -2109,10 +2143,17 @@ functions:
 			if is_primitive_type(ftype)
 				string col = column_of(field_names, field_columns, field)
 				string base = "\t__row." + safe_field_name(field) + " = json.get(__row_json, " + clean_str(col) + ")"
-				if ftype == "integer"
-					src = src + base + ".toInteger()\n"
-				else if ftype == "number"
-					src = src + base + ".toNumber()\n"
+				if ftype == "integer" or ftype == "number"
+					// A column missing from the row (a `select:` without it)
+					// or NULL reads as "": the field keeps its default, as
+					// the conversion raises on "".
+					string vvar = "__v_" + safe_field_name(field)
+					string conv = ".toInteger()"
+					if ftype == "number"
+						conv = ".toNumber()"
+					src = src + "\tstring " + vvar + " = json.get(__row_json, " + clean_str(col) + ")\n"
+					src = src + "\tif " + vvar + " != \"\"\n"
+					src = src + "\t\t__row." + safe_field_name(field) + " = " + vvar + conv + "\n"
 				else if ftype == "boolean"
 					// SQLite stores booleans as 0/1; Postgres returns true/false.
 					string bvar = "__b_" + safe_field_name(field)
@@ -2218,7 +2259,13 @@ functions:
 		if tf.length() > 0
 			string tcol = table_name + "." + column_of(field_names, field_columns, tf)
 			if field_type_of(field_names, field_types, tf) == "integer"
-				tp_src = "return json.dataToText(tenant_getId().toInteger())\n"
+				// No session tenant (DAT-C004): the empty tenant, 0 for an
+				// integer tenant field (what an unscoped save stores), so
+				// rows of other tenants stay invisible. The conversion
+				// raises on "".
+				tp_src = "string __tenant_id = tenant_getId()\n"
+				tp_src = tp_src + "if __tenant_id == \"\"\n\treturn \"0\"\n"
+				tp_src = tp_src + "return json.dataToText(__tenant_id.toInteger())\n"
 			else
 				tp_src = "return json.dataToText(tenant_getId())\n"
 			cond_src = cond_src + "string __t = " + clean_str(tcol + " = ?") + "\n"
@@ -2366,10 +2413,16 @@ functions:
 		pg = pg + raise_on_db_error("__json")
 		pg = pg + "string __pr_data = json.get(__json, \"data\")\n"
 		pg = pg + "__pr.items = __parse_as_" + model_name + "(\"{\\\"data\\\":{\\\"rows\\\":\" + json.get(__pr_data, \"data\") + \"}}\")\n"
-		pg = pg + "__pr.totalCount = json.get(__pr_data, \"total\").toInteger()\n"
-		pg = pg + "__pr.totalPages = json.get(__pr_data, \"total_pages\").toInteger()\n"
-		pg = pg + "__pr.currentPage = json.get(__pr_data, \"page\").toInteger()\n"
-		pg = pg + "__pr.perPage = json.get(__pr_data, \"per_page\").toInteger()\n"
+		// A total the result does not carry reads as "" and keeps the
+		// field's 0 (the conversion raises on "").
+		pg = pg + "string __pr_v = json.get(__pr_data, \"total\")\n"
+		pg = pg + "if __pr_v != \"\"\n\t__pr.totalCount = __pr_v.toInteger()\n"
+		pg = pg + "__pr_v = json.get(__pr_data, \"total_pages\")\n"
+		pg = pg + "if __pr_v != \"\"\n\t__pr.totalPages = __pr_v.toInteger()\n"
+		pg = pg + "__pr_v = json.get(__pr_data, \"page\")\n"
+		pg = pg + "if __pr_v != \"\"\n\t__pr.currentPage = __pr_v.toInteger()\n"
+		pg = pg + "__pr_v = json.get(__pr_data, \"per_page\")\n"
+		pg = pg + "if __pr_v != \"\"\n\t__pr.perPage = __pr_v.toInteger()\n"
 		pg = pg + "__pr.hasNext = __pr.currentPage < __pr.totalPages\n"
 		pg = pg + "__pr.hasPrev = __pr.currentPage > 1\n"
 		pg = pg + "return __pr\n"

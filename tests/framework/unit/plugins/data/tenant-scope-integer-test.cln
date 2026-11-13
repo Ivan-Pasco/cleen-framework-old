@@ -1,0 +1,60 @@
+// Test: frame.data — tenant-scoped models with an integer tenant field.
+// Spec: DAT-I001 (a model with a tenant field is filtered by the session
+// tenant), DAT-C004 (no authenticated tenant -> empty tenant, rows of other
+// tenants stay invisible).
+// Regression: without a session tenant, tenant_getId() is "" and the
+// generated tenant fill and tenant filter converted it with toInteger(),
+// which raises on "" (compiler 0.33.184). The integer tenant is 0 then.
+
+plugins:
+	frame.server
+	frame.auth
+	frame.data
+
+server:
+	port: 3400
+
+// tenant_getId() comes from frame.auth, which emits it with its auth: block.
+auth:
+	session:
+		cookie = "test.sid"
+		timeoutMinutes = 5
+
+data Ticket:
+	fields:
+		integer id primary generated
+		integer tenantId
+		string body required
+
+endpoints:
+	GET "/test":
+		Ticket.migrate()
+		// No session in this request: the session tenant is "".
+		Ticket mine = Ticket()
+		mine.body = "mine"
+		Database.save(mine)
+		boolean ok_insert = mine.id > 0
+
+		// A row of another tenant, written with raw SQL.
+		db.execute("INSERT INTO tickets (tenantId, body) VALUES (7, 'theirs')", "[]")
+
+		integer visible = Ticket.count
+		list<Ticket> all = Ticket.find:
+			order: id
+		boolean ok_scope = visible == 1 and all.length() == 1 and all[0].body == "mine"
+		boolean theirs = Ticket.exists:
+			where:
+				body == "theirs"
+		boolean ok_hidden = not theirs
+
+		string raw = db.query("SELECT COUNT(*) AS n FROM tickets", "[]")
+		boolean ok_stored = json.get(raw, "data.rows.0.n") == "2"
+
+		if ok_insert and ok_scope and ok_hidden and ok_stored
+			printl("PASS: data-tenant-scope-integer")
+		else
+			printl("FAIL: data-tenant-scope-integer insert=" + ok_insert.toString() + " scope=" + ok_scope.toString() + " hidden=" + ok_hidden.toString() + " stored=" + ok_stored.toString())
+		return json({ok: true})
+
+start:
+	printl("[boot] data-tenant-scope-integer server ready")

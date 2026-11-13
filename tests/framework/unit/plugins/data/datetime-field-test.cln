@@ -1,0 +1,80 @@
+// Test: frame.data — saving `datetime` fields.
+// Spec: frame-data.ebnf §2.2 field types (`datetime` is held as text in
+// Clean); the bind value is a typed timestamp (bridge typed bind tags
+// epoch_s / datetime_iso).
+// Regression: the generated save bound every datetime with
+// `field.toInteger()`, which raises on an unset field ("") and on the text a
+// datetime column reads back as ("YYYY-MM-DD HH:MM:SS") with compiler
+// 0.33.184, so a record with an unset datetime, or one loaded and saved
+// again, could not be saved.
+// SQLite :memory: (test default). Server-shaped: runner drives /test.
+
+plugins:
+	frame.server
+	frame.data
+
+server:
+	port: 3400
+
+data Event:
+	table "events"
+	fields:
+		integer id primary generated
+		string name
+		datetime happenedAt
+
+endpoints:
+	GET "/test":
+		integer failures = 0
+		Event.migrate()
+
+		// An unset datetime saves.
+		Event unset = Event()
+		unset.name = "unset"
+		boolean saved_unset = Database.save(unset) onError false
+		if not saved_unset or unset.id <= 0
+			printl("FAIL: a record with an unset datetime did not save")
+			failures = failures + 1
+
+		// Epoch seconds save as that instant.
+		Event set = Event()
+		set.name = "set"
+		set.happenedAt = "1782437320"
+		boolean saved_set = Database.save(set) onError false
+		if not saved_set
+			printl("FAIL: a record with an epoch datetime did not save")
+			failures = failures + 1
+
+		// Load, change another field, save again: the datetime read back
+		// from the column binds again unchanged.
+		Event? found = Event.first:
+			where:
+				name == "set"
+		if found == none
+			printl("FAIL: saved record not found")
+			failures = failures + 1
+		else
+			Event loaded = found!
+			string before = loaded.happenedAt
+			loaded.name = "renamed"
+			boolean saved_again = Database.save(loaded) onError false
+			Event? again = Event.first:
+				where:
+					name == "renamed"
+			if not saved_again or again == none
+				printl("FAIL: a loaded record with a datetime did not save again")
+				failures = failures + 1
+			else
+				Event reread = again!
+				if not before.startsWith("2026-06-26") or reread.happenedAt != before
+					printl("FAIL: datetime changed on re-save: [" + before + "] -> [" + reread.happenedAt + "]")
+					failures = failures + 1
+
+		if failures == 0
+			printl("PASS: data-datetime-field")
+		else
+			printl("FAIL: data-datetime-field (" + failures.toString() + " assertion(s) failed)")
+		return json({ok: true})
+
+start:
+	printl("[boot] data-datetime-field server ready")

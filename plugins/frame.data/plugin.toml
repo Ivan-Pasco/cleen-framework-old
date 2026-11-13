@@ -314,4 +314,4 @@ example = "patterns/atomic-transaction.cln"
 
 
 [build]
-built_with_compiler = "0.33.183"
+built_with_compiler = "0.33.184"
