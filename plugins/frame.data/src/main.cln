@@ -253,8 +253,8 @@ functions:
 			string model_name = extract_attr(attrs_json, "model_name")
 			if model_name.length() == 0
 				// `data:` without a model name was the v1 connection-config
-				// block; configuration now lives in main.cln (DAT-I004).
-				return plugin_error(ctx, "FRAME-DATA-E018", "data: block needs a model name (`data User:`). Database connection settings live in main.cln's frame.data: block (spec DAT-I004).")
+				// block; the server now takes the database URL at start-up (DAT-I004).
+				return plugin_error(ctx, "FRAME-DATA-E018", "data: block needs a model name (`data User:`). The database is set when the server starts: `clean-server app.wasm --database <url>` or the DATABASE_URL environment variable (spec DAT-I004).")
 			string err = validate_data_model(model_name, body)
 			if err.length() > 0
 				return plugin_error(ctx, "FRAME-DATA-E018", err)
