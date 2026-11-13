@@ -1,0 +1,39 @@
+// Test: frame.ui — events: handlers of a hydrated component are exported as
+// top-level functions with no parameters (frame-ui-semantics UI-B006).
+//
+//   The browser runtime dispatches an event to instance.exports[handlerName]()
+//   and refuses an export that takes parameters. frame.ui emits, for each
+//   parameterless events: handler of a component with a tag and client != off,
+//   `void <handler>()` that runs the handler on the component's module-scope
+//   instance (instance_<tag>). Calling bump() twice and reset_all() once must
+//   change that instance's state the same way the handlers do.
+//   Regression: the only `bump` export was the class method, which takes the
+//   instance as a parameter, so no component event handler ever ran in the
+//   browser.
+
+plugins:
+	frame.ui
+
+component: tag="click-counter" client="on"
+	state:
+		integer count
+	events:
+		bump():
+			count = count + 1
+		reset_all():
+			count = 0
+	html:
+		<button onclick="bump">{count.toString()}</button>
+
+start:
+	bump()
+	bump()
+	string after_bumps = instance_click_counter.render()
+	reset_all()
+	string after_reset = instance_click_counter.render()
+	boolean ok_bumps = after_bumps == "<button onclick='bump'>2</button>"
+	boolean ok_reset = after_reset == "<button onclick='bump'>0</button>"
+	if ok_bumps and ok_reset
+		printl("PASS: ui-component-event-exports")
+	else
+		printl("FAIL: ui-component-event-exports " + after_bumps + " | " + after_reset)
