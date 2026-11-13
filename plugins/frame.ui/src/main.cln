@@ -307,8 +307,10 @@ functions:
 	integer expand_block_typed(integer ctx, string block_name, string attrs_json, string body)
 		// component: block — a Clean class with render(), setSlot(),
 		// renderSSR(), setInput() and the request-time render export.
+		// Its header line may carry tag="..." / client="..." (frame-ui.ebnf
+		// component_tag_attr), read here from the block text.
 		if block_name == "component"
-			return expand_component_stub(ctx, attrs_json, body)
+			return expand_component_stub(ctx, header_attrs_json(attrs_json, body), header_body(body))
 
 		// page <Name>: block — a Clean class whose render() returns the page.
 		if block_name == "page"
@@ -939,7 +941,12 @@ functions:
 functions:
 	// Block-level validation (returns an error message or ""), following
 	// frame-ui.ebnf component_block / page_block.
-	string validate_block(string block_name, string attributes, string body)
+	string validate_block(string block_name, string attrs_in, string body_in)
+		string attributes = attrs_in
+		string body = body_in
+		if block_name == "component"
+			attributes = header_attrs_json(attrs_in, body_in)
+			body = header_body(body_in)
 		string class_name = extract_json_field(attributes, "name")
 		if class_name == ""
 			class_name = extract_json_field(attributes, "model_name")
@@ -958,6 +965,131 @@ functions:
 				return "page: a class name (`page Name:`) is required"
 			return ""
 		return ""
+
+	// The inline attributes on a component: header line (frame-ui.ebnf
+	// component_tag_attr: `component: tag="site-header" client="off"`), as
+	// JSON object members (`"tag":"site-header","client":"off"`).
+	//
+	// The block text starts with the rest of the header line, unindented,
+	// while every body line keeps its leading tab. So the first line holds
+	// attributes only when it is not indented and consists entirely of
+	// identifier="string" pairs separated by whitespace or a comma. Values
+	// are string literals (grammar.ebnf string_literal); their escapes are
+	// decoded and the value is JSON-escaped again. "" when the first line is
+	// not such a line.
+	string header_attr_members(string body)
+		string line = body
+		integer nl = body.indexOf("\n")
+		if nl != -1
+			line = body.substring(0, nl)
+		if line.startsWith(" ") or line.startsWith("\t")
+			return ""
+		integer n = line.length()
+		boolean trimming = true
+		while trimming and n > 0
+			string last = line.substring(n - 1, n)
+			if last == " " or last == "\t" or last == "\r"
+				n = n - 1
+			else
+				trimming = false
+		string key_first = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+		string key_more = "0123456789-"
+		string members = ""
+		integer i = 0
+		while i < n
+			integer key_start = i
+			boolean in_key = true
+			while in_key and i < n
+				string kc = line.substring(i, i + 1)
+				if key_first.indexOf(kc) != -1
+					i = i + 1
+				else if i > key_start and key_more.indexOf(kc) != -1
+					i = i + 1
+				else
+					in_key = false
+			if i == key_start
+				return ""
+			string key = line.substring(key_start, i)
+			if i + 2 > n
+				return ""
+			if line.substring(i, i + 2) != "=\""
+				return ""
+			i = i + 2
+			string value = ""
+			boolean closed = false
+			while closed == false and i < n
+				string c = line.substring(i, i + 1)
+				if c == "\""
+					closed = true
+				else if c == "\\"
+					if i + 1 >= n
+						return ""
+					string e = line.substring(i + 1, i + 2)
+					if e == "n"
+						value = value + "\\n"
+					else if e == "r"
+						value = value + "\\r"
+					else if e == "t"
+						value = value + "\\t"
+					else if e == "0"
+						value = value + "\\u0000"
+					else if e == "\""
+						value = value + "\\\""
+					else if e == "\\"
+						value = value + "\\\\"
+					else if e == "\{" or e == "\}"
+						value = value + e
+					else
+						return ""
+					i = i + 1
+				else if c == "\t"
+					value = value + "\\t"
+				else
+					value = value + c
+				i = i + 1
+			if closed == false
+				return ""
+			if members != ""
+				members = members + ","
+			members = members + "\"" + key + "\":\"" + value + "\""
+			// Pairs are separated by whitespace, optionally after a comma
+			// (`tag="x", client="off"`); a trailing comma is not allowed.
+			integer pair_end = i
+			if i < n and line.substring(i, i + 1) == ","
+				i = i + 1
+			integer after_comma = i
+			boolean spacing = true
+			while spacing and i < n
+				string sc = line.substring(i, i + 1)
+				if sc == " " or sc == "\t"
+					i = i + 1
+				else
+					spacing = false
+			if i < n and i == pair_end
+				return ""
+			if i >= n and after_comma != pair_end
+				return ""
+		return members
+
+	// The block attributes `attrs` (a JSON object, or "") plus the attributes
+	// on the component header line of `body`.
+	string header_attrs_json(string attrs, string body)
+		string members = header_attr_members(body)
+		if members == ""
+			return attrs
+		string a = attrs.trim()
+		if a == "" or a == "\{\}"
+			return "\{" + members + "\}"
+		return a.substring(0, a.length() - 1) + "," + members + "\}"
+
+	// The component body without its header attribute line.
+	string header_body(string body)
+		if header_attr_members(body) == ""
+			return body
+		integer nl = body.indexOf("\n")
+		if nl == -1
+			return ""
+		return body.substring(nl + 1, body.length())
 
 	// IDE keyword support.
 	string get_keywords()

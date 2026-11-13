@@ -18,6 +18,7 @@ start:
 	test_assemble_paths()
 	test_hydration_screens()
 	test_validate_block()
+	test_component_header_attrs()
 	test_attribute_lookup()
 	test_template_errors()
 	test_validate_rules()
@@ -143,6 +144,34 @@ functions:
 		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "") == "")
 		assert(validate_block("component", "\{\"tag\":\"x-y\"\}", "html:\n\t<p>x</p>") == "")
 		assert(validate_block("component", "\{\"model_name\":\"X\",\"client\":\"sometimes\"\}", "html:") == "component: client must be one of off, on, visible, idle, only")
+
+	// `component: tag="x" client="on"` — the header-line attributes are read
+	// from the block text (frame-ui.ebnf component_tag_attr): an unindented
+	// first line made only of key="value" pairs. Anything else is body.
+	void test_component_header_attrs()
+		string body = "tag=\"site-header\" client=\"off\"\n\thtml:\n"
+		assert(header_attr_members(body) == "\"tag\":\"site-header\",\"client\":\"off\"")
+		assert(header_body(body) == "\thtml:\n")
+		assert(header_attr_members("tag=\"site-header\", client=\"off\"\n\thtml:\n") == "\"tag\":\"site-header\",\"client\":\"off\"")
+		assert(header_attr_members("tag=\"a\\\"b\\\\c\"\n\tbody") == "\"tag\":\"a\\\"b\\\\c\"")
+		// An indented first line is body, even when it looks like an attribute.
+		string indented = "\tname=\"x\"\n\tage=\"3\"\n"
+		assert(header_attr_members(indented) == "")
+		assert(header_body(indented) == indented)
+		list<string> not_attrs = ["tag=\"x\" stray", "tag=\"x\"other=\"y\"", "tag=\"x\",", "tag = \"x\"", "list<User> rows =", "tag=\"unterminated", "<div>", ""]
+		integer i = 0
+		while i < not_attrs.length()
+			string content = not_attrs[i] + "\n\tbody"
+			assert(header_attr_members(content) == "")
+			assert(header_body(content) == content)
+			i = i + 1
+		// Merged after the block attributes; validate_block reads them too.
+		assert(header_attrs_json("", body) == "\{\"tag\":\"site-header\",\"client\":\"off\"\}")
+		assert(header_attrs_json("\{\"name\":\"X\"\}", body) == "\{\"name\":\"X\",\"tag\":\"site-header\",\"client\":\"off\"\}")
+		assert(header_attrs_json("\{\"tag\":\"x-y\"\}", "\thtml:\n") == "\{\"tag\":\"x-y\"\}")
+		assert(validate_block("component", "", "tag=\"x-y\"\n\thtml:\n\t\t<p>x</p>") == "")
+		assert(validate_block("component", "", "tag=\"x-y\" client=\"sometimes\"\n\thtml:") == "component: client must be one of off, on, visible, idle, only")
+		assert(validate_block("component", "", "\n\thtml:") == "component: a class name (`component Name:`) or tag=\"...\" is required")
 
 	// Attributes match by whole name, outside other attributes' values.
 	void test_attribute_lookup()
