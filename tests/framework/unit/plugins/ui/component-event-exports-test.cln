@@ -10,6 +10,9 @@
 //   Regression: the only `bump` export was the class method, which takes the
 //   instance as a parameter, so no component event handler ever ran in the
 //   browser.
+//   onMount() in events: is the lifecycle hook client_init calls on each
+//   instance, not a browser handler, so it gets no export: two hydrated
+//   components that both declare it build (no FRAME-UI-E016).
 
 plugins:
 	frame.ui
@@ -18,12 +21,23 @@ component: tag="click-counter" client="on"
 	state:
 		integer count
 	events:
+		onMount():
+			count = 0
 		bump():
 			count = count + 1
 		reset_all():
 			count = 0
 	html:
 		<button onclick="bump">{count.toString()}</button>
+
+component: tag="other-box" client="on"
+	state:
+		integer n
+	events:
+		onMount():
+			n = 1
+	html:
+		<p>{n.toString()}</p>
 
 start:
 	bump()

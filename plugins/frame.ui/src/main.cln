@@ -1600,7 +1600,10 @@ functions:
 
 	// Names of the handlers declared in a component's events: section that
 	// take no parameters, one per line. Header forms follow
-	// component_method_entry (`name():` or `ret name()`).
+	// component_method_entry (`name():` or `ret name()`). onMount() is left
+	// out: it is the lifecycle hook client_init calls on the instance
+	// (lifecycle.md §3.3), not a handler the browser looks up by name, and
+	// every hydrated component may declare it.
 	string component_event_handler_names(string text)
 		string lines = component_section_lines(text, "events")
 		string names = ""
@@ -1633,7 +1636,8 @@ functions:
 							integer sp = head.lastIndexOf(" ")
 							if sp != -1
 								head = head.substring(sp + 1, head.length()).trim()
-							names = names + head + "\n"
+							if head != "onMount"
+								names = names + head + "\n"
 		return names
 
 	// Event handler exports (frame-ui-semantics UI-B006). The browser runtime

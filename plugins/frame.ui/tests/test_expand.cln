@@ -19,6 +19,7 @@ start:
 	test_hydration_screens()
 	test_validate_block()
 	test_component_header_attrs()
+	test_event_handler_names()
 	test_attribute_lookup()
 	test_template_errors()
 	test_validate_rules()
@@ -172,6 +173,13 @@ functions:
 		assert(validate_block("component", "", "tag=\"x-y\"\n\thtml:\n\t\t<p>x</p>") == "")
 		assert(validate_block("component", "", "tag=\"x-y\" client=\"sometimes\"\n\thtml:") == "component: client must be one of off, on, visible, idle, only")
 		assert(validate_block("component", "", "\n\thtml:") == "component: a class name (`component Name:`) or tag=\"...\" is required")
+
+	// Parameterless events: handlers get a top-level export (UI-B006); a
+	// handler with parameters and the onMount() lifecycle hook do not.
+	void test_event_handler_names()
+		string text = "\tevents:\n\t\tonMount():\n\t\t\tn = 1\n\t\tbump():\n\t\t\tn = n + 1\n\t\tpick(i: integer):\n\t\t\tn = i\n\t\treset_all():\n\t\t\tn = 0\n"
+		assert(component_event_handler_names(text) == "bump\nreset_all\n")
+		assert(component_event_handler_names("\tstate:\n\t\tinteger n\n") == "")
 
 	// Attributes match by whole name, outside other attributes' values.
 	void test_attribute_lookup()
