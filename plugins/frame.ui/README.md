@@ -64,19 +64,17 @@ layout: name="MainLayout"
 
 ### page
 
-Defines a page component with routing metadata.
-
-**Attributes:**
-- `name` (required) - Page class name
-- `path` (required) - URL path (must start with /)
-- `layout` (optional) - Layout component to use
-- `title` (optional) - Page title
+Defines a page class (frame-ui.ebnf `page_block`). The class name follows
+`page`; the URL comes from the file path under `app/ui/web/pages/`, or from
+an `at "/path"` annotation when it must differ. The header takes no
+`key="value"` attributes (`page: name="..." path="..."` is error
+FRAME-UI-E017).
 
 **Example:**
 ```clean
-page: name="HomePage" path="/" layout="MainLayout" title="Home"
-    return "<h1>Welcome</h1>
-    <p>This is the home page.</p>"
+page HomePage:
+	<h1>Welcome</h1>
+	<p>This is the home page.</p>
 ```
 
 ## Hydration Modes

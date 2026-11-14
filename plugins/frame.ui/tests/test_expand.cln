@@ -20,6 +20,7 @@ start:
 	test_validate_block()
 	test_component_header_attrs()
 	test_event_handler_names()
+	test_html_and_page_headers()
 	test_attribute_lookup()
 	test_template_errors()
 	test_validate_rules()
@@ -180,6 +181,24 @@ functions:
 		string text = "\tevents:\n\t\tonMount():\n\t\t\tn = 1\n\t\tbump():\n\t\t\tn = n + 1\n\t\tpick(i: integer):\n\t\t\tn = i\n\t\treset_all():\n\t\t\tn = 0\n"
 		assert(component_event_handler_names(text) == "bump\nreset_all\n")
 		assert(component_event_handler_names("\tstate:\n\t\tinteger n\n") == "")
+
+	// `html: var="name"` is read from the header line (frame-ui.ebnf
+	// html_var_attribute); any other header attribute on html: and any on
+	// page: (page_block has none) is an error. Unindented text that is not
+	// key="value" pairs stays template text.
+	void test_html_and_page_headers()
+		string body = "var=\"card\"\n\t<b>x</b>"
+		string src = expand_html_block(header_attrs_json("", body), header_body(body))
+		assert(src.startsWith("string card = \"\"\n"))
+		assert(src.contains("var=") == false)
+		assert(src.contains("return") == false)
+		assert(header_attr_keys("var=\"m\", id=\"x\"\n\t<p></p>") == ",var,id,")
+		assert(header_attr_keys("\t<p></p>") == "")
+		assert(validate_block("html", "", body) == "")
+		assert(validate_block("html", "", "id=\"m\"\n\t<p></p>") == html_header_error())
+		assert(validate_block("html", "", "<p>x</p>") == "")
+		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "path=\"/\" layout=\"Main\"\n\t<p></p>") == page_header_error())
+		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "\n\t<p></p>") == "")
 
 	// Attributes match by whole name, outside other attributes' values.
 	void test_attribute_lookup()

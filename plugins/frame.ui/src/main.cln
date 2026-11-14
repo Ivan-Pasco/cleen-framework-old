@@ -313,13 +313,20 @@ functions:
 			return expand_component_stub(ctx, header_attrs_json(attrs_json, body), header_body(body))
 
 		// page <Name>: block — a Clean class whose render() returns the page.
+		// frame-ui.ebnf page_block has no header attributes.
 		if block_name == "page"
+			if header_attr_keys(body) != ""
+				return plugin_error(ctx, "FRAME-UI-E017", page_header_error())
 			return expand_page_stub(ctx, attrs_json, body)
 
 		// html: block — statements that build the markup in `__html` (or the
 		// var= variable) and, without var=, return it (UI-P004 / UI-P005).
+		// `html: var="name"` writes the attribute on the header line.
 		if block_name == "html"
-			return expand_html_block_stub(ctx, attrs_json, body)
+			string html_keys = header_attr_keys(body)
+			if html_keys != "" and html_keys.replace(",var", "") != ","
+				return plugin_error(ctx, "FRAME-UI-E018", html_header_error())
+			return expand_html_block_stub(ctx, header_attrs_json(attrs_json, body), header_body(body))
 
 		// styles Name: block — frame-ui.ebnf §4 styles_block. Produces no
 		// Clean code; its CSS is added to the frame.ui stylesheet artifact.
@@ -960,7 +967,14 @@ functions:
 			if body.indexOf("html:") == -1 and body.indexOf("render") == -1
 				return "component: an html: template or render: section is required"
 			return ""
+		if block_name == "html"
+			string html_keys = header_attr_keys(body_in)
+			if html_keys != "" and html_keys.replace(",var", "") != ","
+				return html_header_error()
+			return ""
 		if block_name == "page"
+			if header_attr_keys(body_in) != ""
+				return page_header_error()
 			if class_name == "" and extract_json_field(attributes, "path") == ""
 				return "page: a class name (`page Name:`) is required"
 			return ""
@@ -978,6 +992,15 @@ functions:
 	// decoded and the value is JSON-escaped again. "" when the first line is
 	// not such a line.
 	string header_attr_members(string body)
+		return header_attr_scan(body, false)
+
+	// The keys of the header-line attributes of `body` as ",key,key,", or ""
+	// when the first line is not an attribute line (see header_attr_members).
+	string header_attr_keys(string body)
+		return header_attr_scan(body, true)
+
+	// header_attr_members (keys_only false) / header_attr_keys (true).
+	string header_attr_scan(string body, boolean keys_only)
 		string line = body
 		integer nl = body.indexOf("\n")
 		if nl != -1
@@ -1049,9 +1072,14 @@ functions:
 				i = i + 1
 			if closed == false
 				return ""
-			if members != ""
-				members = members + ","
-			members = members + "\"" + key + "\":\"" + value + "\""
+			if keys_only
+				if members == ""
+					members = ","
+				members = members + key + ","
+			else
+				if members != ""
+					members = members + ","
+				members = members + "\"" + key + "\":\"" + value + "\""
 			// Pairs are separated by whitespace, optionally after a comma
 			// (`tag="x", client="off"`); a trailing comma is not allowed.
 			integer pair_end = i
@@ -1070,6 +1098,16 @@ functions:
 			if i >= n and after_comma != pair_end
 				return ""
 		return members
+
+	// FRAME-UI-E017: `page: name="..." path="..."` is not a frame-ui.ebnf
+	// form; page_block is `page Name:` or `page Name at "/path":`.
+	string page_header_error()
+		return "page: the header takes no key=\"value\" attributes (frame-ui.ebnf page_block). Write `page Name:` (the URL comes from the file path under app/ui/web/pages/) or `page Name at \"/path\":`."
+
+	// FRAME-UI-E018: the html: header line holds only var="name"
+	// (frame-ui.ebnf html_var_attribute).
+	string html_header_error()
+		return "html: the only header attribute is var=\"name\" (frame-ui.ebnf html_var_attribute), e.g. `html: var=\"markup\"`."
 
 	// The block attributes `attrs` (a JSON object, or "") plus the attributes
 	// on the component header line of `body`.
