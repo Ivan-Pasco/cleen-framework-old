@@ -381,7 +381,10 @@ async function main() {
 		booted.doc.dispatchEvent(new Event('DOMContentLoaded'));
 		await booted.ready();
 		eq(called, true, 'companion import used');
-		eq(booted.doc.querySelector('#out').textContent, 'X|7|7', '#out');
+		// Changed in compiler 0.33.184: invalid text raises; onError gives the fallback.
+		// "a".toNumber() is rejected inside the WASM before string_to_float is
+		// called, so the companion only sees the valid "1" and the "a" falls back to 0.
+		eq(booted.doc.querySelector('#out').textContent, 'X|7|0', '#out');
 	});
 
 	await test('background runs after start returns; later runs when read (HOST_BRIDGE.md §Async)', async () => {

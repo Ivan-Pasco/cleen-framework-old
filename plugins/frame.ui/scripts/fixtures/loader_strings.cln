@@ -9,5 +9,6 @@ start:
 	string r = t.replace("a", "X")
 	string n = ui.getText("#num")
 	number v = n.toNumber()
-	number w = t.toNumber()
+	// Changed in compiler 0.33.184: invalid text raises; onError gives the fallback
+	number w = t.toNumber() onError 0
 	integer s = ui.updateElement("#out", r + "|" + v.toString() + "|" + w.toString())
