@@ -519,4 +519,4 @@ anti_pattern = "polling the server with repeated GET requests on a timer — use
 example = "patterns/live-feed-realtime.cln"
 
 [build]
-built_with_compiler = "0.33.185"
+built_with_compiler = "0.33.186"

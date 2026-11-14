@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "compiler_version": "0.33.185",
+  "compiler_version": "0.33.186",
   "contract_version": "1.0.0",
   "runtime_abi_version": "1.0.0",
   "artifacts": [
@@ -11,7 +11,7 @@
       "public": false,
       "content_type": "application/wasm",
       "size_bytes": 129763,
-      "sha256": "a9f83f438b4a4f4a61b53b5156f1481904c62e7cf4d08e530c28da132e961ca7",
+      "sha256": "3dfd3ec47a34dd353e03f6c8ce5dfff384d2ec557ca392328841fd8f7da8511b",
       "source_plugin": null
     }
   ],
