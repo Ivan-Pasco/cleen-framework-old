@@ -114,6 +114,7 @@ node plugins/frame.canvas/runtime/tests/scene-runtime.test.mjs
 node plugins/frame.canvas/runtime/tests/frame-pipeline.test.mjs   # fps, background, layers, camera
 node plugins/frame.canvas/runtime/tests/scene-stack.test.mjs      # change / push / pop, transitions, visibility
 node plugins/frame.canvas/runtime/tests/page-bridge.test.mjs      # page.set / page.get with frame.ui's runtime
+node plugins/frame.canvas/runtime/tests/scene-header.test.mjs     # canvasScene: header attributes, escapes, errors
 
 # Compile-time checks: invalid scenes fail with the CVS rule they break
 node plugins/frame.canvas/runtime/tests/scene-diagnostics.test.mjs

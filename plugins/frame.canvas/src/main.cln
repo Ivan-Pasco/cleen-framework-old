@@ -71,6 +71,10 @@ functions:
 
 	integer expand_block_typed(integer ctx, string block_name, string attrs_json, string body)
 		if block_name.startsWith("canvasScene")
+			// The header line is this plugin's to read (frame-canvas.ebnf §2).
+			string header_problem = scene_header_problem(scene_header(body))
+			if header_problem != ""
+				return plugin_error(ctx, "FRAME-CANVAS-E412", header_problem)
 			// CVS-S011: one canvasScene: per file. Each scene compiles to its
 			// own module (scene.change loads the next scene's module), so a
 			// second scene in the same compilation is that rule broken — two
@@ -87,6 +91,9 @@ functions:
 
 	string validate_block(string block_name, string attributes, string body)
 		if block_name.startsWith("canvasScene")
+			string header_problem = scene_header_problem(scene_header(body))
+			if header_problem != ""
+				return "FRAME-CANVAS-E412: " + header_problem
 			return validate_canvas_scene(scene_sections(body))
 		return ""
 
@@ -2217,9 +2224,9 @@ functions:
 		// Read while the scene's lines expand: the state variables' types
 		// (typed scene.get / page.get) and background= (canvas.clear).
 		_build_state_set("frame.canvas:state", state_body)
-		string scene_bg = get_iexpr(header, "background")
-		if scene_bg == "" and get_attr(attrs_json, "background", "") != ""
-			scene_bg = clean_str(get_attr(attrs_json, "background", ""))
+		string scene_bg = header_src(header, "background")
+		if scene_bg == "" and json_attr(attrs_json, "background") != ""
+			scene_bg = clean_str(json_attr(attrs_json, "background"))
 		_build_state_set("frame.canvas:background", scene_bg)
 
 		emit_all_scene_type_stubs(ctx)
@@ -2227,7 +2234,7 @@ functions:
 		// --- start: canvas, assets, layers -------------------------------
 		integer init_call = _batch_call(ctx, "_canvas_init", canvas_init_args(ctx, attrs_json, header))
 		_emit_statement_into_start(ctx, svardecl(ctx, "__cv", "integer", init_call))
-		_emit_statement_into_start(ctx, bcc2(ctx, "_canvas_set_fps", ident(ctx, "__cv"), _batch_intLit(ctx, int_attr(attrs_json, header, "fps", 60), 0)))
+		_emit_statement_into_start(ctx, bcc2(ctx, "_canvas_set_fps", ident(ctx, "__cv"), int_attr_expr(ctx, attrs_json, header, "fps", 60)))
 		// background= (frame-canvas.ebnf §2): the canvas starts in that colour
 		// and canvas.clear without color= clears to it.
 		if scene_bg != ""
@@ -2327,8 +2334,8 @@ functions:
 	// Arguments of _canvas_init: width, height, id (§2).
 	integer canvas_init_args(integer ctx, string attrs_json, string header)
 		integer a = _batch_arrayNew(ctx)
-		_batch_arrayPush(ctx, a, _batch_intLit(ctx, int_attr(attrs_json, header, "width", 800), 0))
-		_batch_arrayPush(ctx, a, _batch_intLit(ctx, int_attr(attrs_json, header, "height", 600), 0))
+		_batch_arrayPush(ctx, a, int_attr_expr(ctx, attrs_json, header, "width", 800))
+		_batch_arrayPush(ctx, a, int_attr_expr(ctx, attrs_json, header, "height", 600))
 		_batch_arrayPush(ctx, a, sl(ctx, scene_attr(attrs_json, header, "id", "canvas")))
 		return a
 
@@ -2382,50 +2389,359 @@ functions:
 			i = i + 1
 		return dots <= 1
 
-	// Attribute lookup in the compiler's attrs JSON ({"key":"value",...}).
-	string get_attr(string attrs, string key, string default_value)
-		string pattern = "\"" + key + "\""
-		integer pos = attrs.indexOf(pattern)
-		if pos == -1
-			return default_value
-		integer colon = attrs.indexOf(":", pos + pattern.length())
-		if colon == -1
-			return default_value
-		string rest = attrs.substring(colon + 1, attrs.length()).trim()
-		if rest.startsWith("\"")
-			integer close = rest.indexOf("\"", 1)
-			if close == -1
-				return default_value
-			return rest.substring(1, close)
-		integer e = 0
-		while e < rest.length() and rest.substring(e, e + 1) != "," and rest.substring(e, e + 1) != "}"
-			e = e + 1
-		return rest.substring(0, e).trim()
+	// String value of `key` in the compiler's attrs JSON ({"key":"value",...},
+	// the block's declared attributes), JSON escapes decoded; a scalar value
+	// as written; "" when absent.
+	string json_attr(string attrs, string key)
+		integer p = attrs.indexOf("\{")
+		if p == -1
+			return ""
+		p = p + 1
+		while p < attrs.length()
+			p = json_skip_blank(attrs, p)
+			if attrs.substring(p, p + 1) != "\""
+				return ""
+			integer ke = json_string_end(attrs, p)
+			if ke == -1
+				return ""
+			string k = json_decode(attrs.substring(p + 1, ke - 1))
+			p = json_skip_blank(attrs, ke)
+			if attrs.substring(p, p + 1) != ":"
+				return ""
+			p = json_skip_blank(attrs, p + 1)
+			integer ve = 0
+			string v = ""
+			if attrs.substring(p, p + 1) == "\""
+				ve = json_string_end(attrs, p)
+				if ve == -1
+					return ""
+				v = json_decode(attrs.substring(p + 1, ve - 1))
+			else
+				ve = p
+				while ve < attrs.length() and attrs.substring(ve, ve + 1) != "," and attrs.substring(ve, ve + 1) != "\}"
+					ve = ve + 1
+				v = attrs.substring(p, ve).trim()
+			if k == key
+				return v
+			p = json_skip_blank(attrs, ve)
+			if attrs.substring(p, p + 1) != ","
+				return ""
+			p = p + 1
+		return ""
 
-	// A canvasScene attribute (§2): from the compiler's attrs JSON, else from
-	// the header line `id="x" width=800 ...`.
+	integer json_skip_blank(string s, integer i)
+		integer p = i
+		while p < s.length() and (s.substring(p, p + 1) == " " or s.substring(p, p + 1) == "\t" or s.substring(p, p + 1) == "\n" or s.substring(p, p + 1) == "\r")
+			p = p + 1
+		return p
+
+	// Offset just past the JSON string starting at the quote at `i`; -1 when
+	// it is not closed.
+	integer json_string_end(string s, integer i)
+		integer p = i + 1
+		while p < s.length()
+			string c = s.substring(p, p + 1)
+			if c == "\\"
+				p = p + 2
+			else if c == "\""
+				return p + 1
+			else
+				p = p + 1
+		return -1
+
+	// The text of a JSON string's content with its escapes decoded. A header
+	// string literal can hold every character but the control characters
+	// other than \n, \r, \t and \0 (core grammar §1.6), so those are the
+	// \u escapes the compiler writes for it.
+	string json_decode(string s)
+		if s.indexOf("\\") == -1
+			return s
+		string out = ""
+		integer seg = 0
+		integer p = 0
+		while p < s.length()
+			if s.substring(p, p + 1) == "\\" and p + 1 < s.length()
+				out = out + s.substring(seg, p)
+				string e = s.substring(p + 1, p + 2)
+				integer step = 2
+				if e == "n"
+					out = out + "\n"
+				else if e == "r"
+					out = out + "\r"
+				else if e == "t"
+					out = out + "\t"
+				else if e == "u" and s.substring(p + 2, p + 6) == "0000"
+					out = out + "\0"
+					step = 6
+				else
+					out = out + e
+				p = p + step
+				seg = p
+			else
+				p = p + 1
+		return out + s.substring(seg, s.length())
+
+	// ------------------------------------------------------------------------
+	// The canvasScene header line (frame-canvas.ebnf §2):
+	//
+	//   canvasScene: { scene_attr }      e.g. canvasScene: id="game" width=800
+	//
+	// Attributes are name=value pairs separated by blanks (no commas). width=,
+	// height= and fps= take an integer literal or an identifier, background=
+	// a string literal or an identifier, id= a string literal. String
+	// literals follow the core grammar (§1.6): escapes \" \\ \{ \} \n \r \t
+	// \0, and `{...}` is interpolation. A `//` comment may end the line.
+	// ------------------------------------------------------------------------
+
+	boolean is_blank(string c)
+		return c == " " or c == "\t" or c == "\r"
+
+	// Offset of the next attribute at or after `i`: the header's length at
+	// its end or at a `//` comment.
+	integer header_next(string h, integer i)
+		integer p = i
+		while p < h.length() and is_blank(h.substring(p, p + 1))
+			p = p + 1
+		if h.substring(p, p + 2) == "//"
+			return h.length()
+		return p
+
+	// End of the attribute name starting at `i` (`i` when there is none).
+	integer header_name_end(string h, integer i)
+		integer p = i
+		while p < h.length() and is_ident_char(h.substring(p, p + 1))
+			p = p + 1
+		return p
+
+	// Start of the value of the attribute whose name ends at `ne`, after its
+	// `=` (blanks around the `=` allowed); -1 when there is no `=`.
+	integer header_value_start(string h, integer ne)
+		integer p = ne
+		while p < h.length() and is_blank(h.substring(p, p + 1))
+			p = p + 1
+		if h.substring(p, p + 1) != "="
+			return -1
+		p = p + 1
+		while p < h.length() and is_blank(h.substring(p, p + 1))
+			p = p + 1
+		return p
+
+	// End of the value starting at `i`: just past the closing quote of a
+	// string literal (-1 when it is not closed), else the next blank.
+	integer header_value_end(string h, integer i)
+		if h.substring(i, i + 1) == "\""
+			integer p = i + 1
+			while p < h.length()
+				string c = h.substring(p, p + 1)
+				if c == "\\"
+					p = p + 2
+				else if c == "\""
+					return p + 1
+				else
+					p = p + 1
+			return -1
+		integer q = i
+		while q < h.length() and is_blank(h.substring(q, q + 1)) == false
+			q = q + 1
+		return q
+
+	// Source text of attribute `key` on the header line `h` (a string
+	// literal keeps its quotes); "" when absent. `h` has passed
+	// scene_header_problem.
+	string header_src(string h, string key)
+		integer i = header_next(h, 0)
+		while i < h.length()
+			integer ne = header_name_end(h, i)
+			integer vs = header_value_start(h, ne)
+			if ne == i or vs == -1
+				return ""
+			integer ve = header_value_end(h, vs)
+			if ve == -1
+				return ""
+			if h.substring(i, ne) == key
+				return h.substring(vs, ve)
+			i = header_next(h, ve)
+		return ""
+
+	string header_comma_problem()
+		return "canvasScene: header attributes are separated by spaces, not commas — write canvasScene: id=\"game\" width=800 height=600 (frame-canvas.ebnf §2)"
+
+	// Why the header line `h` is not `{ scene_attr }` (frame-canvas.ebnf
+	// §2); "" when it is.
+	string scene_header_problem(string h)
+		string seen = " "
+		integer i = header_next(h, 0)
+		while i < h.length()
+			string c = h.substring(i, i + 1)
+			if c == ","
+				return header_comma_problem()
+			integer ne = header_name_end(h, i)
+			if ne == i
+				return "canvasScene: unexpected '" + c + "' in the header, which takes name=value attributes: width=, height=, fps=, background=, id= (frame-canvas.ebnf §2)"
+			string key = h.substring(i, ne)
+			if key != "width" and key != "height" and key != "fps" and key != "background" and key != "id"
+				return "canvasScene: unknown header attribute '" + key + "' — the header takes width=, height=, fps=, background= and id= (frame-canvas.ebnf §2)"
+			if seen.indexOf(" " + key + " ") != -1
+				return "canvasScene: " + key + "= is given twice in the header"
+			seen = seen + key + " "
+			integer vs = header_value_start(h, ne)
+			if vs == -1 or vs >= h.length()
+				return "canvasScene: header attribute '" + key + "' needs a value: " + key + "=<value> (frame-canvas.ebnf §2)"
+			integer ve = header_value_end(h, vs)
+			if ve == -1
+				return "canvasScene: the string value of " + key + "= is not closed"
+			string v = h.substring(vs, ve)
+			if v.endsWith(",") and v.startsWith("\"") == false
+				return header_comma_problem()
+			string vp = scene_value_problem(key, v)
+			if vp != ""
+				return "canvasScene: " + vp + " (frame-canvas.ebnf §2)"
+			if ve < h.length()
+				string next = h.substring(ve, ve + 1)
+				if next == ","
+					return header_comma_problem()
+				if is_blank(next) == false
+					return "canvasScene: put a space between header attributes (after " + key + "=" + v + ")"
+			i = header_next(h, ve)
+		return ""
+
+	// Why `v` is not a valid value of header attribute `key`; "" when it is.
+	string scene_value_problem(string key, string v)
+		if key == "id"
+			if v.startsWith("\"") == false
+				return "id= takes a string literal (id=\"game\"), found " + v
+			return string_literal_problem(key, v, false)
+		if key == "background"
+			if v.startsWith("\"")
+				return string_literal_problem(key, v, true)
+			if is_identifier(v)
+				return ""
+			return "background= takes a string literal or a variable name, found " + v
+		if is_integer_literal(v) or is_identifier(v)
+			return ""
+		return key + "= takes an integer literal or a variable name, found " + v
+
+	// Why the string literal `v` (quotes included) is not valid: an unknown
+	// escape, or interpolation where `interpolates` is false; "" when valid.
+	string string_literal_problem(string key, string v, boolean interpolates)
+		string escapes = "\"\{\}\\nrt0"
+		integer p = 1
+		while p < v.length() - 1
+			string c = v.substring(p, p + 1)
+			if c == "\\"
+				string e = v.substring(p + 1, p + 2)
+				if escapes.indexOf(e) == -1
+					return key + "= has the unknown escape '\\" + e + "' (escapes: \\\" \\\\ \\\{ \\\} \\n \\r \\t \\0)"
+				p = p + 2
+			else
+				if c == "\{" and interpolates == false
+					return key + "= is a plain string, so it cannot interpolate — write \\\{ for a literal brace"
+				p = p + 1
+		return ""
+
+	boolean is_identifier(string v)
+		if v.length() == 0
+			return false
+		string c = v.substring(0, 1)
+		if (c >= "0" and c <= "9") or is_ident_char(c) == false
+			return false
+		integer i = 1
+		while i < v.length()
+			if is_ident_char(v.substring(i, i + 1)) == false
+				return false
+			i = i + 1
+		return true
+
+	// True when `v` is a decimal_integer (core grammar §1.5: `-`? digits).
+	boolean is_decimal_integer(string v)
+		string t = v
+		if t.startsWith("-")
+			t = t.substring(1, t.length())
+		return t.length() > 0 and all_chars_in(t, "0123456789")
+
+	// True when `v` is an integer_literal (core grammar §1.5): decimal, or
+	// 0x / 0b / 0o with at least one digit of that base.
+	boolean is_integer_literal(string v)
+		string t = v
+		if t.startsWith("-")
+			t = t.substring(1, t.length())
+		if t.length() > 2 and t.startsWith("0")
+			string base = t.substring(1, 2)
+			string digits = t.substring(2, t.length())
+			if base == "x" or base == "X"
+				return all_chars_in(digits, "0123456789abcdefABCDEF")
+			if base == "b" or base == "B"
+				return all_chars_in(digits, "01")
+			if base == "o" or base == "O"
+				return all_chars_in(digits, "01234567")
+		return is_decimal_integer(v)
+
+	boolean all_chars_in(string s, string allowed)
+		if s.length() == 0
+			return false
+		integer i = 0
+		while i < s.length()
+			if allowed.indexOf(s.substring(i, i + 1)) == -1
+				return false
+			i = i + 1
+		return true
+
+	// The text of the string literal `v` (quotes included) with its escapes
+	// decoded (core grammar §1.6).
+	string decode_clean_str(string v)
+		string s = v.substring(1, v.length() - 1)
+		if s.indexOf("\\") == -1
+			return s
+		string out = ""
+		integer seg = 0
+		integer p = 0
+		while p < s.length()
+			if s.substring(p, p + 1) == "\\" and p + 1 < s.length()
+				out = out + s.substring(seg, p)
+				string e = s.substring(p + 1, p + 2)
+				if e == "n"
+					out = out + "\n"
+				else if e == "r"
+					out = out + "\r"
+				else if e == "t"
+					out = out + "\t"
+				else if e == "0"
+					out = out + "\0"
+				else
+					out = out + e
+				p = p + 2
+				seg = p
+			else
+				p = p + 1
+		return out + s.substring(seg, s.length())
+
+	// A canvasScene attribute (§2) as text: the header line's value (a
+	// string literal decoded), else the value in the compiler's attrs JSON,
+	// else `default_value`.
 	string scene_attr(string attrs_json, string header, string key, string default_value)
-		string v = get_attr(attrs_json, key, "")
+		string src = header_src(header, key)
+		if src.startsWith("\"")
+			return decode_clean_str(src)
+		if src != ""
+			return src
+		string v = json_attr(attrs_json, key)
 		if v != ""
 			return v
-		v = get_iexpr(header, key)
-		if v == ""
-			return default_value
-		if v.startsWith("\"") and v.endsWith("\"") and v.length() >= 2
-			return v.substring(1, v.length() - 1)
-		return v
+		return default_value
 
-	integer int_attr(string attrs, string header, string key, integer fallback)
-		string v = scene_attr(attrs, header, key, "")
-		if v == ""
-			return fallback
-		if v == "0"
-			return 0
-		// Not a whole number: the fallback, as for 0.
-		integer n = v.toInteger() onError 0
-		if n == 0
-			return fallback
-		return n
+	// width= / height= / fps= (§2 integer_expression) as an expression: a
+	// decimal literal as an integer literal, any other integer literal or an
+	// identifier as written; `fallback` when the attribute is absent.
+	integer int_attr_expr(integer ctx, string attrs, string header, string key, integer fallback)
+		string src = header_src(header, key)
+		if src == ""
+			src = json_attr(attrs, key)
+		if src == ""
+			return _batch_intLit(ctx, fallback, 0)
+		if is_decimal_integer(src)
+			integer n = src.toInteger() onError fallback
+			return _batch_intLit(ctx, n, 0)
+		return ue(ctx, src)
 
 // ============================================================================
 // VALIDATION (validate_block)

@@ -1,0 +1,70 @@
+// Test: frame.canvas — the canvasScene: header line, which the plugin parses
+// itself: a string literal id= with escapes, quoted and unquoted values in
+// any order, identifier and hex integer values, blanks around `=`, and a
+// trailing comment.
+// Spec: foundation/spec/framework/frame-canvas-semantics.md CVS-S014;
+//       foundation/spec/framework/grammar/frame-canvas.ebnf §2 (scene_attr);
+//       foundation/spec/grammar/grammar.ebnf §1.6 (string escapes).
+//
+// Canvas bridges are browser-hosted, so on clean-server they are no-op stubs:
+// this suite checks that every header form compiles and that the scene's
+// start-up (canvas creation from the header values, state, init:) runs. What
+// the runtime receives — the decoded id, sizes, fps and background — is
+// checked in the browser runtime by
+// plugins/frame.canvas/runtime/tests/scene-header.test.mjs.
+//
+// Regressions covered: id="de\"cl" kept its backslash; a value after a
+// comma-separated attribute became part of the previous value.
+
+plugins:
+	frame.canvas
+
+start:
+	printl("canvas header: start")
+
+state:
+	integer failures = 0
+	integer sceneWidth = 320
+	string sceneBackground = "#0a0b0c"
+	string trace = ""
+
+canvasScene: background=sceneBackground  id = "de\"cl\{0\}"   width=sceneWidth height=0xC8 fps=30   // HUD
+
+	state:
+		integer level = 2
+
+	init:
+		expectEqualInt(level, 2, "state is initialised before init:")
+		trace = trace + "I"
+		_frame_callback(0)
+		expectEqual(trace, "ID", "the scene starts and draws a frame")
+		if failures == 0
+			printl("PASS: canvas-scene-header")
+		else
+			printl("FAIL: canvas-scene-header (" + failures.toString() + " assertion(s) failed)")
+
+	draw:
+		canvas.clear
+		trace = trace + "D"
+
+functions:
+	// Assertion helpers — same contract as tests/framework/utils/assertions.cln
+	// (copied: there is no module import system yet; renamed because the
+	// compiler reserves assertEqual).
+	boolean expectEqual(string actual, string expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected)
+			printl("  Actual:   " + actual)
+			failures = failures + 1
+			return false
+		return true
+
+	boolean expectEqualInt(integer actual, integer expected, string message)
+		if actual != expected
+			printl("FAIL: " + message)
+			printl("  Expected: " + expected.toString())
+			printl("  Actual:   " + actual.toString())
+			failures = failures + 1
+			return false
+		return true
