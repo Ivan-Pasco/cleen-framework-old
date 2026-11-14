@@ -182,21 +182,24 @@ functions:
 		assert(component_event_handler_names(text) == "bump\nreset_all\n")
 		assert(component_event_handler_names("\tstate:\n\t\tinteger n\n") == "")
 
-	// `html: var="name"` is read from the header line (frame-ui.ebnf
-	// html_var_attribute); any other header attribute on html: and any on
-	// page: (page_block has none) is an error. Unindented text that is not
-	// key="value" pairs stays template text.
+	// `html var="name":` puts var before the colon; the compiler passes it
+	// in the block attributes (frame-ui.ebnf html_block). key="value" text
+	// after the colon (`html: var="card"`) is FRAME-UI-E018; any header
+	// attribute on page: (page_block has none) is FRAME-UI-E017.
+	// Unindented text that is not key="value" pairs stays template text.
+	// Fixed: was accepting `html: var="card"`; the developer decision on
+	// cleen-framework-old#26 makes `html var="card":` the only form.
 	void test_html_and_page_headers()
-		string body = "var=\"card\"\n\t<b>x</b>"
-		string src = expand_html_block(header_attrs_json("", body), header_body(body))
+		string src = expand_html_block("\{\"var\":\"card\"\}", "<b>x</b>")
 		assert(src.startsWith("string card = \"\"\n"))
-		assert(src.contains("var=") == false)
 		assert(src.contains("return") == false)
 		assert(header_attr_keys("var=\"m\", id=\"x\"\n\t<p></p>") == ",var,id,")
 		assert(header_attr_keys("\t<p></p>") == "")
-		assert(validate_block("html", "", body) == "")
+		assert(validate_block("html", "\{\"var\":\"card\"\}", "<b>x</b>") == "")
+		assert(validate_block("html", "", "var=\"card\"\n<b>x</b>") == html_header_error())
 		assert(validate_block("html", "", "id=\"m\"\n\t<p></p>") == html_header_error())
 		assert(validate_block("html", "", "<p>x</p>") == "")
+		assert(html_header_error().contains("`html var=\"card\":`"))
 		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "path=\"/\" layout=\"Main\"\n\t<p></p>") == page_header_error())
 		assert(validate_block("page", "\{\"model_name\":\"Home\"\}", "\n\t<p></p>") == "")
 

@@ -50,7 +50,7 @@ functions:
 
 	// The Retry button calls loadUsers again — a plain event attribute.
 	void showError(string text)
-		html: var="markup"
+		html var="markup":
 			<p class="error">{text}</p>
 			<button onclick="loadUsers">Retry</button>
 		integer s = ui.updateElement("#user-status", markup)

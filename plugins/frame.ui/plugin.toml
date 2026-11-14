@@ -135,9 +135,12 @@ version = 3
 expand = "expand_block_typed"
 version = 3
 
+# `html var="name":` — the header attribute before the colon
+# (frame-ui.ebnf html_var_attribute) reaches expand as attrs_json "var".
 [blocks.html]
 expand = "expand_block_typed"
 version = 3
+attributes = ["var"]
 
 # styles <Name>: — frame-ui.ebnf §4 styles_block. Emits no Clean code; the
 # block's CSS feeds build_state["frame.ui.theme.css"] (theme.css artifact).
@@ -384,7 +387,7 @@ keywords = [
   { name = "render", description = "Component render function", context = "block" },
   { name = "events", description = "Event handlers block", context = "block" },
   { name = "computed", description = "Computed properties", context = "block" },
-  { name = "var", description = "html: block named variable attribute (html: var=\"name\")", context = "attribute" },
+  { name = "var", description = "html block named variable attribute, written before the colon (html var=\"name\":)", context = "attribute" },
   { name = "if", description = "Conditional rendering directive", context = "directive" },
   { name = "else", description = "Else clause for conditional", context = "directive" },
   { name = "iterate", description = "Iterate rendering directive (cl-iterate)", context = "directive" },
@@ -551,7 +554,7 @@ completions = [
   { trigger = "state:", insert = "state:\n\t${1:field}: ${2:value}" },
   { trigger = "render:", insert = "render:\n\t${1:// template}" },
   { trigger = "html:", insert = "html:\n\t<div>\n\t\t${1:content}\n\t</div>" },
-  { trigger = "html: var", insert = "html: var=\"${1:name}\"\n\t<div>\n\t\t${2:content}\n\t</div>" },
+  { trigger = "html var", insert = "html var=\"${1:name}\":\n\t<div>\n\t\t${2:content}\n\t</div>" },
 ]
 
 [paths]

@@ -321,12 +321,13 @@ functions:
 
 		// html: block — statements that build the markup in `__html` (or the
 		// var= variable) and, without var=, return it (UI-P004 / UI-P005).
-		// `html: var="name"` writes the attribute on the header line.
+		// `html var="name":` puts the attribute before the colon; the
+		// compiler passes it in attrs_json ([blocks.html] attributes).
+		// key="value" text after the colon is FRAME-UI-E018.
 		if block_name == "html"
-			string html_keys = header_attr_keys(body)
-			if html_keys != "" and html_keys.replace(",var", "") != ","
+			if header_attr_keys(body) != ""
 				return plugin_error(ctx, "FRAME-UI-E018", html_header_error())
-			return expand_html_block_stub(ctx, header_attrs_json(attrs_json, body), header_body(body))
+			return expand_html_block_stub(ctx, attrs_json, body)
 
 		// styles Name: block — frame-ui.ebnf §4 styles_block. Produces no
 		// Clean code; its CSS is added to the frame.ui stylesheet artifact.
@@ -968,8 +969,7 @@ functions:
 				return "component: an html: template or render: section is required"
 			return ""
 		if block_name == "html"
-			string html_keys = header_attr_keys(body_in)
-			if html_keys != "" and html_keys.replace(",var", "") != ","
+			if header_attr_keys(body_in) != ""
 				return html_header_error()
 			return ""
 		if block_name == "page"
@@ -1104,10 +1104,11 @@ functions:
 	string page_header_error()
 		return "page: the header takes no key=\"value\" attributes (frame-ui.ebnf page_block). Write `page Name:` (the URL comes from the file path under app/ui/web/pages/) or `page Name at \"/path\":`."
 
-	// FRAME-UI-E018: the html: header line holds only var="name"
-	// (frame-ui.ebnf html_var_attribute).
+	// FRAME-UI-E018: key="value" text after the html: colon. The only
+	// header attribute is var, written before the colon (frame-ui.ebnf
+	// html_block / html_var_attribute).
 	string html_header_error()
-		return "html: the only header attribute is var=\"name\" (frame-ui.ebnf html_var_attribute), e.g. `html: var=\"markup\"`."
+		return "html: attributes go before the colon. Write `html var=\"card\":` (frame-ui.ebnf html_var_attribute); `html: var=\"card\"` is not valid, and var is the only html attribute."
 
 	// The block attributes `attrs` (a JSON object, or "") plus the attributes
 	// on the component header line of `body`.

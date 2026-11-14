@@ -10,8 +10,8 @@
       "purpose": "main_module",
       "public": false,
       "content_type": "application/wasm",
-      "size_bytes": 130693,
-      "sha256": "3b1ee967f53db7d19eeabf8cd3e8a44af9bdeb27f69caf07ecd7b8cab118de8c",
+      "size_bytes": 130629,
+      "sha256": "092794fd3bc87cd2ae6f6e52dfa293211ba8313dd8df40059951b73f399ecd21",
       "source_plugin": null
     }
   ],
