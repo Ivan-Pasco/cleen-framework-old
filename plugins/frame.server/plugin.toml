@@ -321,7 +321,7 @@ functions = [
   # maps_to entries allow the compiler to register them as externals for type-checking
   # when they are referenced before the preamble is expanded (e.g. in functions: blocks).
   # render() and renderWith() moved to frame.ui (SSR is frame.ui's responsibility).
-  { name = "json", signature = "json(data)", description = "Return JSON response with Content-Type: application/json", maps_to = "_res_json", params = ["string"], returns = "void" },
+  { name = "json", signature = "json(data)", description = "Encode data as JSON and return it with Content-Type: application/json; pass data, not JSON text (a string is sent as a JSON string, SRV-B005a)", maps_to = "_res_json", params = ["string"], returns = "void" },
   { name = "html", signature = "html(content)", description = "Return HTML response" },
   { name = "redirect", signature = "redirect(url, status?)", description = "Redirect to URL (default 302)", maps_to = "_res_redirect", params = ["string", "integer"], returns = "void" },
   { name = "notFound", signature = "notFound(message?)", description = "Return 404 Not Found response" },
