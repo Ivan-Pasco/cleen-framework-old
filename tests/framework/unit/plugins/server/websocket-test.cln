@@ -1,5 +1,7 @@
 // Test: frame.server — WebSocket endpoint (LIVE method) registration.
 
+// Fixed: removed `return json(...)` — a LIVE body is the onConnect handler and returns
+// no value (frame-server.ebnf §3a); compiler 0.33.190 rejects returning a value there.
 // Fixed: added missing plugin declarations — plugin-contract.md §9 only auto-detects by path
 plugins:
 	frame.server
@@ -10,7 +12,6 @@ server:
 endpoints:
 	LIVE "/test":
 		printl("PASS: server-websocket")
-		return json({ok: true})
 
 start:
 	printl("[boot] server-websocket server ready")
